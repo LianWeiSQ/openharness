@@ -84,6 +84,7 @@ class AgentLoop:
     async def run(self, user_text: str) -> AsyncIterator[StreamEvent]:
         # 1) 应用 Agent 的权限规则集（FULL/READONLY/PLAN_ONLY/NONE）
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
+        
         # 2) 记录用户消息进入会话（后续会作为上下文传入模型）
         self.session.add(ChatMessage(role="user", content=user_text))
         steps = 0

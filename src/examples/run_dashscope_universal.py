@@ -22,8 +22,18 @@ import sys
 from pathlib import Path
 
 # 允许直接运行本文件：把仓库根目录加入 sys.path
-# 然后通过 `openagent/__init__.py` bootstrap 把 `openagent/src` 补进包路径
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# 说明：sys.path 里应当放“包目录的父目录”，而不是包目录本身。
+# 我们通过向上查找 `Agent.md` 来定位仓库根目录。
+def _find_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for p in here.parents:
+        if (p / "Agent.md").exists() and (p / "openagent").exists():
+            return p
+    # 兜底：按当前文件路径层级猜测（openagent/src/examples/ -> repo root）
+    return here.parents[3]
+
+
+REPO_ROOT = _find_repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -50,7 +60,7 @@ async def main() -> int:
         return 2
 
     # 选择模型（可通过环境变量覆盖）
-    model_id = os.getenv("DASHSCOPE_MODEL", "qwen-plus")
+    model_id = os.getenv("DASHSCOPE_MODEL", "qwen3.5-plus")
     # Model 结构用于给 AgentLoop/Provider 传递“模型身份与限制信息”
     model = Model(
         id=model_id,
