@@ -11,7 +11,6 @@ from typing import Any
 
 __all__ = [
     "AgentLoop",
-    "AgentScopeUniversalAgent",
     "ExploreAgent",
     "PlanAgent",
     "Session",
@@ -40,8 +39,4 @@ def __getattr__(name: str) -> Any:
         from .core.agent.explore import ExploreAgent as _ExploreAgent
 
         return _ExploreAgent
-    if name == "AgentScopeUniversalAgent":
-        from .core.agent.agentscope_universal import AgentScopeUniversalAgent as _AgentScopeUniversalAgent
-
-        return _AgentScopeUniversalAgent
     raise AttributeError(name)

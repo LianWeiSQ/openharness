@@ -11,10 +11,6 @@ requires-python = ">=3.10"
 license = { text = "UNLICENSED" }
 authors = [{ name = "OpenAgent" }]
 
-[project.optional-dependencies]
-# 可选依赖：仅在需要“AgentScope 外壳”时安装，不影响现有功能/测试
-agentscope = ["agentscope"]
-
 [tool.setuptools]
 package-dir = { "" = "src" }
 

@@ -72,8 +72,7 @@ openagent/
 │   │   ├── agent_adapter.py    # AgentAdapter（模型输出转换）
 │   │   ├── memory_adapter.py   # MemoryAdapter（键值存储）
 │   │   ├── mcp_adapter.py      # MCP 适配器（stub）
-│   │   ├── agentscope_adapter.py # AgentScope 集成适配器
-│   │   └── _agentscope_compat.py # AgentScope 兼容层
+│   │   └── toolkit_adapter.py  # ToolkitAdapter（导出 core/tool/toolkit.py）
 │   │
 │   └── prompts/                # 提示词模板
 │
@@ -86,7 +85,6 @@ openagent/
 └── examples/                   # 示例
     ├── run_mock.py             # Mock 模型示例
     ├── run_dashscope_universal.py
-    └── run_agentscope_universal.py
 ```
 
 ---
@@ -613,37 +611,6 @@ class AgentAdapter:
         return AgentReplyStream(_gen(), info_future)
 ```
 
-#### AgentScope 集成 (`adapter/agentscope_adapter.py`)
-
-将 AgentScope 框架接入 OpenAgent：
-
-```python
-class AgentScopeAgentAdapter:
-    """对外接口与 AgentAdapter 一致"""
-
-    def reply_stream(self, ...) -> AgentReplyStream:
-        # 1. 创建事件队列
-        q: asyncio.Queue[StreamEvent] = asyncio.Queue()
-
-        # 2. 后台运行 AgentScope backend
-        async def _run_backend():
-            result = await self._backend.run(system, messages, sink)
-            # tool_calls 置空，避免 AgentLoop 再执行
-            info_future.set_result(StepInfo(tool_calls=[]))
-
-        # 3. 从队列读取事件
-        async def _gen():
-            while True:
-                ev = await q.get()
-                if ev["type"] == "_done":
-                    break
-                yield ev
-
-        return AgentReplyStream(_gen(), info_future)
-```
-
----
-
 ## 6. 数据流图
 
 ### 6.1 完整执行流程
@@ -878,4 +845,3 @@ async for ev in lm.stream(system="You are helpful.", messages=[...], tools=[]):
 | `core/permission/ruleset.py` | 权限规则集 |
 | `core/session/session.py` | 会话管理 |
 | `adapter/agent_adapter.py` | Agent 适配器 |
-| `adapter/agentscope_adapter.py` | AgentScope 集成 |
