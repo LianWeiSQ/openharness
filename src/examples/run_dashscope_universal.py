@@ -9,11 +9,11 @@ from __future__ import annotations
    $env:DASHSCOPE_API_KEY="你的Key"
 
 2) 运行：
-   python openagent/examples/run_dashscope_universal.py "给我一句关于软件工程的建议"
+   python openagent/src/examples/run_dashscope_universal.py "给我一句关于软件工程的建议"
 
 说明：
 - 该 demo 走 DashScope 的 OpenAI 兼容接口（compatible-mode）
-- 为了避免“模型自动调用工具”带来额外环境依赖，本 demo 不向模型传 tools
+- 本 demo 默认启用 stream=true（SSE 真流式）与 readonly 工具（read/glob/grep/ls）
 """
 
 import asyncio
@@ -75,7 +75,9 @@ async def main() -> int:
     language_model = await provider.get_language_model(model)
 
     # 为纯问答场景配置一个 UniversalAgent
-    # 注意：这里刻意用更“安全”的权限/工具配置，避免触发文件/命令等行为
+    # 注意：这里刻意用更“安全”的权限/工具配置：
+    # - tools="readonly"：仅把 read/glob/grep/ls 暴露给模型
+    # - permission="READONLY"：只允许执行这几个只读工具（其余工具拒绝）
     agent = UniversalAgent(
         config=AgentConfig(
             name="universal-dashscope",
@@ -83,14 +85,19 @@ async def main() -> int:
             prompt=None,
             model=model,
             tools="readonly",
-            permission="NONE",
+            permission="READONLY",
             max_steps=5,
             temperature=float(os.getenv("DASHSCOPE_TEMPERATURE", "0.2")),
+            # 通过 options 允许你覆盖 provider 行为（例如临时关闭 stream）
+            options={
+                "stream": os.getenv("DASHSCOPE_STREAM", "1").lower() not in ("0", "false", "no"),
+            },
         ),
         model=language_model,
         system_prompt=(
-            "你是一个专业助手，请直接回答用户问题。"
-            "除非用户明确要求，否则不要提出执行命令/读写文件等操作。"
+            "你是一个专业助手，请直接回答用户问题。\n"
+            "当用户问“列目录/看文件列表/当前目录有什么”这类问题时，必须先调用工具 ls。\n"
+            "除非用户明确要求，否则不要提出执行命令/写文件等操作。"
         ),
     )
 
@@ -109,9 +116,14 @@ async def main() -> int:
     print("回答：")
     async for ev in loop.run(question):
         if ev["type"] == "text-delta":
-            # 逐段输出（本实现是一次性输出，但上层仍按流式处理）
+            # 逐段输出：当 provider 支持 stream=true 时，这里会逐 chunk 打印
             sys.stdout.write(ev["text"])
             sys.stdout.flush()
+        if ev["type"] == "tool-call":
+            print(f"\n[tool-call] {ev['name']} {ev['input']}")
+        if ev["type"] == "tool-result":
+            err = f" error={ev['error']}" if ev.get("error") else ""
+            print(f"\n[tool-result] call_id={ev['call_id']}{err}\n{ev['output']}")
         if ev["type"] == "error":
             print(f"\n[错误] {ev['error']}")
             return 1

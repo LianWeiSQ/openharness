@@ -16,6 +16,7 @@ AgentLoop：OpenAgent 的“主循环引擎”。
 """
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,7 +33,7 @@ from ..tool.builtin.shell import register_shell_tools
 from ..tool.builtin.web import register_web_tools
 from ..tool.middleware import logging_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
-from ..types import ChatMessage, FinishReason, StreamEvent, Usage
+from ..types import ChatMessage, FinishReason, StreamEvent, ToolSchema, Usage
 from .doom_loop import DoomLoopDetector
 from .snapshot import SnapshotManager
 
@@ -70,6 +71,34 @@ class AgentLoop:
         self.tool_log: list[dict[str, Any]] = []
         self._init_tools()
 
+    def _tools_for_agent(self) -> list[ToolSchema]:
+        """
+        根据 AgentConfig.tools 决定“暴露给模型”的工具集合。
+
+        中文说明：
+        - 工具“是否可见”与“是否允许执行”是两件事：
+          - 可见性：决定模型能不能生成 tool-call（避免无意义/危险调用）
+          - 允许执行：由 PermissionManager 在真正 execute 前做最终裁决
+        - permission="NONE" 时直接不暴露任何工具，避免模型生成 tool-call 后必然被拒绝。
+        """
+
+        if self.agent.config.permission == "NONE":
+            return []
+
+        tools = self.toolkit.get_all_tools()
+        allow = self.agent.config.tools
+        if allow == "all":
+            return tools
+        if allow == "readonly":
+            # v1 约定：readonly 仅暴露“只读文件工具”，用于安全的目录/文本探索
+            allowed_names = {"read", "glob", "grep", "ls"}
+            return [t for t in tools if t.name in allowed_names]
+        # allowlist：仅暴露指定名称的工具
+        if isinstance(allow, list):
+            allowed_names = set(allow)
+            return [t for t in tools if t.name in allowed_names]
+        return tools
+
     def _init_tools(self) -> None:
         # 中间件链：权限检查 → 记录日志 →（执行工具本体）
         self.toolkit.register_middleware(permission_middleware(self.permission_manager))
@@ -93,10 +122,12 @@ class AgentLoop:
             # step-start：创建快照，用于 step 完成后生成 patch（文件 diff）
             snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
             yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
-            tools = self.toolkit.get_all_tools()
+            tools = self._tools_for_agent()
 
             # Stream a model step (with limited retry for "no output yet" failures).
             attempt = 0
+            # 本 step 的 assistant 文本输出（用于写回 Session，保证多步推理上下文正确）
+            assistant_text_chunks: list[str] = []
             while True:
                 attempt += 1
                 yielded = False
@@ -107,8 +138,13 @@ class AgentLoop:
                     tools=tools,
                 )
                 try:
+                    assistant_text_chunks = []
                     async for ev in stream:
                         yielded = True
+                        if ev["type"] == "text-delta":
+                            # 中文说明：我们在 loop 层把本次模型输出的文本拼起来，
+                            # 并在 step 结束后写回 Session.messages（assistant role）。
+                            assistant_text_chunks.append(ev["text"])
                         # 直接把模型流事件透传出去（上层可实时渲染）
                         yield ev
                     info = await stream.info()
@@ -119,6 +155,23 @@ class AgentLoop:
                         return
                     # 指数退避（避免瞬时网络/服务抖动导致连续失败）
                     await asyncio.sleep(self.config.retry_base_delay_s * (2 ** (attempt - 1)))
+
+            # 将本 step 的 assistant 输出（以及 tool_calls）写回会话上下文。
+            # 这样下一轮模型就能看到完整对话链路：user -> assistant(tool_calls) -> tool -> assistant...
+            assistant_content = "".join(assistant_text_chunks)
+            if assistant_content or info.tool_calls:
+                metadata: dict[str, Any] = {}
+                if info.tool_calls:
+                    # OpenAI-compatible 结构：arguments 需要是 JSON 字符串
+                    metadata["tool_calls"] = [
+                        {
+                            "id": c.call_id,
+                            "type": "function",
+                            "function": {"name": c.name, "arguments": json.dumps(c.input, ensure_ascii=False)},
+                        }
+                        for c in info.tool_calls
+                    ]
+                self.session.add(ChatMessage(role="assistant", content=assistant_content, metadata=metadata))
 
             blocked = False
             for call in info.tool_calls:
