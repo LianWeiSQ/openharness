@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 AgentLoop：OpenAgent 的“主循环引擎”。
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agent.base import BaseAgent
+from ..context_budget import ContextBudgetConfigError, check_context_budget, format_context_budget_error
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
 from ...adapter.memory_adapter import MemoryAdapter
@@ -42,6 +43,13 @@ class AgentLoopConfig:
 
 
 class AgentLoop:
+    """
+    Main loop processor for a single agent turn.
+
+    This loop now performs a preflight context-budget check before each
+    model call so oversized sessions fail fast instead of failing at the
+    provider boundary.
+    """
     def __init__(
         self,
         *,
@@ -104,6 +112,28 @@ class AgentLoop:
         if isinstance(tool_paths, list) and all(isinstance(x, str) for x in tool_paths):
             self.toolkit.load_plugins(tool_paths=tool_paths, base_dir=Path(self.session.directory))
 
+    def _context_budget_error(self, *, messages: list[ChatMessage], tools: list[ToolSchema]) -> str | None:
+        """
+        Validate context budget before issuing a model request.
+
+        Returns:
+        - None when the current context is safe to send.
+        - An error string when config is invalid or the context budget is exceeded.
+        """
+        try:
+            budget = check_context_budget(
+                system=self.agent.system_prompt,
+                messages=messages,
+                tools=tools,
+                model=self.agent.config.model,
+                options=self.agent.config.options,
+            )
+        except ContextBudgetConfigError as e:
+            return str(e)
+        if budget is not None and budget.overflowed:
+            return format_context_budget_error(budget)
+        return None
+
     async def run(self, user_text: str) -> AsyncIterator[StreamEvent]:
         # 1) 应用 Agent 的权限规则集（FULL/READONLY/PLAN_ONLY/NONE）
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
@@ -117,8 +147,12 @@ class AgentLoop:
             snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
             yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
             tools = self._tools_for_agent()
-
-            # Stream a model step (with limited retry for "no output yet" failures).
+            messages = list(self.session.messages)
+            # 预先检查大模型是否超限
+            budget_error = self._context_budget_error(messages=messages, tools=tools)
+            if budget_error is not None:
+                yield {"type": "error", "error": budget_error}  # type: ignore[misc]
+                return
             attempt = 0
             # 本 step 的 assistant 文本输出（用于写回 Session，保证多步推理上下文正确）
             assistant_text_chunks: list[str] = []
@@ -128,7 +162,7 @@ class AgentLoop:
                 adapter = self.agent.adapter()
                 stream = adapter.reply_stream(
                     system=self.agent.system_prompt,
-                    messages=list(self.session.messages),
+                    messages=messages,
                     tools=tools,
                 )
                 try:
@@ -244,3 +278,4 @@ class AgentLoop:
             if finish_reason == "stop":
                 return
         yield {"type": "error", "error": "max_steps exceeded"}  # type: ignore[misc]
+
