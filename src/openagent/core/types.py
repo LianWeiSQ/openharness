@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-核心类型定义（尽量保持“薄而稳定”）。
+核心类型定义。
 
 该文件承载 OpenAgent 内部协议与跨模块共享的数据结构：
 - Model / ChatMessage：对齐 Provider 侧需要的最小对话结构

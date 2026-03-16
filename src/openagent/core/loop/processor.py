@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 AgentLoop：OpenAgent 的“主循环引擎”。
 
-该模块对应 `Agent.md` 的 Loop Layer，负责把一次用户输入驱动成多步执行：
+该模块对应 Loop Layer，负责把一次用户输入驱动成多步执行：
 - step-start：创建文件快照（用于后续 patch）
 - 调用 AgentAdapter.reply_stream：获取模型的流式事件（text/tool-call/finish）
 - 执行工具：按 tool-call 调用 ToolkitAdapter，并回传 tool-result
@@ -26,11 +26,6 @@ from ..agent.base import BaseAgent
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
 from ...adapter.memory_adapter import MemoryAdapter
-from ..tool.builtin.file import register_file_tools
-from ..tool.builtin.memory import register_memory_tools
-from ..tool.builtin.search import register_search_tools
-from ..tool.builtin.shell import register_shell_tools
-from ..tool.builtin.web import register_web_tools
 from ..tool.middleware import logging_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
 from ..types import ChatMessage, FinishReason, StreamEvent, ToolSchema, Usage
@@ -74,8 +69,6 @@ class AgentLoop:
     def _tools_for_agent(self) -> list[ToolSchema]:
         """
         根据 AgentConfig.tools 决定“暴露给模型”的工具集合。
-
-        中文说明：
         - 工具“是否可见”与“是否允许执行”是两件事：
           - 可见性：决定模型能不能生成 tool-call（避免无意义/危险调用）
           - 允许执行：由 PermissionManager 在真正 execute 前做最终裁决
@@ -103,12 +96,13 @@ class AgentLoop:
         # 中间件链：权限检查 → 记录日志 →（执行工具本体）
         self.toolkit.register_middleware(permission_middleware(self.permission_manager))
         self.toolkit.register_middleware(logging_middleware(self.tool_log))
-        # 内置工具注册（按需可在外部覆盖或扩展）
-        register_file_tools(self.toolkit)
-        register_shell_tools(self.toolkit)
-        register_search_tools(self.toolkit)
-        register_web_tools(self.toolkit)
-        register_memory_tools(self.toolkit)
+        # 内置工具注册（统一由 ToolRegistry 管理）
+        self.toolkit.load_builtin()
+
+        # 可选：加载外部插件工具
+        tool_paths = self.agent.config.options.get("tool_paths")
+        if isinstance(tool_paths, list) and all(isinstance(x, str) for x in tool_paths):
+            self.toolkit.load_plugins(tool_paths=tool_paths, base_dir=Path(self.session.directory))
 
     async def run(self, user_text: str) -> AsyncIterator[StreamEvent]:
         # 1) 应用 Agent 的权限规则集（FULL/READONLY/PLAN_ONLY/NONE）
@@ -142,7 +136,7 @@ class AgentLoop:
                     async for ev in stream:
                         yielded = True
                         if ev["type"] == "text-delta":
-                            # 中文说明：我们在 loop 层把本次模型输出的文本拼起来，
+                            # 我们在 loop 层把本次模型输出的文本拼起来，
                             # 并在 step 结束后写回 Session.messages（assistant role）。
                             assistant_text_chunks.append(ev["text"])
                         # 直接把模型流事件透传出去（上层可实时渲染）
@@ -192,7 +186,11 @@ class AgentLoop:
                         name=call.name,
                         input=call.input,
                         call_id=call.call_id,
-                        context={"session_root": str(self.session.directory), "memory": self.memory},
+                        context={
+                            "session_id": self.session.id,
+                            "session_root": str(self.session.directory),
+                            "memory": self.memory,
+                        },
                     )
                 except (PermissionDeniedError, PermissionAskRequiredError) as e:
                     blocked = True

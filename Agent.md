@@ -48,7 +48,7 @@
 ```
 UniversalAgent ─────┬──> AgentAdapter ───> LanguageModel（Provider 适配）
                     │
-                    ├──> ToolkitAdapter ──> Built-in Tools / MCP / Functions
+                    ├──> ToolkitAdapter ──> Built-in Tools / Plugins / Compat APIs
                     │         │
                     │         v
                     ├──> PermissionManager
@@ -298,8 +298,8 @@ class PermissionManager:
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │                    Tool Registry / Runtime               ││
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐   ││
-│  │  │ Built-in │ │   MCP    │ │ Function │ │  Group   │   ││
-│  │  │  Tools   │ │  Tools   │ │  Tools   │ │  Tools   │   ││
+│  │  │ Built-in │ │ Plugins  │ │ Compat   │ │  Group   │   ││
+│  │  │  Tools   │ │  Tools   │ │   APIs   │ │  Tools   │   ││
 │  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘   ││
 │  └─────────────────────────────────────────────────────────┘│
 │                              │                               │
@@ -328,26 +328,33 @@ class PermissionManager:
 
 ```python
 class ToolkitAdapter:
-    def register_tool(
-        self,
-        name: str,
-        func: Callable,
-        description: str = "",
-        schema: dict | None = None,
-        group: str = "default",
-        dangerous: bool = False,
-    ) -> None:
-        """注册工具"""
+    def load_builtin(self) -> None:
+        """注册内置工具。"""
+
+    def load_plugins(self, *, tool_paths: list[str], base_dir: Path) -> None:
+        """加载文件或目录形式的工具插件。"""
+
+    def register_tool(...) -> None:
+        """兼容旧式函数注册；内部会转换到 ToolRegistry。"""
 
     def register_mcp(self, client: MCPClientBase, group: str = "mcp") -> None:
-        """注册MCP工具"""
+        """保留兼容接口；当前仍未实现。"""
+
+    def get_all_tools(self) -> list[ToolSchema]:
+        """获取全部工具 schema。"""
 
     def get_tools_by_group(self, groups: list[str]) -> list[ToolSchema]:
-        """按组获取工具"""
+        """按组获取工具。"""
 
     def register_middleware(self, middleware: MiddlewareFunc) -> None:
-        """注册中间件"""
+        """注册中间件。"""
 ```
+
+推荐扩展方式：插件模块暴露 `register(registry)`，并在其中使用 `ToolRegistry.define_tool()` 注册工具；`register_tool()` 仅用于兼容旧扩展，`register_mcp()` 目前仍是保留接口，不提供真实 MCP 注册。
+
+执行阶段会把工具层的 `ToolOutput.truncated` 与执行器文本截断统一汇总到 `ToolResult.metadata`：`metadata["truncated"]` 表示对外结果仍不完整，`metadata["output_truncated"]` 专门表示输出被长度截断。
+
+`grep` 保持正则匹配语义，`code_search` 保持代码库子串搜索语义；无效正则由工具返回 `tool-result(error=...)`，不做静默降级。
 
 ### 5.4 中间件链
 
@@ -424,7 +431,7 @@ class ToolkitAdapter:
     }
 }
 
-# grep - 内容搜索
+# grep - 正则内容搜索
 {
     "name": "grep",
     "parameters": {

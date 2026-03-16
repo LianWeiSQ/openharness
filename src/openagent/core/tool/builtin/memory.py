@@ -1,47 +1,56 @@
 from __future__ import annotations
 
+"""
+Memory tools (memory_read/memory_write).
+
+中文说明：
+- MemoryAdapter 由 AgentLoop 注入到 ToolContext.extra["memory"]
+- 工具本体不关心存储实现，只依赖 read/write 接口
+"""
+
 import json
+from dataclasses import dataclass, field
 from typing import Any
 
 from ....adapter.memory_adapter import MemoryAdapter
-from ..toolkit import ToolkitAdapter
+from ..definition import ToolContext, ToolOutput
+from ..registry import ToolRegistry
 
 
-def register_memory_tools(toolkit: ToolkitAdapter) -> None:
-    async def memory_read(params: dict[str, Any], ctx: dict[str, Any]) -> str:
-        key = str(params["key"])
-        mem: MemoryAdapter | None = ctx.get("memory")
-        if mem is None:
-            raise RuntimeError("No memory adapter in tool context")
-        return json.dumps(mem.read(key), ensure_ascii=False)
+@dataclass
+class MemoryReadParameters:
+    key: str = field(metadata={"description": "要读取的 key"})
 
-    async def memory_write(params: dict[str, Any], ctx: dict[str, Any]) -> str:
-        key = str(params["key"])
-        value = params.get("value")
-        mem: MemoryAdapter | None = ctx.get("memory")
-        if mem is None:
-            raise RuntimeError("No memory adapter in tool context")
-        mem.write(key, value)
-        return "ok"
 
-    toolkit.register_tool(
-        "memory_read",
-        memory_read,
-        description="Read a value from agent memory by key.",
-        schema={"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]},
-        group="memory",
-        dangerous=False,
+@dataclass
+class MemoryWriteParameters:
+    key: str = field(metadata={"description": "要写入的 key"})
+    value: Any = field(metadata={"description": "要写入的值（任意 JSON 结构）"})
+
+
+async def memory_read_tool(args: MemoryReadParameters, ctx: ToolContext) -> ToolOutput:
+    mem = ctx.extra.get("memory")
+    if not isinstance(mem, MemoryAdapter):
+        raise RuntimeError("No memory adapter in tool context")
+    return ToolOutput(title=args.key, output=json.dumps(mem.read(args.key), ensure_ascii=False), metadata={})
+
+
+async def memory_write_tool(args: MemoryWriteParameters, ctx: ToolContext) -> ToolOutput:
+    mem = ctx.extra.get("memory")
+    if not isinstance(mem, MemoryAdapter):
+        raise RuntimeError("No memory adapter in tool context")
+    mem.write(args.key, args.value)
+    return ToolOutput(title=args.key, output="ok", metadata={})
+
+
+def register(registry: ToolRegistry) -> None:
+    registry.define_tool(tool_id="memory_read", parameters=MemoryReadParameters, description_md="memory_read.md", group="memory", dangerous=False)(
+        memory_read_tool
     )
-    toolkit.register_tool(
-        "memory_write",
-        memory_write,
-        description="Write a value to agent memory by key.",
-        schema={
-            "type": "object",
-            "properties": {"key": {"type": "string"}, "value": {}},
-            "required": ["key", "value"],
-        },
-        group="memory",
-        dangerous=False,
+    registry.define_tool(tool_id="memory_write", parameters=MemoryWriteParameters, description_md="memory_write.md", group="memory", dangerous=False)(
+        memory_write_tool
     )
+
+
+__all__ = ["register"]
 

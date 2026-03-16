@@ -1,36 +1,44 @@
 from __future__ import annotations
 
+"""
+Web tools (web_fetch/web_search).
+
+中文说明：
+- 该仓库默认运行环境可能禁网，因此这里默认返回“未启用”
+- 如果你要开启，可在此处实现真实网络请求，并在 PermissionRuleset 中做更严格控制
+"""
+
+from dataclasses import dataclass, field
 from typing import Any
 
-from ..toolkit import ToolkitAdapter
+from ..definition import ToolContext, ToolOutput
+from ..registry import ToolRegistry
 
 
-def register_web_tools(toolkit: ToolkitAdapter) -> None:
-    async def web_fetch(params: dict[str, Any], ctx: dict[str, Any]) -> str:  # pragma: no cover
-        # Network access is environment-dependent; keep as a stub by default.
-        raise RuntimeError("web_fetch is not enabled in this environment")
+@dataclass
+class WebFetchParameters:
+    url: str = field(metadata={"description": "要抓取的 URL"})
+    method: str = field(default="GET", metadata={"description": "HTTP 方法（默认 GET）"})
+    headers: dict[str, Any] | None = field(default=None, metadata={"description": "请求头（可选）"})
 
-    async def web_search(params: dict[str, Any], ctx: dict[str, Any]) -> str:  # pragma: no cover
-        raise RuntimeError("web_search is not enabled in this environment")
 
-    toolkit.register_tool(
-        "web_fetch",
-        web_fetch,
-        description="Fetch a URL over the network (may be disabled).",
-        schema={
-            "type": "object",
-            "properties": {"url": {"type": "string"}, "method": {"type": "string"}, "headers": {"type": "object"}},
-            "required": ["url"],
-        },
-        group="web",
-        dangerous=True,
-    )
-    toolkit.register_tool(
-        "web_search",
-        web_search,
-        description="Search the web (may be disabled).",
-        schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
-        group="web",
-        dangerous=True,
-    )
+@dataclass
+class WebSearchParameters:
+    query: str = field(metadata={"description": "搜索关键词"})
+
+
+async def web_fetch_tool(_args: WebFetchParameters, _ctx: ToolContext) -> ToolOutput:
+    raise RuntimeError("web_fetch is not enabled in this environment")
+
+
+async def web_search_tool(_args: WebSearchParameters, _ctx: ToolContext) -> ToolOutput:
+    raise RuntimeError("web_search is not enabled in this environment")
+
+
+def register(registry: ToolRegistry) -> None:
+    registry.define_tool(tool_id="web_fetch", parameters=WebFetchParameters, description_md="web_fetch.md", group="web", dangerous=True)(web_fetch_tool)
+    registry.define_tool(tool_id="web_search", parameters=WebSearchParameters, description_md="web_search.md", group="web", dangerous=True)(web_search_tool)
+
+
+__all__ = ["register"]
 

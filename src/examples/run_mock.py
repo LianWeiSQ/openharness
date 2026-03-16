@@ -5,15 +5,23 @@ from pathlib import Path
 import sys
 
 # Allow running this file directly (without installing / PYTHONPATH).
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _find_repo_root() -> Path:
+    here = Path(__file__).resolve()
+    for p in here.parents:
+        if (p / "Agent.md").exists() and (p / "openagent").exists():
+            return p
+    return here.parents[3]
+
+
+REPO_ROOT = _find_repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.openagent.core.agent.universal import UniversalAgent
-from src.openagent.core.loop.processor import AgentLoop
-from src.openagent.core.permission.manager import PermissionManager
-from src.openagent.core.session.session import Session
-from src.openagent.core.types import AgentConfig
+from openagent.core.agent.universal import UniversalAgent
+from openagent.core.loop.processor import AgentLoop
+from openagent.core.permission.manager import PermissionManager
+from openagent.core.session.session import Session
+from openagent.core.types import AgentConfig
 
 
 class ScriptedModel:

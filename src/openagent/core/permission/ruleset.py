@@ -31,7 +31,6 @@ def ruleset(name: PermissionRuleset) -> PermissionRulesetDef:
         return PermissionRulesetDef(
             name=name,
             rules=[
-                # 中文说明：
                 # - PermissionManager 使用“last match wins”（最后匹配优先）
                 # - 因此这里需要先给出默认 DENY，再在后面对白名单工具做 ALLOW 覆盖
                 PermissionRule(tool="*", action=PermissionAction.DENY, pattern="*"),
@@ -45,7 +44,7 @@ def ruleset(name: PermissionRuleset) -> PermissionRulesetDef:
         return PermissionRulesetDef(
             name=name,
             rules=[
-                # 中文说明：PLAN_ONLY 默认 ASK（需要用户确认），但对白名单只读工具直接放行
+                # PLAN_ONLY 默认 ASK（需要用户确认），但对白名单只读工具直接放行
                 PermissionRule(tool="*", action=PermissionAction.ASK, pattern="*"),
                 PermissionRule(tool="read", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="glob", action=PermissionAction.ALLOW, pattern="*"),

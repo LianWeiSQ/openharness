@@ -1,49 +1,56 @@
 from __future__ import annotations
 
-import os
+"""
+Shell tool (bash).
+
+中文说明：
+- 该工具属于高风险工具，默认需要 PermissionManager 放行
+- workdir 必须限制在 session_root 内（避免越界执行）
+"""
+
+import asyncio
 import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from ..toolkit import ToolkitAdapter
-
-
-def _ensure_within_root(root: Path, target: Path) -> Path:
-    root_resolved = root.resolve()
-    target_resolved = target.resolve()
-    if root_resolved not in target_resolved.parents and root_resolved != target_resolved:
-        raise PermissionError(f"Path escapes session root: {target}")
-    return target_resolved
+from ..definition import ToolContext, ToolOutput
+from ..registry import ToolRegistry
+from ..utils import resolve_optional_path
 
 
-def register_shell_tools(toolkit: ToolkitAdapter) -> None:
-    async def bash_tool(params: dict[str, Any], ctx: dict[str, Any]) -> str:
-        command = str(params["command"])
-        timeout = int(params.get("timeout", 120_000))
-        workdir = str(params.get("workdir") or ctx.get("session_root") or os.getcwd())
-        root = Path(str(ctx.get("session_root") or os.getcwd()))
-        cwd = _ensure_within_root(root, Path(workdir))
-        completed = subprocess.run(
-            command,
+@dataclass
+class BashParameters:
+    command: str = field(metadata={"description": "要执行的 shell 命令"})
+    timeout: int = field(default=120_000, metadata={"description": "超时（毫秒）"})
+    workdir: str | None = field(default=None, metadata={"description": "工作目录（默认 session_root）"})
+
+
+async def bash_tool(args: BashParameters, ctx: ToolContext) -> ToolOutput:
+    root = ctx.session_root.resolve()
+    cwd = resolve_optional_path(root, args.workdir)
+
+    def _run() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            args.command,
             cwd=str(cwd),
             shell=True,
             capture_output=True,
             text=True,
-            timeout=timeout / 1000.0,
+            timeout=args.timeout / 1000.0,
         )
-        out = (completed.stdout or "") + (completed.stderr or "")
-        return out.strip()
 
-    toolkit.register_tool(
-        "bash",
-        bash_tool,
-        description="Execute a shell command inside the session root.",
-        schema={
-            "type": "object",
-            "properties": {"command": {"type": "string"}, "timeout": {"type": "integer"}, "workdir": {"type": "string"}},
-            "required": ["command"],
-        },
-        group="shell",
-        dangerous=True,
+    completed = await asyncio.to_thread(_run)
+    out = (completed.stdout or "") + (completed.stderr or "")
+    return ToolOutput(
+        title=str(Path(cwd).relative_to(root)) if str(cwd).startswith(str(root)) else str(cwd),
+        output=out.strip(),
+        metadata={"returncode": completed.returncode},
     )
+
+
+def register(registry: ToolRegistry) -> None:
+    registry.define_tool(tool_id="bash", parameters=BashParameters, description_md="bash.md", group="shell", dangerous=True)(bash_tool)
+
+
+__all__ = ["register"]
 

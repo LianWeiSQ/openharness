@@ -1,51 +1,58 @@
 from __future__ import annotations
 
+"""Search tools (`code_search`)."""
+
 import fnmatch
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from ..toolkit import ToolkitAdapter
+from ..definition import ToolContext, ToolOutput
+from ..registry import ToolRegistry
+from ..utils import resolve_optional_path
+
+MAX_HITS = 200
 
 
-def register_search_tools(toolkit: ToolkitAdapter) -> None:
-    async def code_search(params: dict[str, Any], ctx: dict[str, Any]) -> str:
-        query = str(params["query"])
-        glob_pat = str(params.get("glob") or "*")
-        root = Path(str(ctx.get("session_root") or os.getcwd())).resolve()
-        hits: list[str] = []
-        for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
-            for fn in filenames:
-                if not fnmatch.fnmatch(fn, glob_pat):
-                    continue
-                p = Path(dirpath) / fn
-                try:
-                    content = p.read_text(encoding="utf-8", errors="ignore")
-                except OSError:
-                    continue
-                for idx, line in enumerate(content.splitlines(), start=1):
-                    if query in line:
-                        hits.append(f"{p}:{idx}:{line}")
-                        if len(hits) >= 200:
-                            return "\n".join(hits) + "\n... truncated ..."
-        return "\n".join(hits)
+@dataclass
+class CodeSearchParameters:
+    query: str = field(metadata={"description": "Literal substring to search for"})
+    glob: str = field(default="*", metadata={"description": "Filename glob filter"})
+    path: str | None = field(default=None, metadata={"description": "Search root, defaults to session_root"})
 
-    async def list_definitions(params: dict[str, Any], ctx: dict[str, Any]) -> str:  # pragma: no cover
-        raise RuntimeError("list_definitions is not implemented yet")
 
-    toolkit.register_tool(
-        "code_search",
-        code_search,
-        description="Search code under the session root (substring match).",
-        schema={"type": "object", "properties": {"query": {"type": "string"}, "glob": {"type": "string"}}, "required": ["query"]},
-        group="search",
-        dangerous=False,
+async def code_search_tool(args: CodeSearchParameters, ctx: ToolContext) -> ToolOutput:
+    root = ctx.session_root.resolve()
+    base = resolve_optional_path(root, args.path)
+    hits: list[str] = []
+
+    for dirpath, _dirnames, filenames in os.walk(base, onerror=lambda _e: None):
+        for fn in filenames:
+            if not fnmatch.fnmatch(fn, args.glob):
+                continue
+            p = Path(dirpath) / fn
+            try:
+                content = p.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            for idx, line in enumerate(content.splitlines(), start=1):
+                if args.query in line:
+                    hits.append(f"{p}:{idx}:{line}")
+                    if len(hits) >= MAX_HITS:
+                        return ToolOutput(
+                            title=str(base.relative_to(root)),
+                            output="\n".join(hits),
+                            metadata={"count": len(hits)},
+                            truncated=True,
+                        )
+
+    return ToolOutput(title=str(base.relative_to(root)), output="\n".join(hits), metadata={"count": len(hits)})
+
+
+def register(registry: ToolRegistry) -> None:
+    registry.define_tool(tool_id="code_search", parameters=CodeSearchParameters, description_md="code_search.md", group="search", dangerous=False)(
+        code_search_tool
     )
-    toolkit.register_tool(
-        "list_definitions",
-        list_definitions,
-        description="List code definitions (stub).",
-        schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-        group="search",
-        dangerous=False,
-    )
+
+
+__all__ = ["register"]
