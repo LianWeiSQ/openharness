@@ -1,4 +1,4 @@
-# OpenAgent 项目深度分析
+﻿# OpenAgent 项目深度分析
 
 ## 1. 项目概述
 
@@ -417,7 +417,7 @@ class ToolkitAdapter:
 | `edit` | file | Yes | 编辑文件（字符串替换） |
 | `glob` | file | No | 文件名模式匹配 |
 | `grep` | file | No | 文件内容搜索 |
-| `ls` | file | No | 列出目录 |
+| `ls` | file | No | 以树形方式列出目录 |
 | `bash` | shell | Yes | 执行 Shell 命令 |
 | `code_search` | search | No | 代码搜索 |
 | `list_definitions` | search | No | 列出代码定义（stub） |
@@ -425,6 +425,8 @@ class ToolkitAdapter:
 | `web_search` | web | Yes | 网络搜索（stub） |
 | `memory_read` | memory | No | 读取记忆 |
 | `memory_write` | memory | No | 写入记忆 |
+| `todo` | todo | No | 读取当前 todo 列表 |
+| `todowrite` | todo | No | 更新当前 todo 列表 |
 
 #### 中间件系统 (`core/tool/middleware.py`)
 
@@ -845,3 +847,4 @@ async for ev in lm.stream(system="You are helpful.", messages=[...], tools=[]):
 | `core/permission/ruleset.py` | 权限规则集 |
 | `core/session/session.py` | 会话管理 |
 | `adapter/agent_adapter.py` | Agent 适配器 |
+

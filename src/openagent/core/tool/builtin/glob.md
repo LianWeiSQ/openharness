@@ -1,15 +1,14 @@
-# glob
+﻿# glob
 
-按 glob 模式在目录中查找路径（支持 `**` 递归）。
+Fast file pattern matching tool for the current workspace.
 
-## 参数
-- `pattern`（必填，string）：glob 模式，例如 `**/*.py`
-- `path`（可选，string）：搜索起始目录（默认 `session_root`）
+## Usage
+- `pattern` is required and supports glob syntax such as `**/*.py` or `src/**/*.ts`.
+- `path` is optional and defaults to `session_root`.
+- Results are sorted by modification time, newest first.
+- At most 100 matches are returned. If more exist, the tool marks the result as truncated.
 
-## 输出
-- 返回匹配到的路径列表（绝对路径），每行一个
-- 结果按修改时间倒序排序（最近修改的排在前面）
-
-## 约束
-- 只能在 `session_root` 范围内搜索（越界会被过滤或报错）
-
+## Notes
+- Use this tool when you need to find files by name or path pattern.
+- The search root must stay inside `session_root`.
+- When you already know the file names to read, it is often useful to call multiple `read` tools in parallel after globbing.

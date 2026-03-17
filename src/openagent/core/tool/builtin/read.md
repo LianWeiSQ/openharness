@@ -1,16 +1,17 @@
-# read
+﻿# read
 
-读取一个 UTF-8 文本文件的内容（按行编号，可分页）。
+Reads a UTF-8 text file from the local filesystem.
 
-## 参数
-- `file_path`（必填，string）：文件路径（相对 `session_root` 或绝对路径）
-- `offset`（可选，integer，默认 `0`）：起始行号（从 0 开始）
-- `limit`（可选，integer，默认 `2000`）：最多读取行数
+## Usage
+- `file_path` is required and may be relative to `session_root` or absolute inside `session_root`.
+- By default the tool reads up to 2000 lines starting at line 0.
+- You can optionally provide `offset` and `limit`, but when you want the whole file it is usually better to omit them.
+- Lines longer than 2000 characters are truncated.
+- Output is returned in `cat -n` style using `00001| text` line prefixes.
+- If the file still has more content, the tool tells you which line to continue from.
+- If the file does not exist, the tool may suggest close matches in the same directory.
 
-## 输出
-- 使用 `<file>...</file>` 包裹
-- 每行带行号前缀，例如：`00001| hello`
-
-## 约束
-- 只能读取 `session_root` 内的路径（越界会报错）
-
+## Notes
+- Binary and common image/archive formats are rejected with a tool error.
+- The file must stay inside `session_root`.
+- It is often better to read multiple potentially relevant files in parallel.

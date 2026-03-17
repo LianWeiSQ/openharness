@@ -1,11 +1,13 @@
-# web_search
+﻿# web_search
 
-执行一次网页搜索。
+Performs a lightweight live web search and returns the top result links.
 
-## 说明
-- 当前仓库默认运行环境可能禁网，因此该工具默认未启用（调用会报错）
-- 需要启用时，请在代码里接入真实搜索服务并配置权限策略
+## Usage
+- `query` is required.
+- `num_results` defaults to 8.
+- `timeout` is optional, measured in seconds, and capped at 120.
 
-## 参数
-- `query`（必填，string）：搜索关键词
-
+## Notes
+- Use this tool when you need fresh information beyond the model's knowledge cutoff.
+- Results are returned as a numbered list of titles and URLs.
+- When dates matter, prefer explicit dates like `2026-03-17` instead of relative words such as `today`.

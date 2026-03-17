@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 AgentLoop：OpenAgent 的“主循环引擎”。
@@ -92,7 +92,7 @@ class AgentLoop:
             return tools
         if allow == "readonly":
             # v1 约定：readonly 仅暴露“只读文件工具”，用于安全的目录/文本探索
-            allowed_names = {"read", "glob", "grep", "ls"}
+            allowed_names = {"read", "glob", "grep", "ls", "todo"}
             return [t for t in tools if t.name in allowed_names]
         # allowlist：仅暴露指定名称的工具
         if isinstance(allow, list):
@@ -227,6 +227,7 @@ class AgentLoop:
                             "session_id": self.session.id,
                             "session_root": str(self.session.directory),
                             "memory": self.memory,
+                            "session": self.session,
                         },
                     )
                 except (PermissionDeniedError, PermissionAskRequiredError) as e:
@@ -281,4 +282,5 @@ class AgentLoop:
             if finish_reason == "stop":
                 return
         yield {"type": "error", "error": "max_steps exceeded"}  # type: ignore[misc]
+
 

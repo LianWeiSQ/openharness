@@ -1,13 +1,14 @@
-# web_fetch
+﻿# web_fetch
 
-抓取一个 URL 的内容。
+Fetches content from a URL and returns it as text, markdown, or raw HTML.
 
-## 说明
-- 当前仓库默认运行环境可能禁网，因此该工具默认未启用（调用会报错）
-- 需要启用时，请在代码里实现真实请求并配置权限策略
+## Usage
+- `url` is required and must start with `http://` or `https://`.
+- `http://` URLs are upgraded to `https://` automatically.
+- `format` defaults to `markdown` and also accepts `text` or `html`.
+- `timeout` is optional, measured in seconds, and capped at 120.
 
-## 参数
-- `url`（必填，string）：要抓取的 URL
-- `method`（可选，string，默认 `GET`）：HTTP 方法
-- `headers`（可选，object）：请求头
-
+## Notes
+- This tool is read-only.
+- HTML responses are converted to plain text or lightweight markdown when requested.
+- Responses larger than 5MB are rejected.

@@ -1,15 +1,14 @@
-# write
+﻿# write
 
-写入 UTF-8 文本到文件（覆盖写）。
+Writes UTF-8 text to a file on the local filesystem.
 
-## 参数
-- `file_path`（必填，string）：文件路径（相对 `session_root` 或绝对路径）
-- `content`（必填，string）：要写入的内容
+## Usage
+- `file_path` and `content` are required.
+- The tool overwrites the target file if it already exists.
+- Parent directories are created automatically when needed.
+- Prefer editing existing files instead of creating new files unless the task really requires a new file.
 
-## 注意
-- 如果文件存在，会覆盖原内容
-- 如果父目录不存在，会自动创建
-
-## 约束
-- 只能写入 `session_root` 内的路径（越界会报错）
-
+## Safety
+- The file must stay inside `session_root`.
+- When the tool runs inside an active `Session`, overwriting an existing file requires that you read the file first in the same session.
+- Avoid creating documentation files such as `README.md` unless the user explicitly asks for them.

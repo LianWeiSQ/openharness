@@ -1,4 +1,4 @@
-# OpenAgent (core)
+﻿# OpenAgent (core)
 
 本目录是 `Agent.md` 设计文档对应的 Python 核心实现（Provider / Permission / Tool / Session / AgentLoop）。
 
@@ -8,8 +8,8 @@
 
 - `core/loop/`：`AgentLoop` + snapshot / retry / doom-loop
 - `core/permission/`：`PermissionManager` + ruleset
-- `core/tool/`：`ToolkitAdapter` + builtin tools（file/shell/web/search/memory）
-- `core/session/`：`Session`（fork/revert）
+- `core/tool/`：`ToolkitAdapter` + builtin tools（file/shell/web/search/memory/todo）
+- `core/session/`：`Session`（messages/todos + fork/revert）
 - `core/provider/`：Provider 接口（内置 provider 为 stub）
 - `adapter/`：对接层（AgentAdapter / MemoryAdapter 等）
 
@@ -47,3 +47,4 @@ python openagent/src/examples/run_mock.py
 $env:PYTHONPATH="openagent/src"
 python -m unittest discover -s openagent/src/tests -p "test_*.py"
 ```
+

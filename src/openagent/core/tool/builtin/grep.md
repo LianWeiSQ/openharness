@@ -1,16 +1,16 @@
 ﻿# grep
 
-Search file contents with a Python `re` regular expression.
+Fast content search tool that uses regular expressions.
 
-## Parameters
-- `pattern` (required, string): regular expression pattern.
-- `path` (optional, string): search root, defaults to `session_root`.
-- `glob` (optional, string, default `*`): filename glob filter such as `*.py`.
-
-## Output
-- One hit per line: `/abs/path/to/file:line_number:content`
+## Usage
+- `pattern` is required and supports full regex syntax.
+- `path` is optional and defaults to `session_root`.
+- Use `include` to restrict the search to matching file globs such as `*.py` or `*.{ts,tsx}`.
+- `glob` is still accepted as a compatibility alias for `include`.
+- Results are grouped by file and sorted by file modification time.
+- At most 100 matches are returned. If more exist, the tool marks the result as truncated.
 
 ## Notes
-- This tool is regex-based on purpose.
-- Invalid regex patterns fail with a tool error; they are not downgraded to substring search.
-- Use `code_search` when you want fast literal substring matching.
+- Invalid regex patterns fail with a tool error.
+- Use `code_search` when you want literal substring matching instead of regex behavior.
+- The search root must stay inside `session_root`.

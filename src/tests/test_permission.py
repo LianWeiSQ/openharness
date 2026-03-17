@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 
 from openagent.core.permission.manager import PermissionManager
-from openagent.core.permission.ruleset import PermissionRuleset
 from openagent.core.permission.rule import PermissionAction
+from openagent.core.permission.ruleset import PermissionRuleset
 
 
 class PermissionTests(unittest.IsolatedAsyncioTestCase):
@@ -18,6 +18,18 @@ class PermissionTests(unittest.IsolatedAsyncioTestCase):
         pm = PermissionManager()
         pm.set_ruleset(PermissionRuleset.READONLY)
         action = await pm.check({"name": "ls", "input": {}})
+        self.assertEqual(action, PermissionAction.ALLOW)
+
+    async def test_readonly_allows_todo_and_denies_todowrite(self) -> None:
+        pm = PermissionManager()
+        pm.set_ruleset(PermissionRuleset.READONLY)
+        self.assertEqual(await pm.check({"name": "todo", "input": {}}), PermissionAction.ALLOW)
+        self.assertEqual(await pm.check({"name": "todowrite", "input": {"todos": []}}), PermissionAction.DENY)
+
+    async def test_plan_only_allows_todowrite(self) -> None:
+        pm = PermissionManager()
+        pm.set_ruleset(PermissionRuleset.PLAN_ONLY)
+        action = await pm.check({"name": "todowrite", "input": {"todos": []}})
         self.assertEqual(action, PermissionAction.ALLOW)
 
     async def test_full_allows_bash(self) -> None:

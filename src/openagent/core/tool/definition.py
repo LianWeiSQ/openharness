@@ -9,10 +9,11 @@ These types keep the tool layer internally consistent:
 - `ToolOutput` is the tool-layer return type, distinct from loop-level `ToolResult`.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass
+from enum import Enum
 from pathlib import Path
 from types import UnionType
-from typing import Any, Awaitable, Callable, Union, get_args, get_origin
+from typing import Any, Awaitable, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
 
 @dataclass
@@ -57,36 +58,15 @@ class ToolDefinition:
     def parameters_schema(self) -> dict[str, Any]:
         """Return an OpenAI-compatible JSON schema for the tool parameters."""
 
-        from dataclasses import MISSING, fields, is_dataclass
-        from typing import get_type_hints
-
         if self.schema_override is not None:
             return self.schema_override
 
         if not is_dataclass(self.parameters):
             return {"type": "object", "properties": {}}
 
-        properties: dict[str, Any] = {}
-        required: list[str] = []
-
-        try:
-            hints = get_type_hints(self.parameters, include_extras=True)
-        except Exception:  # noqa: BLE001
-            hints = {}
-
-        for f in fields(self.parameters):
-            type_hint = hints.get(f.name, f.type)
-            prop = _type_to_json_schema(type_hint)
-            if f.metadata.get("description"):
-                prop["description"] = f.metadata["description"]
-            properties[f.name] = prop
-
-            if f.default is MISSING and f.default_factory is MISSING:  # type: ignore[comparison-overlap]
-                required.append(f.name)
-
-        schema: dict[str, Any] = {"type": "object", "properties": properties}
-        if required:
-            schema["required"] = required
+        schema = _type_to_json_schema(self.parameters)
+        if schema.get("type") != "object":
+            return {"type": "object", "properties": {}}
         return schema
 
 
@@ -117,12 +97,47 @@ def _type_to_json_schema(tp: Any) -> dict[str, Any]:
     origin = get_origin(inner)
     args = get_args(inner)
 
-    if origin is list:
+    if origin is Literal:
+        literals = list(args)
+        if not literals:
+            return {"type": "string"}
+        schema: dict[str, Any] = {"enum": literals}
+        first = literals[0]
+        if isinstance(first, bool):
+            schema["type"] = "boolean"
+        elif isinstance(first, int) and not isinstance(first, bool):
+            schema["type"] = "integer"
+        elif isinstance(first, float):
+            schema["type"] = "number"
+        else:
+            schema["type"] = "string"
+        return schema
+
+    if origin in (list, tuple, set):
         item_tp = args[0] if args else Any
         return {"type": "array", "items": _type_to_json_schema(item_tp)}
 
     if origin is dict:
-        return {"type": "object"}
+        value_tp = args[1] if len(args) > 1 else Any
+        return {"type": "object", "additionalProperties": _type_to_json_schema(value_tp)}
+
+    if isinstance(inner, type):
+        if issubclass(inner, Enum):
+            values = [member.value for member in inner]
+            schema: dict[str, Any] = {"enum": values}
+            first = values[0] if values else ""
+            if isinstance(first, bool):
+                schema["type"] = "boolean"
+            elif isinstance(first, int) and not isinstance(first, bool):
+                schema["type"] = "integer"
+            elif isinstance(first, float):
+                schema["type"] = "number"
+            else:
+                schema["type"] = "string"
+            return schema
+
+        if is_dataclass(inner):
+            return _dataclass_to_json_schema(inner)
 
     type_map = {
         str: "string",
@@ -134,6 +149,32 @@ def _type_to_json_schema(tp: Any) -> dict[str, Any]:
         return {"type": type_map[inner]}
 
     return {"type": "string"}
+
+
+
+def _dataclass_to_json_schema(cls: type) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    try:
+        hints = get_type_hints(cls, include_extras=True)
+    except Exception:  # noqa: BLE001
+        hints = {}
+
+    for f in fields(cls):
+        type_hint = hints.get(f.name, f.type)
+        prop = _type_to_json_schema(type_hint)
+        if f.metadata.get("description"):
+            prop["description"] = f.metadata["description"]
+        properties[f.name] = prop
+
+        if f.default is MISSING and f.default_factory is MISSING:  # type: ignore[comparison-overlap]
+            required.append(f.name)
+
+    schema: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
 
 
 ToolParameters = Any

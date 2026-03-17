@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Tool registration, exposure, and execution helpers."""
 
@@ -6,8 +6,10 @@ import asyncio
 import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import fields, is_dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from types import UnionType
+from typing import Any, get_args, get_origin, get_type_hints
 
 from ..id import new_id
 from ..types import ToolCall, ToolResult, ToolSchema
@@ -189,14 +191,77 @@ class ToolkitAdapter:
 
 
 def _coerce_params(parameters_type: type, payload: dict[str, Any]) -> Any:
-    """Coerce a model-produced dict payload into the configured parameter type."""
+    """Coerce a model-produced payload into the configured parameter type."""
 
     if not is_dataclass(parameters_type):
         return payload
+    return _coerce_value(parameters_type, payload or {})
 
-    allowed = {f.name for f in fields(parameters_type)}
-    filtered = {k: v for k, v in (payload or {}).items() if k in allowed}
-    return parameters_type(**filtered)
+
+
+def _coerce_value(tp: Any, value: Any) -> Any:
+    if value is None:
+        return None
+
+    inner = _unwrap_optional(tp)
+    origin = get_origin(inner)
+    args = get_args(inner)
+
+    if inner is Any or inner is object:
+        return value
+
+    if origin in (list, tuple, set):
+        if not isinstance(value, list):
+            raise TypeError(f"Expected list input for {inner!r}")
+        item_tp = args[0] if args else Any
+        coerced = [_coerce_value(item_tp, item) for item in value]
+        if origin is tuple:
+            return tuple(coerced)
+        if origin is set:
+            return set(coerced)
+        return coerced
+
+    if origin is dict:
+        if not isinstance(value, dict):
+            raise TypeError(f"Expected object input for {inner!r}")
+        key_tp = args[0] if len(args) > 0 else Any
+        value_tp = args[1] if len(args) > 1 else Any
+        return {
+            _coerce_value(key_tp, key): _coerce_value(value_tp, item)
+            for key, item in value.items()
+        }
+
+    if is_dataclass(inner):
+        if isinstance(value, inner):
+            return value
+        if not isinstance(value, dict):
+            raise TypeError(f"Expected object input for dataclass {inner.__name__}")
+        try:
+            hints = get_type_hints(inner, include_extras=True)
+        except Exception:  # noqa: BLE001
+            hints = {}
+        kwargs: dict[str, Any] = {}
+        for f in fields(inner):
+            if f.name in value:
+                kwargs[f.name] = _coerce_value(hints.get(f.name, f.type), value[f.name])
+        return inner(**kwargs)
+
+    if isinstance(inner, type) and issubclass(inner, Enum):
+        if isinstance(value, inner):
+            return value
+        return inner(value)
+
+    return value
+
+
+
+def _unwrap_optional(tp: Any) -> Any:
+    origin = get_origin(tp)
+    if origin not in (UnionType, getattr(__import__("typing"), "Union")):
+        return tp
+    args = [arg for arg in get_args(tp) if arg is not type(None)]  # noqa: E721
+    return args[0] if args else Any
+
 
 
 def _legacy_context_from_tool_context(tool_ctx: ToolContext) -> dict[str, Any]:
@@ -208,6 +273,7 @@ def _legacy_context_from_tool_context(tool_ctx: ToolContext) -> dict[str, Any]:
     legacy_ctx.setdefault("cwd", str(tool_ctx.session_root))
     legacy_ctx["call_id"] = tool_ctx.call_id
     return legacy_ctx
+
 
 
 def _write_truncated_output(session_root: Path, call_id: str, content: str) -> Path:
