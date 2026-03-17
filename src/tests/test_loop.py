@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import shutil
 import unittest
@@ -30,6 +30,18 @@ def _success_script() -> list[list[dict[str, object]]]:
             {"type": "text-delta", "id": "t1", "text": "done"},
             {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
         ]
+    ]
+
+
+def _tool_call_step(*, call_id: str, path: str) -> list[dict[str, object]]:
+    return [
+        {
+            "type": "tool-call",
+            "call_id": call_id,
+            "name": "ls",
+            "input": {"path": path},
+        },
+        {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
     ]
 
 
@@ -146,3 +158,78 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model.call_index, 1)
         self.assertIn("text-delta", [e["type"] for e in events])
+
+    async def test_loop_stops_on_repeated_identical_tool_calls_before_max_steps(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="c1", path="."),
+                _tool_call_step(call_id="c2", path="."),
+                _tool_call_step(call_id="c3", path="."),
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=10)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for ev in loop.run("列出当前目录文件"):
+            events.append(ev)
+
+        tool_results = [e for e in events if e["type"] == "tool-result"]
+        self.assertEqual(len(tool_results), 2)
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("Detected repeated tool-call loop", events[-1]["error"])
+        self.assertIn("ls {\"path\": \".\"}", events[-1]["error"])
+        self.assertNotIn("max_steps exceeded", events[-1]["error"])
+
+    async def test_loop_keeps_normal_single_tool_call_flow(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="c1", path="."),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for ev in loop.run("列出当前目录文件"):
+            events.append(ev)
+
+        self.assertIn("tool-result", [e["type"] for e in events])
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+        self.assertNotIn("error", [e["type"] for e in events])
+
+    async def test_loop_does_not_flag_different_tool_inputs_as_repeated_loop(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="c1", path="."),
+                _tool_call_step(call_id="c2", path="alpha"),
+                _tool_call_step(call_id="c3", path="beta"),
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=3)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        (session.directory / "alpha").mkdir()
+        (session.directory / "beta").mkdir()
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for ev in loop.run("列出几个目录"):
+            events.append(ev)
+
+        tool_results = [e for e in events if e["type"] == "tool-result"]
+        self.assertEqual(len(tool_results), 3)
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertEqual(events[-1]["error"], "max_steps exceeded")

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """
 AgentLoop：OpenAgent 的“主循环引擎”。
@@ -134,6 +134,13 @@ class AgentLoop:
             return format_context_budget_error(budget)
         return None
 
+    def _repeated_tool_call_error(self, call) -> str:
+        rendered_input = json.dumps(call.input, ensure_ascii=False, sort_keys=True)
+        return (
+            f"Detected repeated tool-call loop (threshold={self.config.doom_loop_threshold}): "
+            f"{call.name} {rendered_input}"
+        )
+
     async def run(self, user_text: str) -> AsyncIterator[StreamEvent]:
         # 1) 应用 Agent 的权限规则集（FULL/READONLY/PLAN_ONLY/NONE）
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
@@ -205,12 +212,8 @@ class AgentLoop:
             for call in info.tool_calls:
                 # doom-loop：连续多次执行完全相同的工具调用，视为“无进展循环”
                 if self.doom_loop_detector.record(call):
-                    try:
-                        await self.permission_manager.check(
-                            {"name": "doom_loop", "input": {"tool": call.name, "input": call.input}}
-                        )
-                    except Exception:
-                        blocked = True
+                    yield {"type": "error", "error": self._repeated_tool_call_error(call)}  # type: ignore[misc]
+                    return
 
                 try:
                     # 工具执行上下文：

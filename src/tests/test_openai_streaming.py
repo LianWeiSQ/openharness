@@ -1,0 +1,105 @@
+﻿from __future__ import annotations
+
+import json
+import unittest
+from unittest.mock import patch
+
+from openagent.core.provider.openai import OpenAILanguageModel
+from openagent.core.types import ToolSchema, Usage
+
+
+class _FakeResponse:
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+
+    def __enter__(self):  # noqa: ANN204
+        return self
+
+    def __exit__(self, exc_type, exc, tb):  # noqa: ANN001,ANN201
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+
+class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sse_streaming_parses_text_and_tool_calls_with_host_header(self) -> None:
+        chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Hello "}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {"content": "world"}, "finish_reason": None}]},
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "ls", "arguments": "{\"path\":"},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "\".\"}"}}]},
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            },
+        ]
+        sse_lines = [f"data: {json.dumps(chunk, ensure_ascii=False)}\n".encode("utf-8") for chunk in chunks] + [b"data: [DONE]\n"]
+
+        seen_payload: dict[str, object] = {}
+        seen_headers: dict[str, str] = {}
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ANN001,ANN201
+            nonlocal seen_payload, seen_headers
+            body = getattr(req, "data", None) or b"{}"
+            seen_payload = json.loads(body.decode("utf-8"))
+            seen_headers = {key.lower(): value for key, value in req.header_items()}
+            return _FakeResponse(sse_lines)
+
+        model = OpenAILanguageModel(
+            api_key="test",
+            model_id="glm47",
+            base_url="http://127.0.0.1:31877/v1",
+            host_header="s-20260316111037-tx4v6.sandbox-agent.sandbox.example.test",
+        )
+        tools = [ToolSchema(name="ls", description="List directory", schema={"type": "object", "properties": {"path": {"type": "string"}}})]
+
+        events: list[dict] = []
+        with patch("urllib.request.urlopen", new=_fake_urlopen):
+            async for ev in model.stream(system=None, messages=[], tools=tools):
+                events.append(ev)
+
+        self.assertEqual(seen_payload.get("stream"), True)
+        self.assertIn("tools", seen_payload)
+        self.assertEqual(seen_payload["tools"][0]["function"]["name"], "ls")
+        self.assertEqual(seen_headers.get("host"), "s-20260316111037-tx4v6.sandbox-agent.sandbox.example.test")
+
+        self.assertEqual([e["type"] for e in events[:2]], ["text-delta", "text-delta"])
+        self.assertEqual(events[0]["text"], "Hello ")
+        self.assertEqual(events[1]["text"], "world")
+
+        tool_call = next(e for e in events if e["type"] == "tool-call")
+        self.assertEqual(tool_call["call_id"], "call_1")
+        self.assertEqual(tool_call["name"], "ls")
+        self.assertEqual(tool_call["input"], {"path": "."})
+
+        finish = next(e for e in events if e["type"] == "finish")
+        self.assertEqual(finish["finish_reason"], "tool_call")
+        self.assertIsInstance(finish["usage"], Usage)
+        self.assertEqual(finish["usage"].input_tokens, 3)
+        self.assertEqual(finish["usage"].output_tokens, 2)
