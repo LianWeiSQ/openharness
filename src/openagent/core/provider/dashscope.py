@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """
 DashScope（阿里云通义千问）Provider 适配实现（最小可用 demo 版本）。
@@ -75,6 +75,12 @@ def _to_openai_tools(tools: list[ToolSchema]) -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _provider_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(options, dict):
+        return {}
+    return {key: value for key, value in options.items() if key != "context_budget"}
 
 
 def _usage_from_openai(usage: dict[str, Any] | None) -> Usage:
@@ -243,7 +249,7 @@ class DashScopeLanguageModel(LanguageModel):
             payload.setdefault("tool_choice", "auto")
         if options:
             # 允许调用方透传一些兼容字段（如 top_p 等）
-            payload.update(options)
+            payload.update(_provider_options(options))
 
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -409,3 +415,5 @@ class DashScopeProvider(ProviderBase):
 
     def get_model_config(self, model: Model) -> dict[str, Any]:
         return {"base_url": self.base_url}
+
+

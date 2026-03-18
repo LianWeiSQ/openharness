@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import shutil
 import unittest
@@ -24,9 +24,9 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
     def _make_temp_root(self) -> Path:
         tmp_root = Path("openagent/tests/workdir")
         tmp_root.mkdir(parents=True, exist_ok=True)
-        td = (tmp_root / f"t_{uuid4().hex}").resolve()
-        td.mkdir(parents=True, exist_ok=True)
-        return td
+        root = (tmp_root / f"t_{uuid4().hex}").resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
 
     async def test_write_denied_in_readonly(self) -> None:
         pm = PermissionManager()
@@ -34,16 +34,16 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
         tk = ToolkitAdapter()
         tk.register_middleware(permission_middleware(pm))
         tk.load_builtin()
-        td = self._make_temp_root()
+        root = self._make_temp_root()
         try:
             with self.assertRaises(PermissionDeniedError):
                 await tk.execute(
                     name="write",
                     input={"file_path": "x.txt", "content": "hello"},
-                    context={"session_root": str(td)},
+                    context={"session_root": str(root)},
                 )
         finally:
-            shutil.rmtree(td, ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)
 
     async def test_register_tool_compat_shim_keeps_schema_and_executes(self) -> None:
         tk = ToolkitAdapter()
@@ -74,13 +74,13 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_semantic_truncation_is_preserved(self) -> None:
         tk = ToolkitAdapter()
-        td = self._make_temp_root()
+        root = self._make_temp_root()
         try:
             async def run(_args: NoArgs, _ctx: ToolContext) -> ToolOutput:
                 return ToolOutput(title="semantic", output="partial", metadata={"count": 3}, truncated=True)
 
             tk.registry.define_tool(tool_id="semantic", parameters=NoArgs, description="# semantic")(run)
-            res = await tk.execute(name="semantic", input={}, context={"session_root": str(td)})
+            res = await tk.execute(name="semantic", input={}, context={"session_root": str(root)})
 
             self.assertIsNone(res.error)
             self.assertEqual(res.output, "partial")
@@ -88,11 +88,11 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(res.metadata["output_truncated"])
             self.assertNotIn("output_path", res.metadata)
         finally:
-            shutil.rmtree(td, ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)
 
     async def test_output_truncation_writes_full_output(self) -> None:
         tk = ToolkitAdapter()
-        td = self._make_temp_root()
+        root = self._make_temp_root()
         try:
             big_output = "x" * (Truncate.DEFAULT_MAX_BYTES + 32)
 
@@ -100,7 +100,7 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
                 return ToolOutput(title="big", output=big_output)
 
             tk.registry.define_tool(tool_id="big", parameters=NoArgs, description="# big")(run)
-            res = await tk.execute(name="big", input={}, context={"session_root": str(td)})
+            res = await tk.execute(name="big", input={}, context={"session_root": str(root)})
 
             self.assertIsNone(res.error)
             self.assertTrue(res.metadata["truncated"])
@@ -109,11 +109,36 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(output_path.exists())
             self.assertEqual(output_path.read_text(encoding="utf-8"), big_output)
         finally:
-            shutil.rmtree(td, ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_display_truncation_uses_context_budget_override(self) -> None:
+        tk = ToolkitAdapter()
+        root = self._make_temp_root()
+        try:
+            big_output = "y" * 4096
+
+            async def run(_args: NoArgs, _ctx: ToolContext) -> ToolOutput:
+                return ToolOutput(title="big", output=big_output)
+
+            tk.registry.define_tool(tool_id="big", parameters=NoArgs, description="# big")(run)
+            res = await tk.execute(
+                name="big",
+                input={},
+                context={
+                    "session_root": str(root),
+                    "agent_options": {"context_budget": {"tool_display_max_bytes": 512}},
+                },
+            )
+
+            self.assertIsNone(res.error)
+            self.assertTrue(res.metadata["output_truncated"])
+            self.assertLess(len(res.output.encode("utf-8")), 1024)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
     async def test_semantic_and_output_truncation_do_not_override_each_other(self) -> None:
         tk = ToolkitAdapter()
-        td = self._make_temp_root()
+        root = self._make_temp_root()
         try:
             big_output = "y" * (Truncate.DEFAULT_MAX_BYTES + 64)
 
@@ -121,11 +146,11 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
                 return ToolOutput(title="both", output=big_output, truncated=True)
 
             tk.registry.define_tool(tool_id="both", parameters=NoArgs, description="# both")(run)
-            res = await tk.execute(name="both", input={}, context={"session_root": str(td)})
+            res = await tk.execute(name="both", input={}, context={"session_root": str(root)})
 
             self.assertIsNone(res.error)
             self.assertTrue(res.metadata["truncated"])
             self.assertTrue(res.metadata["output_truncated"])
             self.assertIn("output_path", res.metadata)
         finally:
-            shutil.rmtree(td, ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)

@@ -69,15 +69,44 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertIsNotNone(with_tool)
         self.assertGreater(with_tool.estimated_input_tokens, base.estimated_input_tokens)
 
-    def test_unsupported_strategy_raises_clear_error(self) -> None:
+    def test_compact_strategy_is_supported(self) -> None:
+        result = check_context_budget(
+            system="You are helpful.",
+            messages=[ChatMessage(role="user", content="hello")],
+            tools=[],
+            model=_make_model(),
+            options={"context_budget": {"strategy": "compact"}},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result.overflowed)
+
+    def test_invalid_strategy_raises_clear_error(self) -> None:
         with self.assertRaises(ContextBudgetConfigError) as ctx:
             check_context_budget(
                 system="You are helpful.",
                 messages=[ChatMessage(role="user", content="hello")],
                 tools=[],
                 model=_make_model(),
-                options={"context_budget": {"strategy": "compact"}},
+                options={"context_budget": {"strategy": "trim"}},
             )
 
-        self.assertIn("compact", str(ctx.exception))
-        self.assertIn("Supported strategies: error", str(ctx.exception))
+        self.assertIn("trim", str(ctx.exception))
+        self.assertIn("Supported strategies: error, compact", str(ctx.exception))
+
+    def test_tool_message_diagnostics_are_populated(self) -> None:
+        result = check_context_budget(
+            system="You are helpful.",
+            messages=[
+                ChatMessage(role="user", content="find matches"),
+                ChatMessage(role="tool", name="code_search", content="x" * 1200),
+            ],
+            tools=[],
+            model=_make_model(),
+            options={},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.tool_message_count, 1)
+        self.assertEqual(result.largest_tool_message_name, "code_search")
+        self.assertGreater(result.largest_tool_message_tokens, 0)

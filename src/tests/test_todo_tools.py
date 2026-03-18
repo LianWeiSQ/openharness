@@ -18,7 +18,7 @@ class TodoToolTests(unittest.IsolatedAsyncioTestCase):
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    async def test_todowrite_and_todo_roundtrip(self) -> None:
+    async def test_todowrite_and_todoread_roundtrip(self) -> None:
         root = self._make_temp_root()
         try:
             toolkit = ToolkitAdapter()
@@ -37,13 +37,23 @@ class TodoToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(session.todos), 2)
             self.assertEqual(write_res.metadata["todos"][0]["id"], "inspect")
 
-            read_res = await toolkit.execute(name="todo", input={}, context=ctx)
+            read_res = await toolkit.execute(name="todoread", input={}, context=ctx)
             self.assertIsNone(read_res.error)
             data = json.loads(read_res.output)
             self.assertEqual(data[0]["content"], "Inspect tool chain")
             self.assertEqual(data[1]["status"], "pending")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+    async def test_toolkit_registers_todoread_without_todo_alias(self) -> None:
+        toolkit = ToolkitAdapter()
+        toolkit.load_builtin()
+        tools = {tool.name: tool for tool in toolkit.get_all_tools()}
+
+        self.assertIn("todoread", tools)
+        self.assertNotIn("todo", tools)
+        self.assertEqual(tools["todoread"].schema["type"], "object")
+        self.assertEqual(tools["todoread"].schema["properties"], {})
 
     async def test_todowrite_schema_contains_nested_object_fields(self) -> None:
         toolkit = ToolkitAdapter()

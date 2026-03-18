@@ -1,7 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import shutil
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -9,9 +10,16 @@ from openagent.core.agent.universal import UniversalAgent
 from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.session.session import Session
-from openagent.core.types import AgentConfig, Model
+from openagent.core.tool.definition import ToolContext, ToolOutput
+from openagent.core.tool.toolkit import ToolkitAdapter
+from openagent.core.types import AgentConfig, ChatMessage, Model
 
 from _mock_model import ScriptedLanguageModel
+
+
+@dataclass
+class NoArgs:
+    pass
 
 
 def _make_model_metadata(*, context_window: int = 256, max_output: int = 64) -> Model:
@@ -33,13 +41,13 @@ def _success_script() -> list[list[dict[str, object]]]:
     ]
 
 
-def _tool_call_step(*, call_id: str, path: str) -> list[dict[str, object]]:
+def _tool_call_step(*, call_id: str, name: str = "ls", input: dict[str, object] | None = None) -> list[dict[str, object]]:
     return [
         {
             "type": "tool-call",
             "call_id": call_id,
-            "name": "ls",
-            "input": {"path": path},
+            "name": name,
+            "input": input or {"path": "."},
         },
         {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
     ]
@@ -68,16 +76,16 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         cfg = AgentConfig(name="u", permission="FULL", max_steps=5)
-        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         session = Session(directory=self._make_temp_dir())
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("hi"):
-            events.append(ev)
+        async for event in loop.run("hi"):
+            events.append(event)
 
-        types = [e["type"] for e in events]
+        types = [event["type"] for event in events]
         self.assertIn("tool-result", types)
         self.assertIn("patch", types)
 
@@ -95,8 +103,8 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("x" * 800):
-            events.append(ev)
+        async for event in loop.run("x" * 800):
+            events.append(event)
 
         self.assertEqual(model.call_index, 0)
         self.assertEqual(events[-1]["type"], "error")
@@ -118,11 +126,11 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("x" * 800):
-            events.append(ev)
+        async for event in loop.run("x" * 800):
+            events.append(event)
 
         self.assertEqual(model.call_index, 1)
-        self.assertIn("text-delta", [e["type"] for e in events])
+        self.assertIn("text-delta", [event["type"] for event in events])
 
     async def test_loop_skips_context_budget_without_model_metadata(self) -> None:
         model = ScriptedLanguageModel(script=_success_script())
@@ -133,11 +141,11 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("x" * 800):
-            events.append(ev)
+        async for event in loop.run("x" * 800):
+            events.append(event)
 
         self.assertEqual(model.call_index, 1)
-        self.assertIn("text-delta", [e["type"] for e in events])
+        self.assertIn("text-delta", [event["type"] for event in events])
 
     async def test_loop_skips_context_budget_with_non_positive_context_window(self) -> None:
         model = ScriptedLanguageModel(script=_success_script())
@@ -153,41 +161,41 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("x" * 800):
-            events.append(ev)
+        async for event in loop.run("x" * 800):
+            events.append(event)
 
         self.assertEqual(model.call_index, 1)
-        self.assertIn("text-delta", [e["type"] for e in events])
+        self.assertIn("text-delta", [event["type"] for event in events])
 
     async def test_loop_stops_on_repeated_identical_tool_calls_before_max_steps(self) -> None:
         model = ScriptedLanguageModel(
             script=[
-                _tool_call_step(call_id="c1", path="."),
-                _tool_call_step(call_id="c2", path="."),
-                _tool_call_step(call_id="c3", path="."),
+                _tool_call_step(call_id="c1", name="ls", input={"path": "."}),
+                _tool_call_step(call_id="c2", name="ls", input={"path": "."}),
+                _tool_call_step(call_id="c3", name="ls", input={"path": "."}),
             ]
         )
         cfg = AgentConfig(name="u", permission="FULL", max_steps=10)
-        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         session = Session(directory=self._make_temp_dir())
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("列出当前目录文件"):
-            events.append(ev)
+        async for event in loop.run("列出当前目录文件"):
+            events.append(event)
 
-        tool_results = [e for e in events if e["type"] == "tool-result"]
+        tool_results = [event for event in events if event["type"] == "tool-result"]
         self.assertEqual(len(tool_results), 2)
         self.assertEqual(events[-1]["type"], "error")
         self.assertIn("Detected repeated tool-call loop", events[-1]["error"])
-        self.assertIn("ls {\"path\": \".\"}", events[-1]["error"])
+        self.assertIn('ls {"path": "."}', events[-1]["error"])
         self.assertNotIn("max_steps exceeded", events[-1]["error"])
 
     async def test_loop_keeps_normal_single_tool_call_flow(self) -> None:
         model = ScriptedLanguageModel(
             script=[
-                _tool_call_step(call_id="c1", path="."),
+                _tool_call_step(call_id="c1", name="ls", input={"path": "."}),
                 [
                     {"type": "text-delta", "id": "t1", "text": "done"},
                     {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
@@ -195,30 +203,30 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         cfg = AgentConfig(name="u", permission="FULL", max_steps=5)
-        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         session = Session(directory=self._make_temp_dir())
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("列出当前目录文件"):
-            events.append(ev)
+        async for event in loop.run("列出当前目录文件"):
+            events.append(event)
 
-        self.assertIn("tool-result", [e["type"] for e in events])
+        self.assertIn("tool-result", [event["type"] for event in events])
         self.assertEqual(events[-1]["type"], "step-finish")
         self.assertEqual(events[-1]["finish_reason"], "stop")
-        self.assertNotIn("error", [e["type"] for e in events])
+        self.assertNotIn("error", [event["type"] for event in events])
 
     async def test_loop_does_not_flag_different_tool_inputs_as_repeated_loop(self) -> None:
         model = ScriptedLanguageModel(
             script=[
-                _tool_call_step(call_id="c1", path="."),
-                _tool_call_step(call_id="c2", path="alpha"),
-                _tool_call_step(call_id="c3", path="beta"),
+                _tool_call_step(call_id="c1", name="ls", input={"path": "."}),
+                _tool_call_step(call_id="c2", name="ls", input={"path": "alpha"}),
+                _tool_call_step(call_id="c3", name="ls", input={"path": "beta"}),
             ]
         )
         cfg = AgentConfig(name="u", permission="FULL", max_steps=3)
-        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         session = Session(directory=self._make_temp_dir())
         (session.directory / "alpha").mkdir()
@@ -226,10 +234,210 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
 
         events = []
-        async for ev in loop.run("列出几个目录"):
-            events.append(ev)
+        async for event in loop.run("列出几个目录"):
+            events.append(event)
 
-        tool_results = [e for e in events if e["type"] == "tool-result"]
+        tool_results = [event for event in events if event["type"] == "tool-result"]
         self.assertEqual(len(tool_results), 3)
         self.assertEqual(events[-1]["type"], "error")
         self.assertEqual(events[-1]["error"], "max_steps exceeded")
+
+    async def test_loop_projects_tool_output_before_storing_in_session(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="big1", name="big"),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=5, model=_make_model_metadata(context_window=512, max_output=64), tools=["big"])
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        toolkit = ToolkitAdapter()
+
+        async def run_big(_args: NoArgs, _ctx: ToolContext) -> ToolOutput:
+            return ToolOutput(title="Big search", output=("alpha\n" * 4000), metadata={"count": 4000})
+
+        toolkit.registry.define_tool(tool_id="big", parameters=NoArgs, description="# big")(run_big)
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm, toolkit=toolkit)
+
+        events = []
+        async for event in loop.run("run big tool"):
+            events.append(event)
+
+        tool_messages = [message for message in session.messages if message.role == "tool"]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertIn("[Tool result] big", tool_messages[0].content)
+        self.assertIn("preview:", tool_messages[0].content)
+        self.assertIn("full_output=", tool_messages[0].content)
+        self.assertLess(len(tool_messages[0].content.encode("utf-8")), 5000)
+        self.assertIn("output_path", [key for key in tool_messages[0].metadata.keys()])
+
+    async def test_loop_prunes_old_tool_output_before_model_call(self) -> None:
+        model = ScriptedLanguageModel(script=_success_script())
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=[],
+            model=_make_model_metadata(context_window=2048, max_output=64),
+            options={
+                "context_budget": {
+                    "bytes_per_token": 1,
+                    "prune_protect_input_tokens": 0,
+                    "prune_min_input_tokens": 1,
+                }
+            },
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.add(ChatMessage(role="user", content="old question"))
+        session.add(
+            ChatMessage(
+                role="tool",
+                name="grep",
+                tool_call_id="old-1",
+                content="x" * 8000,
+                metadata={"title": "Old grep", "count": 100, "truncated": True, "output_path": "old.txt"},
+            )
+        )
+        session.add(ChatMessage(role="assistant", content="working"))
+        session.add(ChatMessage(role="user", content="recent question"))
+        session.add(
+            ChatMessage(
+                role="tool",
+                name="grep",
+                tool_call_id="recent-1",
+                content="y" * 200,
+                metadata={"title": "Recent grep", "count": 1, "truncated": False},
+            )
+        )
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        async for _event in loop.run("current question"):
+            pass
+
+        tool_messages = [message for message in session.messages if message.role == "tool"]
+        self.assertIn("[Old tool result content cleared]", tool_messages[0].content)
+        self.assertTrue(tool_messages[0].metadata["compacted"])
+        self.assertEqual(tool_messages[1].content, "y" * 200)
+
+    async def test_loop_compact_strategy_summarizes_and_continues(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "text-delta", "id": "summary", "text": "Goal: continue implementing"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t1", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=[],
+            model=_make_model_metadata(context_window=220, max_output=24),
+            options={"context_budget": {"strategy": "compact", "reserve_output_tokens": 24}},
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.add(ChatMessage(role="user", content="A" * 240))
+        session.add(ChatMessage(role="assistant", content="B" * 240))
+        session.add(ChatMessage(role="user", content="keep this turn"))
+        session.add(ChatMessage(role="assistant", content="recent answer"))
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("current ask"):
+            events.append(event)
+
+        self.assertEqual(model.call_index, 2)
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+        self.assertIn("context_compaction", session.metadata)
+        self.assertEqual(session.metadata["context_compaction"]["summary"], "Goal: continue implementing")
+
+    async def test_loop_compact_strategy_falls_back_to_error_when_summary_fails(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 0, "cost": 0.0}},
+                ]
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=[],
+            model=_make_model_metadata(context_window=220, max_output=24),
+            options={"context_budget": {"strategy": "compact", "reserve_output_tokens": 24}},
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.add(ChatMessage(role="user", content="A" * 240))
+        session.add(ChatMessage(role="assistant", content="B" * 240))
+        session.add(ChatMessage(role="user", content="keep this turn"))
+        session.add(ChatMessage(role="assistant", content="recent answer"))
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("current ask"):
+            events.append(event)
+
+        self.assertEqual(model.call_index, 1)
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("Context budget exceeded before model call", events[-1]["error"])
+
+    async def test_loop_handles_two_large_search_tools_without_budget_error(self) -> None:
+        root = self._make_temp_dir()
+        long_line = "beta " + ("x" * 200)
+        (root / "big.py").write_text("\n".join(long_line for _ in range(220)), encoding="utf-8")
+
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="code-1", name="code_search", input={"query": "beta", "glob": "*.py"}),
+                _tool_call_step(call_id="grep-1", name="grep", input={"pattern": "beta", "glob": "*.py"}),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=["code_search", "grep"],
+            model=_make_model_metadata(context_window=5000, max_output=64),
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=root)
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("search twice then continue"):
+            events.append(event)
+
+        self.assertEqual(model.call_index, 3)
+        self.assertNotIn("error", [event["type"] for event in events])
+        self.assertEqual(events[-1]["type"], "step-finish")
+        tool_messages = [message for message in session.messages if message.role == "tool"]
+        self.assertEqual(len(tool_messages), 2)
+        self.assertTrue(all(message.content.startswith("[Tool result]") for message in tool_messages))
+
+
+
+
+

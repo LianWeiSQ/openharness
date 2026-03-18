@@ -11,6 +11,7 @@ from pathlib import Path
 from types import UnionType
 from typing import Any, get_args, get_origin, get_type_hints
 
+from ..context_budget import ContextBudgetConfigError, load_context_budget_options
 from ..id import new_id
 from ..types import ToolCall, ToolResult, ToolSchema
 from .definition import ToolContext, ToolDefinition, ToolOutput
@@ -29,10 +30,6 @@ class ToolkitAdapter:
     def __init__(self, *, registry: ToolRegistry | None = None) -> None:
         self.registry = registry or ToolRegistry()
         self._middleware: list[Middleware] = []
-
-    # ---------------------------------------------------------------------
-    # Loading / Registration
-    # ---------------------------------------------------------------------
 
     def load_builtin(self) -> None:
         """Register built-in tools into the registry."""
@@ -91,31 +88,23 @@ class ToolkitAdapter:
     def register_middleware(self, middleware: Middleware) -> None:
         self._middleware.append(middleware)
 
-    # ---------------------------------------------------------------------
-    # Tool exposure (to LLM)
-    # ---------------------------------------------------------------------
-
     def get_all_tools(self) -> list[ToolSchema]:
         tools: list[ToolSchema] = []
-        for t in self.registry.all():
+        for tool in self.registry.all():
             tools.append(
                 ToolSchema(
-                    name=t.id,
-                    description=t.description,
-                    schema=t.parameters_schema(),
-                    group=t.group,
-                    dangerous=t.dangerous,
+                    name=tool.id,
+                    description=tool.description,
+                    schema=tool.parameters_schema(),
+                    group=tool.group,
+                    dangerous=tool.dangerous,
                 )
             )
         return tools
 
     def get_tools_by_group(self, groups: list[str]) -> list[ToolSchema]:
         allowed = set(groups)
-        return [t for t in self.get_all_tools() if t.group in allowed]
-
-    # ---------------------------------------------------------------------
-    # Execution
-    # ---------------------------------------------------------------------
+        return [tool for tool in self.get_all_tools() if tool.group in allowed]
 
     async def execute(
         self,
@@ -132,19 +121,19 @@ class ToolkitAdapter:
         call = ToolCall(name=name, input=input, call_id=call_id or new_id("toolcall"))
         ctx = context or {}
 
-        async def _invoke(c: ToolCall) -> ToolResult:
+        async def _invoke(tool_call: ToolCall) -> ToolResult:
             session_root_value = ctx.get("session_root") or ctx.get("cwd")
             session_root = Path(str(session_root_value or Path.cwd())).resolve()
             tool_ctx = ToolContext(
                 session_id=str(ctx.get("session_id") or ""),
                 session_root=session_root,
-                call_id=c.call_id,
+                call_id=tool_call.call_id,
                 extra={k: v for k, v in ctx.items() if k not in ("session_root", "cwd", "session_id")},
             )
             try:
-                args_obj = _coerce_params(tool.parameters, c.input)
-            except Exception as e:  # noqa: BLE001
-                return ToolResult(call_id=c.call_id, output="", error=str(e), metadata={"tool": tool.id})
+                args_obj = _coerce_params(tool.parameters, tool_call.input)
+            except Exception as error:  # noqa: BLE001
+                return ToolResult(call_id=tool_call.call_id, output="", error=str(error), metadata={"tool": tool.id})
 
             try:
                 out = tool.execute(args_obj, tool_ctx)
@@ -152,11 +141,11 @@ class ToolkitAdapter:
                     tool_out: ToolOutput = await out  # type: ignore[assignment]
                 else:
                     tool_out = out  # type: ignore[assignment]
-            except Exception as e:  # noqa: BLE001
-                return ToolResult(call_id=c.call_id, output="", error=str(e), metadata={"tool": tool.id})
+            except Exception as error:  # noqa: BLE001
+                return ToolResult(call_id=tool_call.call_id, output="", error=str(error), metadata={"tool": tool.id})
 
             raw_output = tool_out.output or ""
-            truncated_output = Truncate.output(raw_output)
+            truncated_output = Truncate.output(raw_output, options=_tool_truncation_options(ctx))
             tool_semantic_truncated = bool(tool_out.truncated or (tool_out.metadata or {}).get("truncated"))
             output_truncated = truncated_output.truncated
 
@@ -170,24 +159,40 @@ class ToolkitAdapter:
 
             output_text = truncated_output.content
             if output_truncated:
-                output_path = _write_truncated_output(session_root, c.call_id, raw_output)
+                output_path = _write_truncated_output(session_root, tool_call.call_id, raw_output)
                 metadata["output_path"] = str(output_path)
 
             return ToolResult(
-                call_id=c.call_id,
+                call_id=tool_call.call_id,
                 output=output_text,
                 error=tool_out.error,
                 metadata=metadata,
             )
 
         handler = _invoke
-        for mw in reversed(self._middleware):
-            nxt = handler
+        for middleware in reversed(self._middleware):
+            next_handler = handler
 
-            async def handler(c: ToolCall, mw=mw, nxt=nxt):  # type: ignore[misc]
-                return await mw(c, nxt, ctx)
+            async def handler(tool_call: ToolCall, middleware=middleware, next_handler=next_handler):  # type: ignore[misc]
+                return await middleware(tool_call, next_handler, ctx)
 
         return await handler(call)
+
+
+def _tool_truncation_options(context: dict[str, Any]) -> dict[str, int]:
+    agent_options = context.get("agent_options")
+    if not isinstance(agent_options, dict):
+        return {}
+
+    try:
+        config = load_context_budget_options(agent_options, model=None)
+    except ContextBudgetConfigError:
+        return {}
+
+    return {
+        "max_lines": Truncate.DEFAULT_MAX_LINES,
+        "max_bytes": int(config["tool_display_max_bytes"]),
+    }
 
 
 def _coerce_params(parameters_type: type, payload: dict[str, Any]) -> Any:
@@ -196,7 +201,6 @@ def _coerce_params(parameters_type: type, payload: dict[str, Any]) -> Any:
     if not is_dataclass(parameters_type):
         return payload
     return _coerce_value(parameters_type, payload or {})
-
 
 
 def _coerce_value(tp: Any, value: Any) -> Any:
@@ -241,9 +245,9 @@ def _coerce_value(tp: Any, value: Any) -> Any:
         except Exception:  # noqa: BLE001
             hints = {}
         kwargs: dict[str, Any] = {}
-        for f in fields(inner):
-            if f.name in value:
-                kwargs[f.name] = _coerce_value(hints.get(f.name, f.type), value[f.name])
+        for field in fields(inner):
+            if field.name in value:
+                kwargs[field.name] = _coerce_value(hints.get(field.name, field.type), value[field.name])
         return inner(**kwargs)
 
     if isinstance(inner, type) and issubclass(inner, Enum):
@@ -254,14 +258,12 @@ def _coerce_value(tp: Any, value: Any) -> Any:
     return value
 
 
-
 def _unwrap_optional(tp: Any) -> Any:
     origin = get_origin(tp)
     if origin not in (UnionType, getattr(__import__("typing"), "Union")):
         return tp
     args = [arg for arg in get_args(tp) if arg is not type(None)]  # noqa: E721
     return args[0] if args else Any
-
 
 
 def _legacy_context_from_tool_context(tool_ctx: ToolContext) -> dict[str, Any]:
@@ -275,13 +277,12 @@ def _legacy_context_from_tool_context(tool_ctx: ToolContext) -> dict[str, Any]:
     return legacy_ctx
 
 
-
 def _write_truncated_output(session_root: Path, call_id: str, content: str) -> Path:
     out_dir = session_root / ".openagent" / "tool_output"
     out_dir.mkdir(parents=True, exist_ok=True)
-    p = out_dir / f"{call_id}.txt"
-    p.write_text(content, encoding="utf-8")
-    return p
+    output_path = out_dir / f"{call_id}.txt"
+    output_path.write_text(content, encoding="utf-8")
+    return output_path
 
 
 __all__ = ["ToolkitAdapter", "ToolNotFoundError"]

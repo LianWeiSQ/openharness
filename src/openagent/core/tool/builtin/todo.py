@@ -110,7 +110,9 @@ def register(registry: ToolRegistry) -> None:
     registry.define_tool(tool_id="todowrite", parameters=TodoWriteParameters, description_md="todowrite.md", group="todo", dangerous=False)(
         todo_write_tool
     )
-    registry.define_tool(tool_id="todo", parameters=TodoReadParameters, description_md="todo.md", group="todo", dangerous=False)(todo_read_tool)
+    registry.define_tool(tool_id="todoread", parameters=TodoReadParameters, description_md="todoread.md", group="todo", dangerous=False)(
+        todo_read_tool
+    )
 
 
 __all__ = ["register"]

@@ -44,6 +44,12 @@ def _to_openai_tools(tools: list[ToolSchema]) -> list[dict[str, Any]]:
     return out
 
 
+def _provider_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(options, dict):
+        return {}
+    return {key: value for key, value in options.items() if key != "context_budget"}
+
+
 def _usage_from_openai(usage: dict[str, Any] | None) -> Usage:
     usage = usage or {}
     return Usage(
@@ -170,7 +176,7 @@ class OpenAILanguageModel(LanguageModel):
             payload["tools"] = _to_openai_tools(tools)
             payload.setdefault("tool_choice", "auto")
         if options:
-            payload.update(options)
+            payload.update(_provider_options(options))
 
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -352,3 +358,5 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+

@@ -32,7 +32,7 @@ class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
     async def test_tools_readonly_exposes_only_file_read_tools(self) -> None:
         model = CapturingModel()
         cfg = AgentConfig(name="u", permission="FULL", tools="readonly", max_steps=1)
-        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         tmp_root = Path("openagent/tests/workdir")
         tmp_root.mkdir(parents=True, exist_ok=True)
@@ -47,12 +47,12 @@ class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
             shutil.rmtree(td, ignore_errors=True)
 
         self.assertIsNotNone(model.seen_tools)
-        self.assertEqual(set(model.seen_tools or []), {"read", "glob", "grep", "ls", "todo"})
+        self.assertEqual(set(model.seen_tools or []), {"read", "glob", "grep", "ls", "todoread"})
 
     async def test_permission_none_exposes_no_tools(self) -> None:
         model = CapturingModel()
         cfg = AgentConfig(name="u", permission="NONE", tools="all", max_steps=1)
-        agent = UniversalAgent(config=cfg, model=model, system_prompt="")
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         tmp_root = Path("openagent/tests/workdir")
         tmp_root.mkdir(parents=True, exist_ok=True)

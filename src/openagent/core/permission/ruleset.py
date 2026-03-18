@@ -37,7 +37,7 @@ def ruleset(name: PermissionRuleset) -> PermissionRulesetDef:
                 PermissionRule(tool="glob", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="grep", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="ls", action=PermissionAction.ALLOW, pattern="*"),
-                PermissionRule(tool="todo", action=PermissionAction.ALLOW, pattern="*"),
+                PermissionRule(tool="todoread", action=PermissionAction.ALLOW, pattern="*"),
             ],
         )
     if name == PermissionRuleset.PLAN_ONLY:
@@ -49,7 +49,7 @@ def ruleset(name: PermissionRuleset) -> PermissionRulesetDef:
                 PermissionRule(tool="glob", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="grep", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="ls", action=PermissionAction.ALLOW, pattern="*"),
-                PermissionRule(tool="todo", action=PermissionAction.ALLOW, pattern="*"),
+                PermissionRule(tool="todoread", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="todowrite", action=PermissionAction.ALLOW, pattern="*"),
             ],
         )
@@ -61,3 +61,4 @@ def ruleset(name: PermissionRuleset) -> PermissionRulesetDef:
             ],
         )
     raise ValueError(f"Unknown ruleset: {name}")
+

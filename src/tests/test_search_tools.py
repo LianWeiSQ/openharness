@@ -35,6 +35,8 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("a.py:2:beta", res.output)
             self.assertFalse(res.metadata["truncated"])
             self.assertFalse(res.metadata["output_truncated"])
+            self.assertIn("a.py:2:beta", res.metadata["preview"])
+            self.assertEqual(res.metadata["returned_count"], 1)
 
             res = await toolkit.execute(
                 name="code_search",
@@ -44,6 +46,7 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(res.error)
             self.assertEqual(res.output, "")
             self.assertFalse(res.metadata["truncated"])
+            self.assertEqual(res.metadata["returned_count"], 0)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -65,7 +68,31 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(res.metadata["truncated"])
             self.assertFalse(res.metadata["output_truncated"])
             self.assertEqual(res.metadata["count"], 200)
+            self.assertEqual(res.metadata["returned_count"], 200)
             self.assertEqual(len([line for line in res.output.splitlines() if line.strip()]), 200)
+            self.assertLessEqual(len([line for line in res.metadata["preview"].splitlines() if line.strip()]), 20)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_code_search_clips_long_lines_in_output_and_preview(self) -> None:
+        root = self._make_temp_root()
+        try:
+            long_line = "beta " + ("x" * 500)
+            (root / "a.py").write_text(long_line + "\n", encoding="utf-8")
+
+            toolkit = ToolkitAdapter()
+            toolkit.load_builtin()
+            res = await toolkit.execute(
+                name="code_search",
+                input={"query": "beta", "glob": "*.py"},
+                context={"session_root": str(root)},
+            )
+
+            self.assertIsNone(res.error)
+            last_segment = res.output.rsplit(":", 1)[-1]
+            self.assertLessEqual(len(last_segment), 243)
+            self.assertTrue(last_segment.endswith("..."))
+            self.assertIn(res.metadata["preview"], res.output)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -113,3 +140,4 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res.output, "")
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
