@@ -31,7 +31,7 @@ class CapturingModel:
 class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
     async def test_tools_readonly_exposes_only_file_read_tools(self) -> None:
         model = CapturingModel()
-        cfg = AgentConfig(name="u", permission="FULL", tools="readonly", max_steps=1)
+        cfg = AgentConfig(name="u", permission="FULL", tools="readonly", max_steps=2)
         agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         tmp_root = Path("openagent/tests/workdir")
@@ -68,3 +68,4 @@ class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(model.seen_tools)
         self.assertEqual(model.seen_tools, [])
+

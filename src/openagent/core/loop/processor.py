@@ -47,6 +47,13 @@ COMPACTION_USER_PROMPT = (
     "important tool findings; key files read or changed; the current todo list; blockers or open questions; and the "
     "most likely next step. Keep it compact but concrete."
 )
+MAX_STEPS_TEXT_ONLY_PROMPT = (
+    "CRITICAL - MAXIMUM STEPS REACHED\n\n"
+    "This is the final allowed model turn for this request. Tools are disabled.\n"
+    "Respond with text only and provide the best final answer possible using the work completed so far.\n"
+    "Summarize what was accomplished, give the most useful result you can, and mention any important remaining gaps "
+    "or next steps only if something is still unfinished."
+)
 
 
 @dataclass(slots=True)
@@ -130,6 +137,12 @@ class AgentLoop:
     def _messages_for_model(self) -> list[ChatMessage]:
         self._invalidate_context_compaction_if_needed()
         return build_messages_for_model(self.session.messages, self.session.metadata)
+
+    def _messages_for_final_step(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        return [
+            *messages,
+            ChatMessage(role="assistant", content=MAX_STEPS_TEXT_ONLY_PROMPT, metadata={"synthetic": True}),
+        ]
 
     def _apply_tool_output_pruning(self, config: dict[str, Any]) -> int:
         if not bool(config["prune_old_tool_outputs"]):
@@ -269,12 +282,14 @@ class AgentLoop:
         steps = 0
         while steps < self.config.max_steps:
             steps += 1
+            is_last_step = steps >= self.config.max_steps
             snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
             yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
-            tools = self._tools_for_agent()
+            available_tools = self._tools_for_agent()
+            tools = [] if is_last_step else available_tools
 
-            if steps == 1 and tool_policy is not None:
-                missing_tools = missing_required_tools(tool_policy, {tool.name for tool in tools})
+            if steps == 1 and tool_policy is not None and not is_last_step:
+                missing_tools = missing_required_tools(tool_policy, {tool.name for tool in available_tools})
                 if missing_tools:
                     yield {"type": "error", "error": format_missing_tools_error(tool_policy, missing_tools)}  # type: ignore[misc]
                     return
@@ -285,10 +300,12 @@ class AgentLoop:
                 return
             assert messages is not None
             assert context_budget_config is not None
+            if is_last_step:
+                messages = self._messages_for_final_step(messages)
 
             attempt = 0
             assistant_text_chunks: list[str] = []
-            policy_guard_active = steps == 1 and tool_policy is not None
+            policy_guard_active = steps == 1 and tool_policy is not None and not is_last_step
             policy_retry_used = False
             while True:
                 attempt += 1
@@ -339,22 +356,23 @@ class AgentLoop:
                         return
                     await asyncio.sleep(self.config.retry_base_delay_s * (2 ** (attempt - 1)))
 
+            info_tool_calls = [] if is_last_step else info.tool_calls
             assistant_content = "".join(assistant_text_chunks)
-            if assistant_content or info.tool_calls:
+            if assistant_content or info_tool_calls:
                 metadata: dict[str, Any] = {}
-                if info.tool_calls:
+                if info_tool_calls:
                     metadata["tool_calls"] = [
                         {
                             "id": call.call_id,
                             "type": "function",
                             "function": {"name": call.name, "arguments": json.dumps(call.input, ensure_ascii=False)},
                         }
-                        for call in info.tool_calls
+                        for call in info_tool_calls
                     ]
                 self.session.add(ChatMessage(role="assistant", content=assistant_content, metadata=metadata))
 
             blocked = False
-            for call in info.tool_calls:
+            for call in info_tool_calls:
                 if self.doom_loop_detector.record(call):
                     yield {"type": "error", "error": self._repeated_tool_call_error(call)}  # type: ignore[misc]
                     return
@@ -406,7 +424,7 @@ class AgentLoop:
                 yield {"type": "patch", "snapshot_id": snapshot_id, "hash": patch["hash"], "files": patch["files"]}  # type: ignore[misc]
             usage: Usage = info.usage
             finish_reason: FinishReason = info.finish_reason
-            if info.tool_calls and finish_reason == "unknown":
+            if info_tool_calls and finish_reason == "unknown":
                 finish_reason = "tool_call"
             yield {
                 "type": "step-finish",
@@ -416,9 +434,9 @@ class AgentLoop:
             }  # type: ignore[misc]
             if blocked:
                 return
-            if info.tool_calls:
+            if info_tool_calls:
                 continue
-            if finish_reason == "stop":
+            if finish_reason == "stop" or is_last_step:
                 return
         yield {"type": "error", "error": "max_steps exceeded"}  # type: ignore[misc]
 

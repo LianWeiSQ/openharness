@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from openagent.core.provider.base import LanguageModel
@@ -17,6 +17,7 @@ class ScriptedLanguageModel(LanguageModel):
 
     script: list[list[dict[str, Any]]]
     call_index: int = 0
+    seen_tools_by_call: list[list[str]] = field(default_factory=list)
 
     async def stream(
         self,
@@ -30,7 +31,7 @@ class ScriptedLanguageModel(LanguageModel):
     ) -> AsyncIterator[dict[str, Any]]:
         idx = self.call_index
         self.call_index += 1
+        self.seen_tools_by_call.append([getattr(tool, "name", str(tool)) for tool in tools])
         events = self.script[idx] if idx < len(self.script) else [{"type": "finish", "finish_reason": "stop", "usage": {}}]
         for ev in events:
             yield ev
-

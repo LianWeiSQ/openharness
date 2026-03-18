@@ -222,7 +222,10 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             script=[
                 _tool_call_step(call_id="c1", name="ls", input={"path": "."}),
                 _tool_call_step(call_id="c2", name="ls", input={"path": "alpha"}),
-                _tool_call_step(call_id="c3", name="ls", input={"path": "beta"}),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "Reached the final step. Here is the best summary from the completed exploration."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
             ]
         )
         cfg = AgentConfig(name="u", permission="FULL", max_steps=3)
@@ -238,9 +241,40 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             events.append(event)
 
         tool_results = [event for event in events if event["type"] == "tool-result"]
-        self.assertEqual(len(tool_results), 3)
-        self.assertEqual(events[-1]["type"], "error")
-        self.assertEqual(events[-1]["error"], "max_steps exceeded")
+        self.assertEqual(len(tool_results), 2)
+        self.assertNotIn("error", [event["type"] for event in events])
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+        self.assertEqual(model.seen_tools_by_call[-1], [])
+
+    async def test_loop_returns_last_text_only_response_even_when_final_finish_reason_is_length(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="c1", name="ls", input={"path": "."}),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "Partial final result after tool work."},
+                    {"type": "finish", "finish_reason": "length", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=2)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("先看目录再总结结果"):
+            events.append(event)
+
+        self.assertEqual(model.call_index, 2)
+        self.assertEqual(model.seen_tools_by_call[-1], [])
+        self.assertNotIn("error", [event["type"] for event in events])
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "length")
+        self.assertTrue(any(event["type"] == "text-delta" and "Partial final result" in event["text"] for event in events))
+        self.assertEqual(session.messages[-1].role, "assistant")
+        self.assertIn("Partial final result", session.messages[-1].content)
 
     async def test_loop_projects_tool_output_before_storing_in_session(self) -> None:
         model = ScriptedLanguageModel(
@@ -436,6 +470,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         tool_messages = [message for message in session.messages if message.role == "tool"]
         self.assertEqual(len(tool_messages), 2)
         self.assertTrue(all(message.content.startswith("[Tool result]") for message in tool_messages))
+
 
 
 
