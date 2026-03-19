@@ -1,10 +1,15 @@
-Use this tool when you need to ask the user questions during execution. This allows you to:
-1. Gather user preferences or requirements
-2. Clarify ambiguous instructions
-3. Get decisions on implementation choices as you work
-4. Offer choices to the user about what direction to take.
+Use this tool when you need input from the user before you can continue safely or correctly.
+
+Use it proactively for:
+1. Clarifying ambiguous instructions that materially change the outcome
+2. Asking the user to choose between meaningful implementation or planning options
+3. Gathering missing constraints, preferences, or requirements
+4. Unblocking execution when guessing would likely cause rework or a wrong result
 
 Usage notes:
-- Users will always be able to select "Other" to provide custom text input
-- Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
-- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label
+- Ask concise, high-value questions only.
+- Prefer one structured call with 1-3 questions over multiple fragmented follow-ups.
+- Users will always be able to select "Other" and provide custom text input.
+- Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one.
+- If you recommend a specific option, make that the first option and add `(Recommended)` to its label.
+- Do not use this tool for facts you can discover with repository, search, or web tools.

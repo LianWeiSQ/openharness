@@ -147,6 +147,14 @@ class ToolResultEvent(TypedDict):
     metadata: dict[str, Any] | None
 
 
+class QuestionRequestEvent(TypedDict):
+    type: Literal["question-request"]
+    request_id: str
+    session_id: str
+    tool_call_id: str | None
+    questions: list[dict[str, Any]]
+
+
 class StepStartEvent(TypedDict):
     type: Literal["step-start"]
     snapshot_id: str
@@ -178,6 +186,7 @@ StreamEvent = (
     | TextEndEvent
     | ToolCallEvent
     | ToolResultEvent
+    | QuestionRequestEvent
     | StepStartEvent
     | StepFinishEvent
     | PatchEvent

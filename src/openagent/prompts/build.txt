@@ -14,3 +14,6 @@ For multi-step or non-trivial work:
 - Keep only one todo in `in_progress` whenever possible and update it as work progresses.
 
 Prefer specialized tools over generic shell commands when possible.
+When you cannot continue safely without user preferences, missing constraints, or a branch decision:
+- Use `question` to ask concise, high-value clarifying questions instead of guessing.
+- Prefer one well-structured `question` call over multiple back-and-forth guesses.

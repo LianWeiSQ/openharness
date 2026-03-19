@@ -5,6 +5,7 @@
 import asyncio
 import json
 import time
+from contextlib import suppress
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ from ..context_messages import (
     recent_user_turn_start,
 )
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
+from ..question import QuestionManager, QuestionRequest
 from ..permission.ruleset import PermissionRuleset
 from ..tool.middleware import logging_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
@@ -33,7 +35,7 @@ from ..tool_policy import (
     missing_required_tools,
     should_accept_tool_calls,
 )
-from ..types import ChatMessage, FinishReason, StreamEvent, ToolSchema, Usage
+from ..types import ChatMessage, FinishReason, SessionStatus, StreamEvent, ToolSchema, Usage
 from ...adapter.memory_adapter import MemoryAdapter
 from .doom_loop import DoomLoopDetector
 from .snapshot import SnapshotManager
@@ -75,6 +77,7 @@ class AgentLoop:
         snapshot_manager: SnapshotManager | None = None,
         doom_loop_detector: DoomLoopDetector | None = None,
         config: AgentLoopConfig | None = None,
+        question_manager: QuestionManager | None = None,
     ) -> None:
         self.agent = agent
         self.session = session
@@ -85,6 +88,8 @@ class AgentLoop:
         self.toolkit = toolkit or ToolkitAdapter()
         self.memory = MemoryAdapter()
         self.tool_log: list[dict[str, Any]] = []
+        self.question_manager = question_manager or QuestionManager()
+        self.question_manager.set_hooks(on_requested=self._on_question_requested, on_resolved=self._on_question_resolved)
         self._init_tools()
 
     def _tools_for_agent(self) -> list[ToolSchema]:
@@ -96,7 +101,7 @@ class AgentLoop:
         if allow == "all":
             return tools
         if allow == "readonly":
-            allowed_names = {"read", "glob", "grep", "ls", "todoread"}
+            allowed_names = {"read", "glob", "grep", "ls", "todoread", "question"}
             return [tool for tool in tools if tool.name in allowed_names]
         if isinstance(allow, list):
             allowed_names = set(allow)
@@ -274,171 +279,224 @@ class AgentLoop:
             f"{call.name} {rendered_input}"
         )
 
+    def _on_question_requested(self, _request: QuestionRequest) -> None:
+        self.session.status = SessionStatus.PAUSED
+
+    def _on_question_resolved(self, _request: QuestionRequest) -> None:
+        self.session.status = SessionStatus.RUNNING
+
+    def _question_request_event(self, request: QuestionRequest) -> dict[str, Any]:
+        return {
+            "type": "question-request",
+            "request_id": request.request_id,
+            "session_id": request.session_id,
+            "tool_call_id": request.tool_call_id,
+            "questions": [
+                {
+                    "header": question.header,
+                    "question": question.question,
+                    "multiple": question.multiple,
+                    "options": [
+                        {"label": option.label, "description": option.description}
+                        for option in question.options
+                    ],
+                }
+                for question in request.questions
+            ],
+        }
+
+    def _tool_context(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session.id,
+            "session_root": str(self.session.directory),
+            "memory": self.memory,
+            "session": self.session,
+            "question_manager": self.question_manager,
+            "agent_options": self.agent.config.options,
+        }
+
     async def run(self, user_text: str) -> AsyncIterator[StreamEvent]:
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
+        self.session.status = SessionStatus.RUNNING
         self.session.add(ChatMessage(role="user", content=user_text))
         tool_policy = classify_tool_policy(user_text) if self.agent.uses_default_system_prompt else None
 
         steps = 0
-        while steps < self.config.max_steps:
-            steps += 1
-            is_last_step = steps >= self.config.max_steps
-            snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
-            yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
-            available_tools = self._tools_for_agent()
-            tools = [] if is_last_step else available_tools
+        try:
+            while steps < self.config.max_steps:
+                steps += 1
+                is_last_step = steps >= self.config.max_steps
+                snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
+                yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
+                available_tools = self._tools_for_agent()
+                tools = [] if is_last_step else available_tools
 
-            if steps == 1 and tool_policy is not None and not is_last_step:
-                missing_tools = missing_required_tools(tool_policy, {tool.name for tool in available_tools})
-                if missing_tools:
-                    yield {"type": "error", "error": format_missing_tools_error(tool_policy, missing_tools)}  # type: ignore[misc]
-                    return
-
-            messages, budget_error, context_budget_config = await self._prepare_messages_for_model(tools=tools)
-            if budget_error is not None:
-                yield {"type": "error", "error": budget_error}  # type: ignore[misc]
-                return
-            assert messages is not None
-            assert context_budget_config is not None
-            if is_last_step:
-                messages = self._messages_for_final_step(messages)
-
-            attempt = 0
-            assistant_text_chunks: list[str] = []
-            policy_guard_active = steps == 1 and tool_policy is not None and not is_last_step
-            policy_retry_used = False
-            while True:
-                attempt += 1
-                yielded = False
-                adapter = self.agent.adapter()
-                effective_system_prompt = self.agent.system_prompt
-                if policy_guard_active and policy_retry_used:
-                    effective_system_prompt = f"{effective_system_prompt}\n\n{tool_policy.reminder}"
-
-                stream = adapter.reply_stream(
-                    system=effective_system_prompt,
-                    messages=messages,
-                    tools=tools,
-                )
-                buffered_events: list[StreamEvent] | None = [] if policy_guard_active else None
-                try:
-                    assistant_text_chunks = []
-                    async for event in stream:
-                        yielded = True
-                        if event["type"] == "text-delta":
-                            assistant_text_chunks.append(event["text"])
-                        if buffered_events is not None:
-                            buffered_events.append(event)
-                        else:
-                            yield event
-                    info = await stream.info()
-
-                    if policy_guard_active and tool_policy is not None:
-                        assistant_content = "".join(assistant_text_chunks)
-                        tool_call_names = [call.name for call in info.tool_calls]
-                        if should_accept_tool_calls(tool_policy, tool_call_names) or looks_like_clarification_request(assistant_content):
-                            assert buffered_events is not None
-                            for event in buffered_events:
-                                yield event
-                            policy_guard_active = False
-                            break
-                        if not policy_retry_used:
-                            policy_retry_used = True
-                            attempt = 0
-                            continue
-                        yield {"type": "error", "error": format_tool_policy_retry_error(tool_policy)}  # type: ignore[misc]
+                if steps == 1 and tool_policy is not None and not is_last_step:
+                    missing_tools = missing_required_tools(tool_policy, {tool.name for tool in available_tools})
+                    if missing_tools:
+                        yield {"type": "error", "error": format_missing_tools_error(tool_policy, missing_tools)}  # type: ignore[misc]
                         return
 
-                    break
-                except Exception as error:  # noqa: BLE001
-                    if attempt > self.config.max_retry or yielded:
-                        yield {"type": "error", "error": str(error)}  # type: ignore[misc]
-                        return
-                    await asyncio.sleep(self.config.retry_base_delay_s * (2 ** (attempt - 1)))
-
-            info_tool_calls = [] if is_last_step else info.tool_calls
-            assistant_content = "".join(assistant_text_chunks)
-            if assistant_content or info_tool_calls:
-                metadata: dict[str, Any] = {}
-                if info_tool_calls:
-                    metadata["tool_calls"] = [
-                        {
-                            "id": call.call_id,
-                            "type": "function",
-                            "function": {"name": call.name, "arguments": json.dumps(call.input, ensure_ascii=False)},
-                        }
-                        for call in info_tool_calls
-                    ]
-                self.session.add(ChatMessage(role="assistant", content=assistant_content, metadata=metadata))
-
-            blocked = False
-            for call in info_tool_calls:
-                if self.doom_loop_detector.record(call):
-                    yield {"type": "error", "error": self._repeated_tool_call_error(call)}  # type: ignore[misc]
+                messages, budget_error, context_budget_config = await self._prepare_messages_for_model(tools=tools)
+                if budget_error is not None:
+                    yield {"type": "error", "error": budget_error}  # type: ignore[misc]
                     return
+                assert messages is not None
+                assert context_budget_config is not None
+                if is_last_step:
+                    messages = self._messages_for_final_step(messages)
 
-                try:
-                    result = await self.toolkit.execute(
-                        name=call.name,
-                        input=call.input,
-                        call_id=call.call_id,
-                        context={
-                            "session_id": self.session.id,
-                            "session_root": str(self.session.directory),
-                            "memory": self.memory,
-                            "session": self.session,
-                            "agent_options": self.agent.config.options,
-                        },
+                attempt = 0
+                assistant_text_chunks: list[str] = []
+                policy_guard_active = steps == 1 and tool_policy is not None and not is_last_step
+                policy_retry_used = False
+                while True:
+                    attempt += 1
+                    yielded = False
+                    adapter = self.agent.adapter()
+                    effective_system_prompt = self.agent.system_prompt
+                    if policy_guard_active and policy_retry_used:
+                        effective_system_prompt = f"{effective_system_prompt}\n\n{tool_policy.reminder}"
+
+                    stream = adapter.reply_stream(
+                        system=effective_system_prompt,
+                        messages=messages,
+                        tools=tools,
                     )
-                except (PermissionDeniedError, PermissionAskRequiredError) as error:
-                    blocked = True
-                    yield {"type": "tool-result", "call_id": call.call_id, "output": "", "error": str(error), "metadata": None}  # type: ignore[misc]
-                    continue
-                except Exception as error:  # noqa: BLE001
-                    yield {"type": "tool-result", "call_id": call.call_id, "output": "", "error": str(error), "metadata": None}  # type: ignore[misc]
-                    blocked = True
-                    continue
+                    buffered_events: list[StreamEvent] | None = [] if policy_guard_active else None
+                    try:
+                        assistant_text_chunks = []
+                        async for event in stream:
+                            yielded = True
+                            if event["type"] == "text-delta":
+                                assistant_text_chunks.append(event["text"])
+                            if buffered_events is not None:
+                                buffered_events.append(event)
+                            else:
+                                yield event
+                        info = await stream.info()
 
-                result, tool_message = project_tool_result_to_message(
-                    result=result,
-                    tool_name=call.name,
-                    session_root=Path(self.session.directory).resolve(),
-                    preview_bytes=int(context_budget_config["tool_context_preview_bytes"]),
-                    preview_lines=int(context_budget_config["tool_context_preview_lines"]),
-                    line_max_chars=int(context_budget_config["tool_context_line_max_chars"]),
-                )
+                        if policy_guard_active and tool_policy is not None:
+                            assistant_content = "".join(assistant_text_chunks)
+                            tool_call_names = [call.name for call in info.tool_calls]
+                            if should_accept_tool_calls(tool_policy, tool_call_names) or looks_like_clarification_request(assistant_content):
+                                assert buffered_events is not None
+                                for event in buffered_events:
+                                    yield event
+                                policy_guard_active = False
+                                break
+                            if not policy_retry_used:
+                                policy_retry_used = True
+                                attempt = 0
+                                continue
+                            yield {"type": "error", "error": format_tool_policy_retry_error(tool_policy)}  # type: ignore[misc]
+                            return
+
+                        break
+                    except Exception as error:  # noqa: BLE001
+                        if attempt > self.config.max_retry or yielded:
+                            yield {"type": "error", "error": str(error)}  # type: ignore[misc]
+                            return
+                        await asyncio.sleep(self.config.retry_base_delay_s * (2 ** (attempt - 1)))
+
+                info_tool_calls = [] if is_last_step else info.tool_calls
+                assistant_content = "".join(assistant_text_chunks)
+                if assistant_content or info_tool_calls:
+                    metadata: dict[str, Any] = {}
+                    if info_tool_calls:
+                        metadata["tool_calls"] = [
+                            {
+                                "id": call.call_id,
+                                "type": "function",
+                                "function": {"name": call.name, "arguments": json.dumps(call.input, ensure_ascii=False)},
+                            }
+                            for call in info_tool_calls
+                        ]
+                    self.session.add(ChatMessage(role="assistant", content=assistant_content, metadata=metadata))
+
+                blocked = False
+                for call in info_tool_calls:
+                    if self.doom_loop_detector.record(call):
+                        yield {"type": "error", "error": self._repeated_tool_call_error(call)}  # type: ignore[misc]
+                        return
+
+                    question_task: asyncio.Task[QuestionRequest] | None = None
+                    try:
+                        tool_task = asyncio.create_task(
+                            self.toolkit.execute(
+                                name=call.name,
+                                input=call.input,
+                                call_id=call.call_id,
+                                context=self._tool_context(),
+                            )
+                        )
+                        question_task = asyncio.create_task(self.question_manager.next_request())
+                        while True:
+                            done, _ = await asyncio.wait({tool_task, question_task}, return_when=asyncio.FIRST_COMPLETED)
+                            if question_task in done:
+                                request = question_task.result()
+                                yield self._question_request_event(request)  # type: ignore[misc]
+                                question_task = asyncio.create_task(self.question_manager.next_request())
+                                continue
+
+                            result = await tool_task
+                            break
+                    except (PermissionDeniedError, PermissionAskRequiredError) as error:
+                        blocked = True
+                        yield {"type": "tool-result", "call_id": call.call_id, "output": "", "error": str(error), "metadata": None}  # type: ignore[misc]
+                        continue
+                    except Exception as error:  # noqa: BLE001
+                        yield {"type": "tool-result", "call_id": call.call_id, "output": "", "error": str(error), "metadata": None}  # type: ignore[misc]
+                        blocked = True
+                        continue
+                    finally:
+                        if question_task is not None:
+                            question_task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await question_task
+
+                    result, tool_message = project_tool_result_to_message(
+                        result=result,
+                        tool_name=call.name,
+                        session_root=Path(self.session.directory).resolve(),
+                        preview_bytes=int(context_budget_config["tool_context_preview_bytes"]),
+                        preview_lines=int(context_budget_config["tool_context_preview_lines"]),
+                        line_max_chars=int(context_budget_config["tool_context_line_max_chars"]),
+                    )
+                    yield {
+                        "type": "tool-result",
+                        "call_id": result.call_id,
+                        "output": result.output,
+                        "error": result.error,
+                        "metadata": result.metadata,
+                    }  # type: ignore[misc]
+                    self.session.add(tool_message)
+                    self._apply_tool_output_pruning(context_budget_config)
+                    if result.error:
+                        blocked = True
+
+                patch = self.snapshot_manager.patch(snapshot_id)
+                if patch.get("files"):
+                    yield {"type": "patch", "snapshot_id": snapshot_id, "hash": patch["hash"], "files": patch["files"]}  # type: ignore[misc]
+                usage: Usage = info.usage
+                finish_reason: FinishReason = info.finish_reason
+                if info_tool_calls and finish_reason == "unknown":
+                    finish_reason = "tool_call"
                 yield {
-                    "type": "tool-result",
-                    "call_id": result.call_id,
-                    "output": result.output,
-                    "error": result.error,
-                    "metadata": result.metadata,
+                    "type": "step-finish",
+                    "tokens": {"input": usage.input_tokens, "output": usage.output_tokens},
+                    "cost": usage.cost,
+                    "finish_reason": finish_reason,
                 }  # type: ignore[misc]
-                self.session.add(tool_message)
-                self._apply_tool_output_pruning(context_budget_config)
-                if result.error:
-                    blocked = True
-
-            patch = self.snapshot_manager.patch(snapshot_id)
-            if patch.get("files"):
-                yield {"type": "patch", "snapshot_id": snapshot_id, "hash": patch["hash"], "files": patch["files"]}  # type: ignore[misc]
-            usage: Usage = info.usage
-            finish_reason: FinishReason = info.finish_reason
-            if info_tool_calls and finish_reason == "unknown":
-                finish_reason = "tool_call"
-            yield {
-                "type": "step-finish",
-                "tokens": {"input": usage.input_tokens, "output": usage.output_tokens},
-                "cost": usage.cost,
-                "finish_reason": finish_reason,
-            }  # type: ignore[misc]
-            if blocked:
-                return
-            if info_tool_calls:
-                continue
-            if finish_reason == "stop" or is_last_step:
-                return
-        yield {"type": "error", "error": "max_steps exceeded"}  # type: ignore[misc]
+                if blocked:
+                    return
+                if info_tool_calls:
+                    continue
+                if finish_reason == "stop" or is_last_step:
+                    return
+            yield {"type": "error", "error": "max_steps exceeded"}  # type: ignore[misc]
+        finally:
+            self.session.status = SessionStatus.STOP
 
 
 __all__ = ["AgentLoop", "AgentLoopConfig"]

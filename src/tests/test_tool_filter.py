@@ -47,7 +47,7 @@ class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
             shutil.rmtree(td, ignore_errors=True)
 
         self.assertIsNotNone(model.seen_tools)
-        self.assertEqual(set(model.seen_tools or []), {"read", "glob", "grep", "ls", "todoread"})
+        self.assertEqual(set(model.seen_tools or []), {"read", "glob", "grep", "ls", "todoread", "question"})
 
     async def test_permission_none_exposes_no_tools(self) -> None:
         model = CapturingModel()

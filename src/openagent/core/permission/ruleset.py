@@ -38,6 +38,7 @@ def ruleset(name: PermissionRuleset) -> PermissionRulesetDef:
                 PermissionRule(tool="grep", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="ls", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="todoread", action=PermissionAction.ALLOW, pattern="*"),
+                PermissionRule(tool="question", action=PermissionAction.ALLOW, pattern="*"),
             ],
         )
     if name == PermissionRuleset.PLAN_ONLY:
@@ -51,6 +52,7 @@ def ruleset(name: PermissionRuleset) -> PermissionRulesetDef:
                 PermissionRule(tool="ls", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="todoread", action=PermissionAction.ALLOW, pattern="*"),
                 PermissionRule(tool="todowrite", action=PermissionAction.ALLOW, pattern="*"),
+                PermissionRule(tool="question", action=PermissionAction.ALLOW, pattern="*"),
             ],
         )
     if name == PermissionRuleset.NONE:

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import shutil
 import unittest
 from dataclasses import dataclass
@@ -9,6 +10,7 @@ from uuid import uuid4
 from openagent.core.permission.manager import PermissionDeniedError
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.permission.ruleset import PermissionRuleset
+from openagent.core.question import QuestionManager
 from openagent.core.tool.definition import ToolContext, ToolOutput
 from openagent.core.tool.middleware import permission_middleware
 from openagent.core.tool.toolkit import ToolkitAdapter
@@ -133,6 +135,63 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(res.error)
             self.assertTrue(res.metadata["output_truncated"])
             self.assertLess(len(res.output.encode("utf-8")), 1024)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_builtin_question_tool_schema_has_questions_only(self) -> None:
+        tk = ToolkitAdapter()
+        tk.load_builtin()
+
+        tools = {tool.name: tool for tool in tk.get_all_tools()}
+        self.assertIn("question", tools)
+        schema = tools["question"].schema or {}
+
+        self.assertEqual(set((schema.get("properties") or {}).keys()), {"questions"})
+        question_schema = ((schema.get("properties") or {}).get("questions") or {}).get("items") or {}
+        question_props = question_schema.get("properties") or {}
+        self.assertEqual(set(question_props.keys()), {"header", "question", "options", "multiple"})
+
+    async def test_question_tool_roundtrip_returns_user_answers(self) -> None:
+        tk = ToolkitAdapter()
+        tk.load_builtin()
+        root = self._make_temp_root()
+        manager = QuestionManager()
+        try:
+            task = asyncio.create_task(
+                tk.execute(
+                    name="question",
+                    call_id="question-call-1",
+                    input={
+                        "questions": [
+                            {
+                                "header": "Scope",
+                                "question": "Which path should we take?",
+                                "options": [
+                                    {"label": "Fast path", "description": "Ship quickly"},
+                                    {"label": "Safe path", "description": "Add extra checks"},
+                                ],
+                                "multiple": False,
+                            }
+                        ]
+                    },
+                    context={
+                        "session_id": "session-1",
+                        "session_root": str(root),
+                        "question_manager": manager,
+                    },
+                )
+            )
+            request = await asyncio.wait_for(manager.next_request(), timeout=1)
+            self.assertEqual(request.tool_call_id, "question-call-1")
+            self.assertEqual(request.questions[0].header, "Scope")
+
+            manager.reply(request.request_id, [["Fast path"]])
+            result = await asyncio.wait_for(task, timeout=1)
+
+            self.assertIsNone(result.error)
+            self.assertEqual(result.metadata["answers"], [["Fast path"]])
+            self.assertEqual(result.metadata["request_id"], request.request_id)
+            self.assertIn("Fast path", result.output)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

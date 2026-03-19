@@ -12,7 +12,7 @@ from openagent.core.permission.manager import PermissionManager
 from openagent.core.session.session import Session
 from openagent.core.tool.definition import ToolContext, ToolOutput
 from openagent.core.tool.toolkit import ToolkitAdapter
-from openagent.core.types import AgentConfig, ChatMessage, Model
+from openagent.core.types import AgentConfig, ChatMessage, Model, SessionStatus
 
 from _mock_model import ScriptedLanguageModel
 
@@ -275,6 +275,104 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(event["type"] == "text-delta" and "Partial final result" in event["text"] for event in events))
         self.assertEqual(session.messages[-1].role, "assistant")
         self.assertIn("Partial final result", session.messages[-1].content)
+
+    async def test_loop_emits_question_request_and_continues_after_reply(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {
+                        "type": "tool-call",
+                        "call_id": "q1",
+                        "name": "question",
+                        "input": {
+                            "questions": [
+                                {
+                                    "header": "Plan",
+                                    "question": "Which option should we use?",
+                                    "options": [
+                                        {"label": "Fast path", "description": "Move quickly"},
+                                        {"label": "Safe path", "description": "Be conservative"},
+                                    ],
+                                    "multiple": False,
+                                }
+                            ]
+                        },
+                    },
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t1", "text": "Continuing with the chosen plan."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", tools=["question"], max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("Need a choice"):
+            events.append(event)
+            if event["type"] == "question-request":
+                self.assertEqual(loop.session.status, SessionStatus.PAUSED)
+                loop.question_manager.reply(event["request_id"], [["Fast path"]])
+
+        event_types = [event["type"] for event in events]
+        self.assertIn("question-request", event_types)
+        self.assertIn("tool-result", event_types)
+        self.assertLess(event_types.index("question-request"), event_types.index("tool-result"))
+        tool_result = next(event for event in events if event["type"] == "tool-result")
+        self.assertEqual(tool_result["metadata"]["answers"], [["Fast path"]])
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+        self.assertEqual(loop.session.status, SessionStatus.STOP)
+        self.assertEqual(model.call_index, 2)
+
+    async def test_loop_stops_after_question_reject(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {
+                        "type": "tool-call",
+                        "call_id": "q1",
+                        "name": "question",
+                        "input": {
+                            "questions": [
+                                {
+                                    "header": "Plan",
+                                    "question": "Which option should we use?",
+                                    "options": [
+                                        {"label": "Fast path", "description": "Move quickly"},
+                                        {"label": "Safe path", "description": "Be conservative"},
+                                    ],
+                                    "multiple": False,
+                                }
+                            ]
+                        },
+                    },
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ]
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", tools=["question"], max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("Need a choice"):
+            events.append(event)
+            if event["type"] == "question-request":
+                loop.question_manager.reject(event["request_id"])
+
+        tool_result = next(event for event in events if event["type"] == "tool-result")
+        self.assertIn("dismissed", tool_result["error"])
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "tool_call")
+        self.assertEqual(model.call_index, 1)
 
     async def test_loop_projects_tool_output_before_storing_in_session(self) -> None:
         model = ScriptedLanguageModel(
