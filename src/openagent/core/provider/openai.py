@@ -8,7 +8,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..types import ChatMessage, Model, ModelCapabilities, ToolSchema, Usage
+from ..message_materializer import materialize_openai_compatible_payload
+from ..types import Model, ModelCapabilities, ToolSchema, Usage
 from .base import LanguageModel, ProviderBase
 
 
@@ -26,22 +27,6 @@ def _post_json(*, url: str, headers: dict[str, str], payload: dict[str, Any], ti
         raise RuntimeError(f"OpenAI-compatible HTTP {exc.code}: {raw}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"OpenAI-compatible request failed: {exc}") from exc
-
-
-def _to_openai_tools(tools: list[ToolSchema]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for tool in tools:
-        out.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.schema or {"type": "object", "properties": {}},
-                },
-            }
-        )
-    return out
 
 
 def _provider_options(options: dict[str, Any] | None) -> dict[str, Any]:
@@ -141,42 +126,35 @@ class OpenAILanguageModel(LanguageModel):
         self,
         *,
         system: str | None,
-        messages: list[ChatMessage],
+        messages,
         tools: list[ToolSchema],
         temperature: float | None = None,
         max_output_tokens: int | None = None,
         options: dict[str, Any] | None = None,
     ):
-        chat_messages: list[dict[str, Any]] = []
-        if system:
-            chat_messages.append({"role": "system", "content": system})
-        for message in messages:
-            item: dict[str, Any] = {"role": message.role, "content": message.content}
-            if message.role != "tool" and message.name:
-                item["name"] = message.name
-            if message.tool_call_id:
-                item["tool_call_id"] = message.tool_call_id
-            tool_calls = (message.metadata or {}).get("tool_calls")
-            if message.role == "assistant" and isinstance(tool_calls, list) and tool_calls:
-                item["tool_calls"] = tool_calls
-                if not message.content:
-                    item["content"] = None
-            chat_messages.append(item)
-
-        payload: dict[str, Any] = {
-            "model": self.model_id,
-            "messages": chat_messages,
-            "stream": True,
-        }
+        payload = materialize_openai_compatible_payload(
+            system=system,
+            messages=messages,
+            tools=tools,
+            model=Model(
+                id=self.model_id,
+                provider_id="openai",
+                name=self.model_id,
+                context_window=0,
+                max_output=0,
+            ),
+            options=options,
+        )
+        provider_options = payload.pop("provider_options", None) or _provider_options(options)
+        payload["stream"] = True
         if temperature is not None:
             payload["temperature"] = temperature
         if max_output_tokens is not None:
             payload["max_tokens"] = max_output_tokens
-        if tools:
-            payload["tools"] = _to_openai_tools(tools)
+        if payload.get("tools"):
             payload.setdefault("tool_choice", "auto")
-        if options:
-            payload.update(_provider_options(options))
+        if provider_options:
+            payload.update(provider_options)
 
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -358,5 +336,3 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
-
-

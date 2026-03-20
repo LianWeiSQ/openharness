@@ -3,7 +3,6 @@ from __future__ import annotations
 """
 Memory tools (memory_read/memory_write).
 
-中文说明：
 - MemoryAdapter 由 AgentLoop 注入到 ToolContext.extra["memory"]
 - 工具本体不关心存储实现，只依赖 read/write 接口
 """

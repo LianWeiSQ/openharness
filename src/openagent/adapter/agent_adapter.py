@@ -1,23 +1,4 @@
-from __future__ import annotations
-
-"""
-AgentAdapter：把 Provider 的 LanguageModel 转换为 OpenAgent 可消费的“流事件”。
-
-为什么需要 Adapter？
-- Provider 的 SDK/接口千差万别（OpenAI/Anthropic/阿里等）
-- 我们希望 AgentLoop 只依赖统一的 StreamEvent（见 `core/types.py`）
-
-本模块做的事：
-- 调用 model.stream(...) 获取 provider 事件
-- 统一封装为：
-  - text-start / text-delta / text-end（便于前端/控制台流式展示）
-  - tool-call（用于触发 Toolkit 执行）
-  - finish（被转换为 StepInfo：usage + finish_reason + tool_calls）
-
-注意：
-- 这里不负责执行工具，只负责“解析/转发模型输出”
-- 工具执行由 AgentLoop 完成（并将 tool-result 写回 session messages）
-"""
+﻿from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
@@ -59,6 +40,7 @@ class AgentAdapter:
         system: str | None,
         messages: list[ChatMessage],
         tools: list[ToolSchema],
+        max_output_tokens: int | None = None,
     ) -> AgentReplyStream:
         loop = asyncio.get_running_loop()
         info_future: "asyncio.Future[StepInfo]" = loop.create_future()
@@ -76,18 +58,16 @@ class AgentAdapter:
                     messages=messages,
                     tools=tools,
                     temperature=self._config.temperature,
-                    max_output_tokens=self._config.model.max_output if self._config.model else None,
+                    max_output_tokens=max_output_tokens if max_output_tokens is not None else (self._config.model.max_output if self._config.model else None),
                     options=self._config.options,
                 ):
                     et = ev.get("type")
                     if et == "text-delta":
                         if not started:
                             started = True
-                            # 第一次输出文本片段时，补一个 text-start 事件
                             yield {"type": "text-start", "id": text_id, "metadata": ev.get("metadata")}  # type: ignore[misc]
                         yield {"type": "text-delta", "id": text_id, "text": str(ev.get("text", ""))}  # type: ignore[misc]
                     elif et == "tool-call":
-                        # 模型请求调用工具：这里只“记录 + 透传”，不执行
                         call = ToolCall(
                             name=str(ev["name"]),
                             input=dict(ev.get("input") or {}),
@@ -96,17 +76,14 @@ class AgentAdapter:
                         tool_calls.append(call)
                         yield {"type": "tool-call", "name": call.name, "input": call.input, "call_id": call.call_id}  # type: ignore[misc]
                     elif et == "finish":
-                        # finish 事件通常在最后出现，包含 usage/finish_reason
                         finish_reason = str(ev.get("finish_reason") or "unknown")  # type: ignore[assignment]
                         usage = coerce_usage(ev.get("usage"))
                     else:
                         continue
             finally:
                 if started:
-                    # 文本结束：补 text-end，便于上层做收尾处理（例如 trim、落盘等）
                     yield {"type": "text-end", "id": text_id}  # type: ignore[misc]
                 if not info_future.done():
-                    # StepInfo 会被 AgentLoop 用来决定是否执行 tool-calls、是否继续循环等
                     info_future.set_result(StepInfo(finish_reason=finish_reason, usage=usage, tool_calls=tool_calls))
 
         return AgentReplyStream(_gen(), info_future)

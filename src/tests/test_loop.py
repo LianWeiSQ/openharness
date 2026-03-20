@@ -574,3 +574,87 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
 
 
 
+
+    async def test_loop_reports_explicit_error_when_current_user_input_alone_exceeds_context(self) -> None:
+        model = ScriptedLanguageModel(script=_success_script())
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            model=_make_model_metadata(context_window=96, max_output=24),
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("x" * 800):
+            events.append(event)
+
+        self.assertEqual(model.call_index, 0)
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("Current user input is too large", events[-1]["error"])
+
+    async def test_loop_auto_strategy_uses_text_only_final_attempt_after_trim(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "text-delta", "id": "final", "text": "Recovered answer from trimmed context."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 12, "output_tokens": 6, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=["huge"],
+            model=_make_model_metadata(context_window=700, max_output=64),
+            options={
+                "context_budget": {
+                    "bytes_per_token": 1,
+                    "overflow_keep_recent_user_turns": 1,
+                    "overflow_final_max_output_tokens": 32,
+                }
+            },
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.add(ChatMessage(role="user", content="old request"))
+        session.add(ChatMessage(role="assistant", content="A" * 400))
+        toolkit = ToolkitAdapter()
+
+        async def run_huge(_args: NoArgs, _ctx: ToolContext) -> ToolOutput:
+            return ToolOutput(title="Huge", output="unused")
+
+        toolkit.registry.define_tool(tool_id="huge", parameters=NoArgs, description=("A" * 1200))(run_huge)
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm, toolkit=toolkit)
+
+        events = []
+        async for event in loop.run("current ask"):
+            events.append(event)
+
+        self.assertEqual(model.call_index, 1)
+        self.assertEqual(model.seen_tools_by_call[-1], [])
+        self.assertEqual(model.seen_max_output_tokens_by_call[-1], 32)
+        self.assertTrue(any("CONTEXT OVERFLOW RECOVERY" in message.content for message in model.seen_messages_by_call[-1]))
+        self.assertNotIn("error", [event["type"] for event in events])
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+
+    async def test_loop_records_last_model_usage_metadata(self) -> None:
+        model = ScriptedLanguageModel(script=_success_script())
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        async for _event in loop.run("hello"):
+            pass
+
+        self.assertEqual(session.metadata["last_model_usage"]["input_tokens"], 1)
+        self.assertEqual(session.metadata["last_model_usage"]["output_tokens"], 1)
+        self.assertIn("last_model_usage_at", session.metadata)

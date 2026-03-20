@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "UNLICENSED" }
 authors = [{ name = "OpenAgent" }]
+dependencies = ["tiktoken>=0.7,<1"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

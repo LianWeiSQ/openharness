@@ -1,21 +1,19 @@
 ﻿from __future__ import annotations
 
-"""Agent loop processor."""
-
 import asyncio
 import json
 import time
 from contextlib import suppress
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from ..agent.base import BaseAgent
-from ..context_budget import ContextBudgetConfigError, check_context_budget, format_context_budget_error, load_context_budget_options
+from ..context_budget import ContextBudgetConfigError, ContextBudgetResult, check_context_budget, format_context_budget_error, load_context_budget_options
 from ..context_messages import (
     CONTEXT_COMPACTION_METADATA_KEY,
     build_messages_for_model,
+    build_trimmed_messages_for_model,
     count_new_messages_since_compaction,
     get_context_compaction,
     project_tool_result_to_message,
@@ -23,8 +21,8 @@ from ..context_messages import (
     recent_user_turn_start,
 )
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
-from ..question import QuestionManager, QuestionRequest
 from ..permission.ruleset import PermissionRuleset
+from ..question import QuestionManager, QuestionRequest
 from ..tool.middleware import logging_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
 from ..tool_policy import (
@@ -56,6 +54,12 @@ MAX_STEPS_TEXT_ONLY_PROMPT = (
     "Summarize what was accomplished, give the most useful result you can, and mention any important remaining gaps "
     "or next steps only if something is still unfinished."
 )
+CONTEXT_OVERFLOW_TEXT_ONLY_PROMPT = (
+    "CONTEXT OVERFLOW RECOVERY\n\n"
+    "The conversation history was trimmed to fit the model context window. Tools are disabled for this attempt.\n"
+    "Respond with text only using the remaining context. Summarize the most important completed work, provide the "
+    "best available answer, and call out only the most important missing information or next step if needed."
+)
 
 
 @dataclass(slots=True)
@@ -64,6 +68,15 @@ class AgentLoopConfig:
     doom_loop_threshold: int = 3
     max_retry: int = 2
     retry_base_delay_s: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedModelCall:
+    messages: list[ChatMessage]
+    tools: list[ToolSchema]
+    budget: ContextBudgetResult | None
+    max_output_tokens: int | None = None
+    overflow_text_only: bool = False
 
 
 class AgentLoop:
@@ -120,7 +133,7 @@ class AgentLoop:
     def _context_budget_config(self) -> dict[str, Any]:
         return load_context_budget_options(self.agent.config.options, model=self.agent.config.model)
 
-    def _record_budget_diagnostics(self, budget) -> None:
+    def _record_budget_diagnostics(self, budget: ContextBudgetResult | None) -> None:
         if budget is None:
             return
         self.session.metadata["last_context_budget"] = {
@@ -132,7 +145,30 @@ class AgentLoop:
             "tool_message_count": budget.tool_message_count,
             "largest_tool_message_tokens": budget.largest_tool_message_tokens,
             "largest_tool_message_name": budget.largest_tool_message_name,
+            "counting_method": budget.counting_method,
+            "counting_exact": budget.counting_exact,
+            "fallback_stage": budget.fallback_stage,
+            "payload_kind": budget.payload_kind,
         }
+
+    def _record_model_usage(self, usage: Usage) -> None:
+        self.session.metadata["last_model_usage"] = {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cost": usage.cost,
+        }
+        self.session.metadata["last_model_usage_at"] = int(time.time() * 1000)
+
+    def _last_usage_needs_preemptive_reduction(self) -> bool:
+        usage = self.session.metadata.get("last_model_usage")
+        budget = self.session.metadata.get("last_context_budget")
+        if not isinstance(usage, dict) or not isinstance(budget, dict):
+            return False
+        input_tokens = int(usage.get("input_tokens", 0))
+        input_limit_tokens = int(budget.get("input_limit_tokens", 0))
+        if input_limit_tokens <= 0:
+            return False
+        return input_tokens >= max(int(input_limit_tokens * 0.9), input_limit_tokens - 512)
 
     def _invalidate_context_compaction_if_needed(self) -> None:
         compaction = get_context_compaction(self.session.metadata, message_count=len(self.session.messages))
@@ -149,6 +185,30 @@ class AgentLoop:
             ChatMessage(role="assistant", content=MAX_STEPS_TEXT_ONLY_PROMPT, metadata={"synthetic": True}),
         ]
 
+    def _messages_for_overflow_final_attempt(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        return [
+            *messages,
+            ChatMessage(role="assistant", content=CONTEXT_OVERFLOW_TEXT_ONLY_PROMPT, metadata={"synthetic": True, "overflow": True}),
+        ]
+
+    def _check_budget(
+        self,
+        *,
+        messages: list[ChatMessage],
+        tools: list[ToolSchema],
+        fallback_stage: str,
+    ) -> ContextBudgetResult | None:
+        budget = check_context_budget(
+            system=self.agent.system_prompt,
+            messages=messages,
+            tools=tools,
+            model=self.agent.config.model,
+            options=self.agent.config.options,
+            fallback_stage=fallback_stage,
+        )
+        self._record_budget_diagnostics(budget)
+        return budget
+
     def _apply_tool_output_pruning(self, config: dict[str, Any]) -> int:
         if not bool(config["prune_old_tool_outputs"]):
             return 0
@@ -159,6 +219,9 @@ class AgentLoop:
             keep_recent_user_turns=int(config["prune_keep_recent_user_turns"]),
             protect_input_tokens=int(config["prune_protect_input_tokens"]),
             min_input_tokens=int(config["prune_min_input_tokens"]),
+            model=self.agent.config.model,
+            options=self.agent.config.options,
+            counting=str(config["counting"]),
         )
         if reclaimed > 0:
             self.session.messages = new_messages
@@ -211,66 +274,110 @@ class AgentLoop:
         }
         return True
 
-    async def _maybe_refresh_context_compaction(self, config: dict[str, Any]) -> None:
-        if config["strategy"] != "compact":
+    async def _maybe_refresh_context_compaction(self, config: dict[str, Any], *, force: bool = False) -> None:
+        if config["strategy"] not in {"compact", "auto"}:
             return
         compaction = get_context_compaction(self.session.metadata, message_count=len(self.session.messages))
         if compaction is None:
+            if force:
+                await self._compact_context(config)
             return
-        if count_new_messages_since_compaction(self.session.messages, self.session.metadata) < int(
+        if not force and count_new_messages_since_compaction(self.session.messages, self.session.metadata) < int(
             config["compact_refresh_min_new_messages"]
         ):
             return
         await self._compact_context(config)
 
-    async def _prepare_messages_for_model(self, *, tools: list[ToolSchema]) -> tuple[list[ChatMessage] | None, str | None, dict[str, Any] | None]:
+    def _build_overflow_trimmed_messages(self, config: dict[str, Any]) -> list[ChatMessage]:
+        self._invalidate_context_compaction_if_needed()
+        return build_trimmed_messages_for_model(
+            self.session.messages,
+            self.session.metadata,
+            keep_recent_user_turns=int(config["overflow_keep_recent_user_turns"]),
+        )
+
+    def _current_user_only_budget_error(self) -> str | None:
+        current_user = next((message for message in reversed(self.session.messages) if message.role == "user"), None)
+        if current_user is None:
+            return None
+        budget = self._check_budget(messages=[current_user], tools=[], fallback_stage="current_user_only")
+        if budget is None or not budget.overflowed:
+            return None
+        return "Current user input is too large to fit within the model context even after overflow trimming: " + format_context_budget_error(budget)
+
+    async def _prepare_messages_for_model(
+        self,
+        *,
+        tools: list[ToolSchema],
+    ) -> tuple[PreparedModelCall | None, str | None, dict[str, Any] | None]:
         try:
             config = self._context_budget_config()
         except ContextBudgetConfigError as error:
             return None, str(error), None
 
-        self._apply_tool_output_pruning(config)
+        if self._last_usage_needs_preemptive_reduction():
+            self._apply_tool_output_pruning(config)
+            if config["strategy"] in {"compact", "auto"}:
+                try:
+                    await self._maybe_refresh_context_compaction(config, force=True)
+                except Exception:
+                    pass
+
+        messages = self._messages_for_model()
+        budget = self._check_budget(messages=messages, tools=tools, fallback_stage="initial")
+        if budget is None or not budget.overflowed:
+            return PreparedModelCall(messages=messages, tools=tools, budget=budget), None, config
+
+        if config["strategy"] == "error":
+            return None, format_context_budget_error(budget), config
+
+        pruned_tokens = self._apply_tool_output_pruning(config)
+        if pruned_tokens > 0:
+            messages = self._messages_for_model()
+            budget = self._check_budget(messages=messages, tools=tools, fallback_stage="after_prune")
+            if budget is None or not budget.overflowed:
+                return PreparedModelCall(messages=messages, tools=tools, budget=budget), None, config
+
+        compacted = False
+        if config["strategy"] in {"compact", "auto"}:
+            try:
+                compacted = await self._compact_context(config)
+            except Exception:
+                compacted = False
+            if compacted:
+                messages = self._messages_for_model()
+                budget = self._check_budget(messages=messages, tools=tools, fallback_stage="after_compact")
+                if budget is None or not budget.overflowed:
+                    return PreparedModelCall(messages=messages, tools=tools, budget=budget), None, config
 
         if config["strategy"] == "compact":
-            try:
-                await self._maybe_refresh_context_compaction(config)
-            except Exception:  # noqa: BLE001
-                pass
-
-        messages = self._messages_for_model()
-        budget = check_context_budget(
-            system=self.agent.system_prompt,
-            messages=messages,
-            tools=tools,
-            model=self.agent.config.model,
-            options=self.agent.config.options,
-        )
-        self._record_budget_diagnostics(budget)
-        if budget is None or not budget.overflowed:
-            return messages, None, config
-
-        if config["strategy"] != "compact":
             return None, format_context_budget_error(budget), config
 
-        try:
-            compacted = await self._compact_context(config)
-        except Exception:  # noqa: BLE001
-            compacted = False
-        if not compacted:
-            return None, format_context_budget_error(budget), config
+        trimmed_messages = self._build_overflow_trimmed_messages(config)
+        trimmed_budget = self._check_budget(messages=trimmed_messages, tools=tools, fallback_stage="after_trim")
+        if trimmed_budget is None or not trimmed_budget.overflowed:
+            return PreparedModelCall(messages=trimmed_messages, tools=tools, budget=trimmed_budget), None, config
 
-        messages = self._messages_for_model()
-        budget = check_context_budget(
-            system=self.agent.system_prompt,
-            messages=messages,
-            tools=tools,
-            model=self.agent.config.model,
-            options=self.agent.config.options,
-        )
-        self._record_budget_diagnostics(budget)
-        if budget is not None and budget.overflowed:
-            return None, format_context_budget_error(budget), config
-        return messages, None, config
+        final_tools = [] if bool(config["overflow_disable_tools_on_final_attempt"]) else tools
+        final_messages = self._messages_for_overflow_final_attempt(trimmed_messages)
+        final_budget = self._check_budget(messages=final_messages, tools=final_tools, fallback_stage="final_text_only")
+        if final_budget is None or not final_budget.overflowed:
+            return (
+                PreparedModelCall(
+                    messages=final_messages,
+                    tools=final_tools,
+                    budget=final_budget,
+                    max_output_tokens=int(config["overflow_final_max_output_tokens"]),
+                    overflow_text_only=True,
+                ),
+                None,
+                config,
+            )
+
+        current_user_error = self._current_user_only_budget_error()
+        if current_user_error is not None:
+            return None, current_user_error, config
+        return None, format_context_budget_error(final_budget), config
 
     def _repeated_tool_call_error(self, call) -> str:
         rendered_input = json.dumps(call.input, ensure_ascii=False, sort_keys=True)
@@ -315,7 +422,7 @@ class AgentLoop:
             "agent_options": self.agent.config.options,
         }
 
-    async def run(self, user_text: str) -> AsyncIterator[StreamEvent]:
+    async def run(self, user_text: str):
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
         self.session.status = SessionStatus.RUNNING
         self.session.add(ChatMessage(role="user", content=user_text))
@@ -329,7 +436,7 @@ class AgentLoop:
                 snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
                 yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
                 available_tools = self._tools_for_agent()
-                tools = [] if is_last_step else available_tools
+                requested_tools = [] if is_last_step else available_tools
 
                 if steps == 1 and tool_policy is not None and not is_last_step:
                     missing_tools = missing_required_tools(tool_policy, {tool.name for tool in available_tools})
@@ -337,14 +444,19 @@ class AgentLoop:
                         yield {"type": "error", "error": format_missing_tools_error(tool_policy, missing_tools)}  # type: ignore[misc]
                         return
 
-                messages, budget_error, context_budget_config = await self._prepare_messages_for_model(tools=tools)
+                prepared, budget_error, context_budget_config = await self._prepare_messages_for_model(tools=requested_tools)
                 if budget_error is not None:
                     yield {"type": "error", "error": budget_error}  # type: ignore[misc]
                     return
-                assert messages is not None
+                assert prepared is not None
                 assert context_budget_config is not None
+
+                messages = prepared.messages
+                tools = list(prepared.tools)
+                max_output_tokens = prepared.max_output_tokens
                 if is_last_step:
                     messages = self._messages_for_final_step(messages)
+                    tools = []
 
                 attempt = 0
                 assistant_text_chunks: list[str] = []
@@ -362,6 +474,7 @@ class AgentLoop:
                         system=effective_system_prompt,
                         messages=messages,
                         tools=tools,
+                        max_output_tokens=max_output_tokens,
                     )
                     buffered_events: list[StreamEvent] | None = [] if policy_guard_active else None
                     try:
@@ -400,6 +513,8 @@ class AgentLoop:
                         await asyncio.sleep(self.config.retry_base_delay_s * (2 ** (attempt - 1)))
 
                 info_tool_calls = [] if is_last_step else info.tool_calls
+                if prepared.overflow_text_only:
+                    info_tool_calls = []
                 assistant_content = "".join(assistant_text_chunks)
                 if assistant_content or info_tool_calls:
                     metadata: dict[str, Any] = {}
@@ -479,6 +594,7 @@ class AgentLoop:
                 if patch.get("files"):
                     yield {"type": "patch", "snapshot_id": snapshot_id, "hash": patch["hash"], "files": patch["files"]}  # type: ignore[misc]
                 usage: Usage = info.usage
+                self._record_model_usage(usage)
                 finish_reason: FinishReason = info.finish_reason
                 if info_tool_calls and finish_reason == "unknown":
                     finish_reason = "tool_call"

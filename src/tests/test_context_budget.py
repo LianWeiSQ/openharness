@@ -1,15 +1,31 @@
 ﻿from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from openagent.core.context_budget import ContextBudgetConfigError, check_context_budget
 from openagent.core.types import ChatMessage, Model, ToolSchema
 
 
-def _make_model(*, context_window: int = 256, max_output: int = 64) -> Model:
+class _FakeEncoding:
+    name = "fake-encoding"
+
+    def encode(self, text: str) -> list[int]:
+        return list(text.encode("utf-8"))
+
+
+class _FakeTiktoken:
+    def encoding_for_model(self, model_name: str) -> _FakeEncoding:
+        return _FakeEncoding()
+
+    def get_encoding(self, name: str) -> _FakeEncoding:
+        return _FakeEncoding()
+
+
+def _make_model(*, context_window: int = 256, max_output: int = 64, provider_id: str = "test") -> Model:
     return Model(
         id="test-model",
-        provider_id="test",
+        provider_id=provider_id,
         name="Test Model",
         context_window=context_window,
         max_output=max_output,
@@ -29,6 +45,8 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertFalse(result.overflowed)
         self.assertGreater(result.estimated_input_tokens, 0)
+        self.assertEqual(result.counting_method, "heuristic")
+        self.assertEqual(result.fallback_stage, "initial")
 
     def test_long_context_overflows_budget(self) -> None:
         result = check_context_budget(
@@ -69,6 +87,19 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertIsNotNone(with_tool)
         self.assertGreater(with_tool.estimated_input_tokens, base.estimated_input_tokens)
 
+    def test_auto_strategy_is_default(self) -> None:
+        result = check_context_budget(
+            system="You are helpful.",
+            messages=[ChatMessage(role="user", content="hello")],
+            tools=[],
+            model=_make_model(),
+            options={},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertFalse(result.overflowed)
+        self.assertEqual(result.fallback_stage, "initial")
+
     def test_compact_strategy_is_supported(self) -> None:
         result = check_context_budget(
             system="You are helpful.",
@@ -92,7 +123,7 @@ class ContextBudgetTests(unittest.TestCase):
             )
 
         self.assertIn("trim", str(ctx.exception))
-        self.assertIn("Supported strategies: error, compact", str(ctx.exception))
+        self.assertIn("Supported strategies: auto, error, compact", str(ctx.exception))
 
     def test_tool_message_diagnostics_are_populated(self) -> None:
         result = check_context_budget(
@@ -110,3 +141,30 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertEqual(result.tool_message_count, 1)
         self.assertEqual(result.largest_tool_message_name, "code_search")
         self.assertGreater(result.largest_tool_message_tokens, 0)
+
+    def test_counting_auto_prefers_tiktoken_for_openai_compatible_models(self) -> None:
+        with patch("openagent.core.token_counting._load_tiktoken_module", return_value=_FakeTiktoken()):
+            result = check_context_budget(
+                system="You are helpful.",
+                messages=[ChatMessage(role="user", content="hello")],
+                tools=[],
+                model=_make_model(provider_id="openai"),
+                options={"context_budget": {"counting": "auto"}},
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.counting_method, "tiktoken")
+        self.assertTrue(result.counting_exact)
+        self.assertEqual(result.payload_kind, "openai_compatible")
+
+    def test_explicit_input_safety_margin_overrides_guard_ratio(self) -> None:
+        result = check_context_budget(
+            system="You are helpful.",
+            messages=[ChatMessage(role="user", content="hello")],
+            tools=[],
+            model=_make_model(context_window=4096, max_output=512),
+            options={"context_budget": {"guard_ratio": 0.9, "input_safety_margin_tokens": 256}},
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.input_limit_tokens, 4096 - 512 - 256)

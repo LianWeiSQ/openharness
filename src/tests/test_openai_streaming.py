@@ -4,8 +4,9 @@ import json
 import unittest
 from unittest.mock import patch
 
+from openagent.core.message_materializer import materialize_openai_compatible_messages, materialize_openai_compatible_tools
 from openagent.core.provider.openai import OpenAILanguageModel
-from openagent.core.types import ToolSchema, Usage
+from openagent.core.types import ChatMessage, ToolSchema, Usage
 
 
 class _FakeResponse:
@@ -37,7 +38,7 @@ class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
                                     "index": 0,
                                     "id": "call_1",
                                     "type": "function",
-                                    "function": {"name": "ls", "arguments": "{\"path\":"},
+                                    "function": {"name": "ls", "arguments": '{"path":'},
                                 }
                             ]
                         },
@@ -49,7 +50,7 @@ class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
                 "choices": [
                     {
                         "index": 0,
-                        "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "\".\"}"}}]},
+                        "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"."}'}}]},
                         "finish_reason": None,
                     }
                 ]
@@ -77,16 +78,33 @@ class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
             base_url="http://127.0.0.1:31877/v1",
             host_header="s-20260316111037-tx4v6.sandbox-agent.sandbox.example.test",
         )
+        messages = [
+            ChatMessage(role="user", content="show files"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                metadata={
+                    "tool_calls": [
+                        {
+                            "id": "prior_call",
+                            "type": "function",
+                            "function": {"name": "ls", "arguments": '{"path":"."}'},
+                        }
+                    ]
+                },
+            ),
+            ChatMessage(role="tool", name="ls", tool_call_id="prior_call", content="[Tool result] ls"),
+        ]
         tools = [ToolSchema(name="ls", description="List directory", schema={"type": "object", "properties": {"path": {"type": "string"}}})]
 
         events: list[dict] = []
         with patch("urllib.request.urlopen", new=_fake_urlopen):
-            async for ev in model.stream(system=None, messages=[], tools=tools):
+            async for ev in model.stream(system="You are helpful.", messages=messages, tools=tools):
                 events.append(ev)
 
         self.assertEqual(seen_payload.get("stream"), True)
-        self.assertIn("tools", seen_payload)
-        self.assertEqual(seen_payload["tools"][0]["function"]["name"], "ls")
+        self.assertEqual(seen_payload["messages"], materialize_openai_compatible_messages("You are helpful.", messages))
+        self.assertEqual(seen_payload["tools"], materialize_openai_compatible_tools(tools))
         self.assertEqual(seen_headers.get("host"), "s-20260316111037-tx4v6.sandbox-agent.sandbox.example.test")
 
         self.assertEqual([e["type"] for e in events[:2]], ["text-delta", "text-delta"])

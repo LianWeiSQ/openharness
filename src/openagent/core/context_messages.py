@@ -6,7 +6,7 @@ from time import time
 from typing import Any
 
 from .context_budget import estimate_message_tokens
-from .types import ChatMessage, ToolResult
+from .types import ChatMessage, Model, ToolResult
 
 CONTEXT_COMPACTION_METADATA_KEY = "context_compaction"
 SYNTHETIC_COMPACTION_HEADER = "[Compacted context summary]"
@@ -70,6 +70,29 @@ def build_messages_for_model(messages: list[ChatMessage], metadata: dict[str, An
         },
     )
     return [summary_message, *messages[compacted_until:]]
+
+
+def build_trimmed_messages_for_model(
+    messages: list[ChatMessage],
+    metadata: dict[str, Any],
+    *,
+    keep_recent_user_turns: int,
+) -> list[ChatMessage]:
+    compaction = get_context_compaction(metadata, message_count=len(messages))
+    boundary = recent_user_turn_start(messages, keep_recent_user_turns)
+    if compaction is None:
+        return list(messages[boundary:])
+    compacted_until = int(compaction["compacted_until"])
+    summary_message = ChatMessage(
+        role="assistant",
+        content=f"{SYNTHETIC_COMPACTION_HEADER}\n{compaction['summary']}",
+        metadata={
+            "synthetic_context_compaction": True,
+            "compacted_until": compacted_until,
+        },
+    )
+    start = max(boundary, compacted_until)
+    return [summary_message, *messages[start:]]
 
 
 def project_tool_result_to_message(
@@ -142,6 +165,9 @@ def prune_old_tool_messages(
     keep_recent_user_turns: int,
     protect_input_tokens: int,
     min_input_tokens: int,
+    model: Model | None = None,
+    options: dict[str, Any] | None = None,
+    counting: str = "heuristic",
 ) -> tuple[list[ChatMessage], int]:
     if not messages:
         return list(messages), 0
@@ -163,7 +189,13 @@ def prune_old_tool_messages(
         if bool((message.metadata or {}).get("compacted")):
             continue
 
-        estimate = estimate_message_tokens(message, bytes_per_token=bytes_per_token)
+        estimate = estimate_message_tokens(
+            message,
+            bytes_per_token=bytes_per_token,
+            model=model,
+            options=options,
+            counting=counting,
+        )
         total += estimate
         if total <= protect_input_tokens:
             continue
