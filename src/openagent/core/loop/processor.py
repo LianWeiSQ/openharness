@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from datetime import datetime
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +34,7 @@ from ..tool_policy import (
     missing_required_tools,
     should_accept_tool_calls,
 )
-from ..types import ChatMessage, FinishReason, SessionStatus, StreamEvent, ToolSchema, Usage
+from ..types import ChatMessage, FinishReason, SessionStatus, StreamEvent, ToolResult, ToolSchema, Usage
 from ...adapter.memory_adapter import MemoryAdapter
 from .doom_loop import DoomLoopDetector
 from .snapshot import SnapshotManager
@@ -77,6 +78,12 @@ class PreparedModelCall:
     budget: ContextBudgetResult | None
     max_output_tokens: int | None = None
     overflow_text_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ToolFailureHint:
+    kind: str
+    tool_name: str
 
 
 class AgentLoop:
@@ -175,19 +182,40 @@ class AgentLoop:
         if compaction is None:
             self.session.metadata.pop(CONTEXT_COMPACTION_METADATA_KEY, None)
 
+    def _runtime_context_message(self) -> ChatMessage:
+        now = datetime.now().astimezone()
+        offset = now.strftime("%z")
+        offset_label = f"UTC{offset[:3]}:{offset[3:]}" if offset else "UTC"
+        lines = [
+            "[Runtime context]",
+            f"Current local datetime: {now.strftime('%Y-%m-%d %H:%M:%S')} {offset_label}",
+            "Resolve today, tomorrow, yesterday, and this week from this runtime timestamp, not memory.",
+        ]
+        return ChatMessage(
+            role="assistant",
+            content="\n".join(lines),
+            metadata={"synthetic": True, "runtime_context": True},
+        )
+
+    def _append_runtime_context(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        filtered = [message for message in messages if not bool((message.metadata or {}).get("runtime_context"))]
+        return [*filtered, self._runtime_context_message()]
+
     def _messages_for_model(self) -> list[ChatMessage]:
         self._invalidate_context_compaction_if_needed()
-        return build_messages_for_model(self.session.messages, self.session.metadata)
+        return self._append_runtime_context(build_messages_for_model(self.session.messages, self.session.metadata))
 
     def _messages_for_final_step(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        runtime_messages = self._append_runtime_context(messages)
         return [
-            *messages,
+            *runtime_messages,
             ChatMessage(role="assistant", content=MAX_STEPS_TEXT_ONLY_PROMPT, metadata={"synthetic": True}),
         ]
 
     def _messages_for_overflow_final_attempt(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        runtime_messages = self._append_runtime_context(messages)
         return [
-            *messages,
+            *runtime_messages,
             ChatMessage(role="assistant", content=CONTEXT_OVERFLOW_TEXT_ONLY_PROMPT, metadata={"synthetic": True, "overflow": True}),
         ]
 
@@ -235,7 +263,7 @@ class AgentLoop:
             todo_section = "\nCurrent todo list:\n" + json.dumps(todo_payload, ensure_ascii=False)
 
         prompt_messages = [
-            *messages_to_compact,
+            *self._append_runtime_context(messages_to_compact),
             ChatMessage(role="user", content=COMPACTION_USER_PROMPT + todo_section),
         ]
         chunks: list[str] = []
@@ -422,11 +450,82 @@ class AgentLoop:
             "agent_options": self.agent.config.options,
         }
 
+    @staticmethod
+    def _tool_error_title(kind: str, tool_name: str) -> str:
+        if kind == "permission_denied":
+            return f"{tool_name} permission denied"
+        if kind == "question_rejected":
+            return f"{tool_name} question rejected"
+        return f"{tool_name} failed"
+
+    def _build_tool_error_result(
+        self,
+        *,
+        call,
+        error: str,
+        kind: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> ToolResult:
+        payload = dict(metadata or {})
+        payload.setdefault("tool", call.name)
+        payload.setdefault("title", self._tool_error_title(kind, call.name))
+        payload["error_kind"] = kind
+        return ToolResult(call_id=call.call_id, output="", error=error, metadata=payload)
+
+    def _normalize_tool_result_error_kind(self, *, tool_name: str, result: ToolResult) -> ToolResult:
+        if not result.error:
+            return result
+        metadata = dict(result.metadata or {})
+        error_kind = metadata.get("error_kind")
+        if not isinstance(error_kind, str) or not error_kind:
+            error_text = str(result.error).lower()
+            if tool_name == "question" and "dismissed" in error_text:
+                error_kind = "question_rejected"
+            elif "permission" in error_text and "denied" in error_text:
+                error_kind = "permission_denied"
+            else:
+                error_kind = "tool_error"
+            metadata["error_kind"] = error_kind
+        metadata.setdefault("tool", tool_name)
+        metadata.setdefault("title", self._tool_error_title(str(error_kind), tool_name))
+        return ToolResult(
+            call_id=result.call_id,
+            output=result.output,
+            error=result.error,
+            metadata=metadata,
+        )
+
+    def _failure_followup_messages(self, failures: list[ToolFailureHint]) -> list[ChatMessage]:
+        if not failures:
+            return []
+        kinds = {failure.kind for failure in failures}
+        tool_names = sorted({failure.tool_name for failure in failures if failure.tool_name})
+        lines = [
+            "[Tool failure follow-up]",
+            "One or more tool calls in the previous step failed.",
+        ]
+        if "permission_denied" in kinds:
+            lines.append(
+                "A tool permission request was denied. Do not repeat the same dangerous call unchanged; explain the impact and prefer a safer alternative."
+            )
+        if "question_rejected" in kinds:
+            lines.append(
+                "A required user question was dismissed. Continue with the best safe fallback and clearly state what information is still missing."
+            )
+        if "tool_error" in kinds:
+            lines.append(
+                "A tool execution failed. Prefer summarizing the failure and trying a different source or method instead of blindly retrying the same call."
+            )
+        if tool_names:
+            lines.append("Failed tools: " + ", ".join(tool_names))
+        return [ChatMessage(role="assistant", content="\n".join(lines), metadata={"synthetic": True, "tool_failure_followup": True})]
+
     async def run(self, user_text: str):
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
         self.session.status = SessionStatus.RUNNING
         self.session.add(ChatMessage(role="user", content=user_text))
         tool_policy = classify_tool_policy(user_text) if self.agent.uses_default_system_prompt else None
+        followup_messages: list[ChatMessage] = []
 
         steps = 0
         try:
@@ -454,6 +553,10 @@ class AgentLoop:
                 messages = prepared.messages
                 tools = list(prepared.tools)
                 max_output_tokens = prepared.max_output_tokens
+                if followup_messages:
+                    messages = [*messages, *followup_messages]
+                    followup_messages = []
+                messages = self._append_runtime_context(messages)
                 if is_last_step:
                     messages = self._messages_for_final_step(messages)
                     tools = []
@@ -529,7 +632,7 @@ class AgentLoop:
                         ]
                     self.session.add(ChatMessage(role="assistant", content=assistant_content, metadata=metadata))
 
-                blocked = False
+                step_failures: list[ToolFailureHint] = []
                 for call in info_tool_calls:
                     if self.doom_loop_detector.record(call):
                         yield {"type": "error", "error": self._repeated_tool_call_error(call)}  # type: ignore[misc]
@@ -556,20 +659,19 @@ class AgentLoop:
 
                             result = await tool_task
                             break
-                    except (PermissionDeniedError, PermissionAskRequiredError) as error:
-                        blocked = True
-                        yield {"type": "tool-result", "call_id": call.call_id, "output": "", "error": str(error), "metadata": None}  # type: ignore[misc]
-                        continue
+                    except PermissionDeniedError as error:
+                        result = self._build_tool_error_result(call=call, error=str(error), kind="permission_denied")
+                    except PermissionAskRequiredError as error:
+                        result = self._build_tool_error_result(call=call, error=str(error), kind="tool_error")
                     except Exception as error:  # noqa: BLE001
-                        yield {"type": "tool-result", "call_id": call.call_id, "output": "", "error": str(error), "metadata": None}  # type: ignore[misc]
-                        blocked = True
-                        continue
+                        result = self._build_tool_error_result(call=call, error=str(error), kind="tool_error")
                     finally:
                         if question_task is not None:
                             question_task.cancel()
                             with suppress(asyncio.CancelledError):
                                 await question_task
 
+                    result = self._normalize_tool_result_error_kind(tool_name=call.name, result=result)
                     result, tool_message = project_tool_result_to_message(
                         result=result,
                         tool_name=call.name,
@@ -588,7 +690,7 @@ class AgentLoop:
                     self.session.add(tool_message)
                     self._apply_tool_output_pruning(context_budget_config)
                     if result.error:
-                        blocked = True
+                        step_failures.append(ToolFailureHint(kind=str(result.metadata.get("error_kind") or "tool_error"), tool_name=call.name))
 
                 patch = self.snapshot_manager.patch(snapshot_id)
                 if patch.get("files"):
@@ -604,8 +706,8 @@ class AgentLoop:
                     "cost": usage.cost,
                     "finish_reason": finish_reason,
                 }  # type: ignore[misc]
-                if blocked:
-                    return
+                if step_failures:
+                    followup_messages = self._failure_followup_messages(step_failures)
                 if info_tool_calls:
                     continue
                 if finish_reason == "stop" or is_last_step:

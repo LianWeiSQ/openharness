@@ -9,6 +9,7 @@ from uuid import uuid4
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
+from openagent.core.permission.rule import PermissionAction
 from openagent.core.session.session import Session
 from openagent.core.tool.definition import ToolContext, ToolOutput
 from openagent.core.tool.toolkit import ToolkitAdapter
@@ -61,6 +62,17 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         td.mkdir(parents=True, exist_ok=True)
         self.addCleanup(shutil.rmtree, td, True)
         return td
+
+    def _runtime_context_messages(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        return [message for message in messages if bool((message.metadata or {}).get("runtime_context"))]
+
+    def _assert_runtime_context_present(self, messages: list[ChatMessage]) -> None:
+        runtime_messages = self._runtime_context_messages(messages)
+        self.assertEqual(len(runtime_messages), 1)
+        runtime = runtime_messages[0]
+        self.assertIn("[Runtime context]", runtime.content)
+        self.assertRegex(runtime.content, r"Current local datetime: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+        self.assertIn("UTC", runtime.content)
 
     async def test_loop_executes_tool_and_emits_patch(self) -> None:
         model = ScriptedLanguageModel(
@@ -330,7 +342,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loop.session.status, SessionStatus.STOP)
         self.assertEqual(model.call_index, 2)
 
-    async def test_loop_stops_after_question_reject(self) -> None:
+    async def test_loop_continues_after_question_reject(self) -> None:
         model = ScriptedLanguageModel(
             script=[
                 [
@@ -353,7 +365,11 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
                         },
                     },
                     {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
-                ]
+                ],
+                [
+                    {"type": "text-delta", "id": "t2", "text": "The question was dismissed, so here is the safest fallback."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
             ]
         )
         cfg = AgentConfig(name="u", permission="FULL", tools=["question"], max_steps=5)
@@ -370,9 +386,94 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
 
         tool_result = next(event for event in events if event["type"] == "tool-result")
         self.assertIn("dismissed", tool_result["error"])
+        self.assertEqual(tool_result["metadata"]["error_kind"], "question_rejected")
         self.assertEqual(events[-1]["type"], "step-finish")
-        self.assertEqual(events[-1]["finish_reason"], "tool_call")
-        self.assertEqual(model.call_index, 1)
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+        self.assertEqual(model.call_index, 2)
+        self.assertTrue(any(event["type"] == "text-delta" and "safest fallback" in event["text"] for event in events))
+        self.assertTrue(
+            any(getattr(message, "metadata", {}).get("tool_failure_followup") for message in model.seen_messages_by_call[1])
+        )
+
+    async def test_loop_continues_after_permission_denied(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {
+                        "type": "tool-call",
+                        "call_id": "w1",
+                        "name": "write",
+                        "input": {"file_path": "blocked.txt", "content": "hi"},
+                    },
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t2", "text": "Permission was denied, so I will explain the fallback instead."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="PLAN_ONLY", tools=["write"], max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+
+        async def deny(_tool_call: dict[str, object]) -> PermissionAction:
+            return PermissionAction.DENY
+
+        pm.ask_user_func = deny
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        events = []
+        async for event in loop.run("Write a file for me"):
+            events.append(event)
+
+        tool_result = next(event for event in events if event["type"] == "tool-result")
+        self.assertIn("Permission denied", tool_result["error"])
+        self.assertEqual(tool_result["metadata"]["error_kind"], "permission_denied")
+        self.assertEqual(model.call_index, 2)
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+        self.assertNotIn("error", [event["type"] for event in events])
+        self.assertTrue(any(event["type"] == "text-delta" and "fallback" in event["text"] for event in events))
+
+    async def test_loop_continues_after_tool_exception(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "tool-call", "call_id": "f1", "name": "failing", "input": {}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t2", "text": "The tool failed, so here is a manual fallback."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", tools=["failing"], max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        toolkit = ToolkitAdapter()
+
+        async def run_failing(_args: NoArgs, _ctx: ToolContext) -> ToolOutput:
+            raise RuntimeError("network timeout")
+
+        toolkit.registry.define_tool(tool_id="failing", parameters=NoArgs, description="# failing")(run_failing)
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm, toolkit=toolkit)
+
+        events = []
+        async for event in loop.run("Try the failing tool"):
+            events.append(event)
+
+        tool_result = next(event for event in events if event["type"] == "tool-result")
+        self.assertIn("network timeout", tool_result["error"])
+        self.assertEqual(tool_result["metadata"]["error_kind"], "tool_error")
+        self.assertEqual(model.call_index, 2)
+        self.assertEqual(events[-1]["type"], "step-finish")
+        self.assertEqual(events[-1]["finish_reason"], "stop")
+        self.assertNotIn("error", [event["type"] for event in events])
+        self.assertTrue(any(event["type"] == "text-delta" and "manual fallback" in event["text"] for event in events))
 
     async def test_loop_projects_tool_output_before_storing_in_session(self) -> None:
         model = ScriptedLanguageModel(
@@ -610,7 +711,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
             permission="FULL",
             max_steps=5,
             tools=["huge"],
-            model=_make_model_metadata(context_window=700, max_output=64),
+            model=_make_model_metadata(context_window=900, max_output=64),
             options={
                 "context_budget": {
                     "bytes_per_token": 1,
@@ -658,3 +759,119 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.metadata["last_model_usage"]["input_tokens"], 1)
         self.assertEqual(session.metadata["last_model_usage"]["output_tokens"], 1)
         self.assertIn("last_model_usage_at", session.metadata)
+
+    async def test_loop_injects_runtime_context_message_without_persisting_it(self) -> None:
+        model = ScriptedLanguageModel(script=_success_script())
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        async for _event in loop.run("hello"):
+            pass
+
+        self.assertEqual(model.call_index, 1)
+        self._assert_runtime_context_present(model.seen_messages_by_call[0])
+        self.assertFalse(any(bool((message.metadata or {}).get("runtime_context")) for message in session.messages))
+
+    async def test_loop_final_step_messages_include_runtime_context(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="c1", name="ls", input={"path": "."}),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "Final text-only answer."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=2)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        async for _event in loop.run("list then summarize"):
+            pass
+
+        final_messages = model.seen_messages_by_call[-1]
+        self._assert_runtime_context_present(final_messages)
+        self.assertTrue(any("CRITICAL - MAXIMUM STEPS REACHED" in message.content for message in final_messages))
+
+    async def test_loop_compaction_summary_messages_include_runtime_context(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "text-delta", "id": "summary", "text": "Goal: continue implementing"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t1", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=[],
+            model=_make_model_metadata(context_window=220, max_output=24),
+            options={"context_budget": {"strategy": "compact", "reserve_output_tokens": 24}},
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.add(ChatMessage(role="user", content="A" * 240))
+        session.add(ChatMessage(role="assistant", content="B" * 240))
+        session.add(ChatMessage(role="user", content="keep this turn"))
+        session.add(ChatMessage(role="assistant", content="recent answer"))
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        async for _event in loop.run("current ask"):
+            pass
+
+        self._assert_runtime_context_present(model.seen_messages_by_call[0])
+
+    async def test_loop_overflow_final_attempt_messages_include_runtime_context(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "text-delta", "id": "final", "text": "Recovered answer from trimmed context."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 12, "output_tokens": 6, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=["huge"],
+            model=_make_model_metadata(context_window=900, max_output=64),
+            options={
+                "context_budget": {
+                    "bytes_per_token": 1,
+                    "overflow_keep_recent_user_turns": 1,
+                    "overflow_final_max_output_tokens": 32,
+                }
+            },
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.add(ChatMessage(role="user", content="old request"))
+        session.add(ChatMessage(role="assistant", content="A" * 400))
+        toolkit = ToolkitAdapter()
+
+        async def run_huge(_args: NoArgs, _ctx: ToolContext) -> ToolOutput:
+            return ToolOutput(title="Huge", output="unused")
+
+        toolkit.registry.define_tool(tool_id="huge", parameters=NoArgs, description=("A" * 1200))(run_huge)
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm, toolkit=toolkit)
+
+        async for _event in loop.run("current ask"):
+            pass
+
+        final_messages = model.seen_messages_by_call[-1]
+        self._assert_runtime_context_present(final_messages)
+        self.assertTrue(any("CONTEXT OVERFLOW RECOVERY" in message.content for message in final_messages))

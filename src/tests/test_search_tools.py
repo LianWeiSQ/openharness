@@ -1,10 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import json
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
+from openagent.core.tool.builtin import web as web_tools
 from openagent.core.tool.toolkit import ToolkitAdapter
 
 
@@ -16,14 +19,18 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
         root.mkdir(parents=True, exist_ok=True)
         return root
 
+    def _make_toolkit(self) -> ToolkitAdapter:
+        toolkit = ToolkitAdapter()
+        toolkit.load_builtin()
+        return toolkit
+
     async def test_code_search_hits_and_miss(self) -> None:
         root = self._make_temp_root()
         try:
             (root / "a.py").write_text("alpha\nbeta\n", encoding="utf-8")
             (root / "b.txt").write_text("gamma\n", encoding="utf-8")
 
-            toolkit = ToolkitAdapter()
-            toolkit.load_builtin()
+            toolkit = self._make_toolkit()
             ctx = {"session_root": str(root)}
 
             res = await toolkit.execute(
@@ -56,8 +63,7 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
             lines = [f"beta {i}" for i in range(210)]
             (root / "a.py").write_text("\n".join(lines), encoding="utf-8")
 
-            toolkit = ToolkitAdapter()
-            toolkit.load_builtin()
+            toolkit = self._make_toolkit()
             res = await toolkit.execute(
                 name="code_search",
                 input={"query": "beta", "glob": "*.py"},
@@ -80,8 +86,7 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
             long_line = "beta " + ("x" * 500)
             (root / "a.py").write_text(long_line + "\n", encoding="utf-8")
 
-            toolkit = ToolkitAdapter()
-            toolkit.load_builtin()
+            toolkit = self._make_toolkit()
             res = await toolkit.execute(
                 name="code_search",
                 input={"query": "beta", "glob": "*.py"},
@@ -101,8 +106,7 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
         try:
             (root / "a.py").write_text("abc\n", encoding="utf-8")
 
-            toolkit = ToolkitAdapter()
-            toolkit.load_builtin()
+            toolkit = self._make_toolkit()
             ctx = {"session_root": str(root)}
 
             grep_res = await toolkit.execute(
@@ -128,8 +132,7 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
         try:
             (root / "a.py").write_text("abc\n", encoding="utf-8")
 
-            toolkit = ToolkitAdapter()
-            toolkit.load_builtin()
+            toolkit = self._make_toolkit()
             res = await toolkit.execute(
                 name="grep",
                 input={"pattern": "[", "glob": "*.py"},
@@ -141,3 +144,288 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_block_preview_keeps_dense_middle_block(self) -> None:
+        text = "\n\n".join(
+            [
+                "Home",
+                "Docs",
+                "Pricing",
+                "Migration update: stage two completed successfully, 68 services now use the shared gateway, and rollback steps were verified during rehearsal.",
+                "Footer link",
+            ]
+        )
+
+        preview = web_tools._block_preview_from_text(text)
+
+        self.assertIn("Migration update", preview)
+        self.assertNotIn("Home", preview)
+        self.assertNotIn("Docs", preview)
+
+    def test_block_preview_keeps_tail_block(self) -> None:
+        text = "\n\n".join(
+            [
+                "Platform overview: this release coordinates service migration, queue draining, and deployment verification across all regions.",
+                "The rollout plan covers authentication updates, queue migration, deployment sequencing, and operational verification across each region.",
+                "Closing summary: customer traffic will move in three waves, with final validation scheduled after the last region drains.",
+            ]
+        )
+
+        preview = web_tools._block_preview_from_text(text)
+
+        self.assertIn("Platform overview", preview)
+        self.assertIn("Closing summary", preview)
+
+    def test_block_preview_falls_back_for_flat_text(self) -> None:
+        text = "Line one introduces the task\nLine two adds supporting detail\nLine three includes value 2026\nLine four closes the note"
+
+        preview = web_tools._block_preview_from_text(text)
+
+        self.assertIn("Line one introduces the task", preview)
+        self.assertIn("Line three includes value 2026", preview)
+
+    async def test_web_search_uses_exa_defaults_and_parses_sse_response(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            sse_text = "\n".join(
+                [
+                    "event: message",
+                    "data: " + json.dumps({"jsonrpc": "2.0", "result": {"content": [{"type": "text", "text": "Fresh search context for the latest model releases."}]}}),
+                    "",
+                ]
+            )
+
+            with patch.object(web_tools, "_post_json", return_value=(sse_text, "text/event-stream")) as mocked_post:
+                res = await toolkit.execute(
+                    name="web_search",
+                    input={"query": "latest ai model releases"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertEqual(res.output, "Fresh search context for the latest model releases.")
+            self.assertEqual(res.metadata["backend"], "exa_mcp")
+            self.assertEqual(res.metadata["num_results"], 8)
+            self.assertEqual(res.metadata["type"], "auto")
+            self.assertEqual(res.metadata["livecrawl"], "fallback")
+            self.assertEqual(res.metadata["preview_strategy"], "block_extract")
+
+            self.assertEqual(mocked_post.call_args.kwargs["accept"], "application/json, text/event-stream")
+            self.assertEqual(mocked_post.call_args.kwargs["timeout"], 30)
+            payload = mocked_post.call_args.kwargs["payload"]
+            self.assertEqual(payload["params"]["name"], "web_search_exa")
+            self.assertEqual(
+                payload["params"]["arguments"],
+                {
+                    "query": "latest ai model releases",
+                    "type": "auto",
+                    "numResults": 8,
+                    "livecrawl": "fallback",
+                },
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_search_maps_custom_exa_parameters(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            response_text = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "result": {"content": [{"type": "text", "text": "Deep search synthesis with extended context."}]},
+                }
+            )
+
+            with patch.object(web_tools, "_post_json", return_value=(response_text, "application/json")) as mocked_post:
+                res = await toolkit.execute(
+                    name="web_search",
+                    input={
+                        "query": "distributed tracing migration plan",
+                        "num_results": 3,
+                        "timeout": 12,
+                        "livecrawl": "preferred",
+                        "type": "deep",
+                        "context_max_characters": 16000,
+                    },
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertEqual(res.metadata["num_results"], 3)
+            self.assertEqual(res.metadata["type"], "deep")
+            self.assertEqual(res.metadata["livecrawl"], "preferred")
+            self.assertEqual(res.metadata["context_max_characters"], 16000)
+            self.assertEqual(mocked_post.call_args.kwargs["timeout"], 12)
+            self.assertEqual(
+                mocked_post.call_args.kwargs["payload"]["params"]["arguments"],
+                {
+                    "query": "distributed tracing migration plan",
+                    "type": "deep",
+                    "numResults": 3,
+                    "livecrawl": "preferred",
+                    "contextMaxCharacters": 16000,
+                },
+            )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_search_returns_no_results_message_when_response_has_no_text(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            with patch.object(
+                web_tools,
+                "_post_json",
+                return_value=('data: {"jsonrpc":"2.0","result":{"content":[]}}\n', "text/event-stream"),
+            ):
+                res = await toolkit.execute(
+                    name="web_search",
+                    input={"query": "query with no hits"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertEqual(res.output, "No search results found. Please try a different query.")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_search_surfaces_http_errors(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            with patch.object(
+                web_tools,
+                "_post_json",
+                side_effect=web_tools.WebRequestError(
+                    "Request failed with status code: 502",
+                    status_code=502,
+                    body="upstream unavailable",
+                ),
+            ):
+                res = await toolkit.execute(
+                    name="web_search",
+                    input={"query": "latest outage report"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNotNone(res.error)
+            self.assertIn("Search error (502): upstream unavailable", res.error)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_search_surfaces_timeout_errors(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            with patch.object(
+                web_tools,
+                "_post_json",
+                side_effect=web_tools.WebRequestError("Request timed out", timeout=True),
+            ):
+                res = await toolkit.execute(
+                    name="web_search",
+                    input={"query": "breaking news"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNotNone(res.error)
+            self.assertIn("Search request timed out", res.error)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_fetch_text_strips_noise_tags(self) -> None:
+        root = self._make_temp_root()
+        try:
+            html = """
+<html>
+  <head>
+    <style>.hidden { display:none; }</style>
+    <script>console.log('noise')</script>
+  </head>
+  <body>
+    <h1>Incident Update</h1>
+    <p>The primary region has recovered and traffic is stable.</p>
+    <noscript>noscript noise</noscript>
+    <iframe>iframe noise</iframe>
+    <object>object noise</object>
+    <embed>embed noise</embed>
+  </body>
+</html>
+"""
+            toolkit = self._make_toolkit()
+            with patch.object(web_tools, "_fetch", return_value=(html, "text/html")):
+                res = await toolkit.execute(
+                    name="web_fetch",
+                    input={"url": "https://example.com/status", "format": "text"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertIn("Incident Update", res.output)
+            self.assertIn("traffic is stable", res.output)
+            self.assertNotIn("console.log", res.output)
+            self.assertNotIn("noscript noise", res.output)
+            self.assertNotIn("iframe noise", res.output)
+            self.assertNotIn("object noise", res.output)
+            self.assertNotIn("embed noise", res.output)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_fetch_markdown_keeps_basic_structure(self) -> None:
+        root = self._make_temp_root()
+        try:
+            html = """
+<html>
+  <body>
+    <h1>Quarterly Update</h1>
+    <p>Service migration stays on schedule.</p>
+    <ul>
+      <li>Stage one complete</li>
+      <li>Stage two ready</li>
+    </ul>
+    <script>console.log('noise')</script>
+  </body>
+</html>
+"""
+            toolkit = self._make_toolkit()
+            with patch.object(web_tools, "_fetch", return_value=(html, "text/html")):
+                res = await toolkit.execute(
+                    name="web_fetch",
+                    input={"url": "https://example.com/update", "format": "markdown"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertIn("Quarterly Update", res.output)
+            self.assertIn("Service migration stays on schedule.", res.output)
+            self.assertIn("Stage one complete", res.output)
+            self.assertNotIn("console.log", res.output)
+            self.assertEqual(res.metadata["preview_strategy"], "block_extract")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_fetch_uses_block_preview_instead_of_top_lines_only(self) -> None:
+        root = self._make_temp_root()
+        try:
+            noise = "\n".join("<div>Home</div>" if index % 2 == 0 else "<div>Docs</div>" for index in range(44))
+            html = f"""<html><body>{noise}
+<div>Implementation update: the service now materializes provider payloads through a shared adapter, which reduced duplicated serialization logic.</div>
+<div>Release note: rollout pauses automatically if post-deploy validation fails in the final region.</div>
+</body></html>"""
+
+            toolkit = self._make_toolkit()
+            with patch.object(web_tools, "_fetch", return_value=(html, "text/html")):
+                res = await toolkit.execute(
+                    name="web_fetch",
+                    input={"url": "https://example.com/report", "format": "text"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertEqual(res.metadata["preview_strategy"], "block_extract")
+            self.assertIn("Implementation update", res.metadata["preview"])
+            self.assertIn("Release note", res.metadata["preview"])
+            self.assertNotIn("Home\n\nDocs", res.metadata["preview"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)

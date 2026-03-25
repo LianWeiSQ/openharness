@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import shutil
 import unittest
@@ -105,3 +105,28 @@ class ContextMessagesTests(unittest.TestCase):
         self.assertEqual(model_messages[0].role, "assistant")
         self.assertIn("[Compacted context summary]", model_messages[0].content)
         self.assertEqual(model_messages[1:], messages[2:])
+
+    def test_project_tool_result_to_message_prefers_metadata_preview(self) -> None:
+        root = self._make_temp_root()
+        result = ToolResult(
+            call_id="tool-2",
+            output="navigation noise\nmenu noise\nfooter noise",
+            metadata={
+                "title": "Page summary",
+                "preview": "Executive summary\nMigration reached 68 percent completion.\nRelease candidate ships Friday.",
+            },
+        )
+
+        updated_result, tool_message = project_tool_result_to_message(
+            result=result,
+            tool_name="web_fetch",
+            session_root=root,
+            preview_bytes=256,
+            preview_lines=5,
+            line_max_chars=80,
+        )
+
+        self.assertIn("Executive summary", tool_message.content)
+        self.assertIn("68 percent completion", tool_message.content)
+        self.assertIn("Release candidate", updated_result.metadata["context_preview"])
+        self.assertNotIn("navigation noise", updated_result.metadata["context_preview"])

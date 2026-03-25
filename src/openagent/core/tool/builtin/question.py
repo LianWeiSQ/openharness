@@ -58,6 +58,7 @@ async def question_tool(args: QuestionParameters, ctx: ToolContext) -> ToolOutpu
                 "questions": _questions_to_metadata(questions),
                 "request_id": request_id,
                 "count": len(questions),
+                "error_kind": "question_rejected",
             },
         )
 
