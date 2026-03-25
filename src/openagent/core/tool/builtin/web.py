@@ -43,6 +43,11 @@ BLOCK_SPLIT_RE = re.compile(r"\n\s*\n+")
 WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 PUNCTUATION_RE = re.compile(r"[.!?;:,\u3002\uff01\uff1f\uff1b\uff1a\uff0c]")
 HTML_NOISE_TAGS = ("script", "style", "noscript", "iframe", "object", "embed", "meta", "link")
+RAW_NOISE_BLOCK_RE = re.compile(
+    r"<(?:script|style|noscript|iframe|object|embed)\b[^>]*>.*?</(?:script|style|noscript|iframe|object|embed)>",
+    re.IGNORECASE | re.DOTALL,
+)
+RAW_NOISE_VOID_RE = re.compile(r"<(?:meta|link)\b[^>]*>", re.IGNORECASE)
 
 
 @dataclass
@@ -210,11 +215,16 @@ def _post_json(url: str, *, payload: dict[str, Any], timeout: int, accept: str) 
     return _request_text(request, timeout=timeout)
 
 
+def _strip_raw_noise_html(html: str) -> str:
+    stripped = RAW_NOISE_BLOCK_RE.sub(" ", html)
+    return RAW_NOISE_VOID_RE.sub(" ", stripped)
+
+
 def _prepare_soup(html: str):
     if BeautifulSoup is None:
         return None
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(_strip_raw_noise_html(html), "html.parser")
     for tag_name in HTML_NOISE_TAGS:
         for node in soup.find_all(tag_name):
             node.decompose()
@@ -228,7 +238,7 @@ def _html_to_text(html: str) -> str:
     soup = _prepare_soup(html)
     if soup is None:
         parser = _HTMLTextExtractor()
-        parser.feed(html)
+        parser.feed(_strip_raw_noise_html(html))
         parser.close()
         return parser.get_text()
 
