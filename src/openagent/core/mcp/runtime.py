@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import hashlib
@@ -132,7 +132,7 @@ class RemoteMcpManager:
             return RemoteMcpToolCallResult(
                 output="",
                 error=f"Remote MCP tool '{dynamic_name}' is not available.",
-                metadata={"tool": dynamic_name, "backend": "mcp"},
+                metadata={"tool": dynamic_name, "backend": "mcp", "mcp_tool_name": dynamic_name},
             )
 
         server = self._servers[descriptor.server_name].config
@@ -146,33 +146,27 @@ class RemoteMcpManager:
             return RemoteMcpToolCallResult(
                 output="",
                 error=str(exc),
-                metadata={
-                    "backend": "mcp",
-                    "mcp_server": descriptor.server_name,
-                    "mcp_tool": descriptor.original_name,
-                    "transport": self._servers[descriptor.server_name].selected_transport,
-                },
+                metadata=_build_result_metadata(
+                    descriptor,
+                    transport=self._servers[descriptor.server_name].selected_transport,
+                    is_error=True,
+                    non_text_blocks=[],
+                ),
             )
 
-        metadata = {
-            "backend": "mcp",
-            "mcp_server": descriptor.server_name,
-            "mcp_tool": descriptor.original_name,
-            "transport": transport,
-            "is_error": bool(getattr(result, "isError", False)),
-        }
-
-        output = _render_tool_result_output(result)
+        output, non_text_blocks = _render_tool_result_output(result)
+        metadata = _build_result_metadata(
+            descriptor,
+            transport=transport,
+            is_error=bool(getattr(result, "isError", False)),
+            non_text_blocks=non_text_blocks,
+        )
         error = None
         if bool(getattr(result, "isError", False)):
             error = output or "Remote MCP tool returned an error."
             output = ""
         elif not output:
             output = "(Remote MCP tool completed with no textual output.)"
-
-        structured = getattr(result, "structuredContent", None)
-        if structured is not None:
-            metadata["structured_content"] = _json_safe(structured)
 
         return RemoteMcpToolCallResult(output=output, error=error, metadata=metadata)
 
@@ -420,48 +414,68 @@ def _timeout_seconds(timeout_ms: int) -> float:
     return max(float(timeout_ms) / 1000.0, 1.0)
 
 
-def _render_tool_result_output(result: Any) -> str:
+def _build_result_metadata(
+    descriptor: RemoteMcpToolDescriptor,
+    *,
+    transport: Literal["http", "sse"] | None,
+    is_error: bool,
+    non_text_blocks: list[str],
+) -> dict[str, Any]:
+    return {
+        "tool": descriptor.dynamic_name,
+        "title": _result_title(descriptor.server_name, descriptor.original_name),
+        "backend": "mcp",
+        "mcp_server": descriptor.server_name,
+        "mcp_original_tool_name": descriptor.original_name,
+        "mcp_transport": transport,
+        "mcp_tool_name": descriptor.dynamic_name,
+        "mcp_non_text_blocks": non_text_blocks,
+        "is_error": is_error,
+    }
+
+
+def _result_title(server_name: str, tool_name: str) -> str:
+    return f"MCP {server_name}/{tool_name}"
+
+
+def _render_tool_result_output(result: Any) -> tuple[str, list[str]]:
     parts: list[str] = []
+    non_text_blocks: list[str] = []
     for item in list(getattr(result, "content", []) or []):
         if isinstance(item, TextContent):
             text = str(getattr(item, "text", "") or "").strip()
             if text:
                 parts.append(text)
             continue
-        if isinstance(item, ImageContent):
-            mime_type = str(getattr(item, "mimeType", "") or "image")
-            parts.append(f"[image content omitted: {mime_type}]")
+        kind = _non_text_block_kind(item)
+        non_text_blocks.append(kind)
+        parts.append(f"[MCP content ignored: {kind}]")
+
+    return "\n\n".join(part for part in parts if part), _dedupe_preserve_order(non_text_blocks)
+
+
+def _non_text_block_kind(item: Any) -> str:
+    if isinstance(item, ImageContent):
+        return "image"
+    if isinstance(item, EmbeddedResource):
+        return "resource"
+    item_type = str(getattr(item, "type", "") or "").strip().lower()
+    if item_type in {"image", "resource"}:
+        return item_type
+    if item_type in {"blob", "binary", "audio", "video"}:
+        return "binary"
+    return "unknown"
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
             continue
-        if isinstance(item, EmbeddedResource):
-            resource = getattr(item, "resource", None)
-            parts.append(_render_embedded_resource(resource))
-            continue
-
-        dumped = _json_safe(item)
-        if dumped:
-            parts.append(json.dumps(dumped, ensure_ascii=False, indent=2))
-
-    if parts:
-        return "\n\n".join(part for part in parts if part)
-
-    structured = getattr(result, "structuredContent", None)
-    if structured is not None:
-        return json.dumps(_json_safe(structured), ensure_ascii=False, indent=2)
-    return ""
-
-
-def _render_embedded_resource(resource: Any) -> str:
-    if resource is None:
-        return "[embedded resource omitted]"
-    payload = _json_safe(resource)
-    if isinstance(payload, dict):
-        uri = payload.get("uri") or payload.get("name") or payload.get("title")
-        mime_type = payload.get("mimeType")
-        label = f": {uri}" if uri else ""
-        if mime_type:
-            return f"[embedded resource omitted{label} ({mime_type})]"
-        return f"[embedded resource omitted{label}]"
-    return "[embedded resource omitted]"
+        seen.add(value)
+        ordered.append(value)
+    return ordered
 
 
 def _json_safe(value: Any) -> Any:
@@ -478,4 +492,5 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _json_safe(vars(value))
     return str(value)
+
 

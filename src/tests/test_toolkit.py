@@ -97,7 +97,7 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
                 self.calls.append((dynamic_name, arguments))
                 return RemoteMcpToolCallResult(
                     output=f"remote:{(arguments or {}).get('value', '')}",
-                    metadata={"backend": "mcp", "mcp_server": "demo", "mcp_tool": "echo"},
+                    metadata={"backend": "mcp", "mcp_server": "demo", "mcp_original_tool_name": "echo", "mcp_transport": "http", "mcp_tool_name": "mcp_tool_demo_echo", "mcp_non_text_blocks": []},
                 )
 
         manager = FakeMcpManager()
@@ -112,6 +112,10 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
         result = await tk.execute(name="mcp_tool_demo_echo", input={"value": "ok"}, context={})
         self.assertIsNone(result.error)
         self.assertEqual(result.output, "remote:ok")
+        self.assertEqual(result.metadata["mcp_original_tool_name"], "echo")
+        self.assertEqual(result.metadata["mcp_transport"], "http")
+        self.assertEqual(result.metadata["mcp_tool_name"], "mcp_tool_demo_echo")
+        self.assertEqual(result.metadata["mcp_non_text_blocks"], [])
         self.assertEqual(manager.calls, [("mcp_tool_demo_echo", {"value": "ok"})])
 
     async def test_tool_semantic_truncation_is_preserved(self) -> None:

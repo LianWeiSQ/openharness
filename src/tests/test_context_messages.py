@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import shutil
 import unittest
@@ -130,3 +130,33 @@ class ContextMessagesTests(unittest.TestCase):
         self.assertIn("68 percent completion", tool_message.content)
         self.assertIn("Release candidate", updated_result.metadata["context_preview"])
         self.assertNotIn("navigation noise", updated_result.metadata["context_preview"])
+
+    def test_pruned_tool_placeholder_does_not_emit_structured_marker(self) -> None:
+        messages = [
+            ChatMessage(role="user", content="old question"),
+            ChatMessage(
+                role="tool",
+                name="mcp_tool_demo_weather",
+                tool_call_id="tool-1",
+                content="z" * 6000,
+                metadata={
+                    "title": "MCP demo/weather",
+                    "structured_content": {"city": "Shanghai"},
+                    "output_path": "weather.txt",
+                    "truncated": False,
+                },
+            ),
+            ChatMessage(role="assistant", content="working"),
+            ChatMessage(role="user", content="current question"),
+        ]
+
+        pruned, reclaimed = prune_old_tool_messages(
+            messages,
+            bytes_per_token=1,
+            keep_recent_user_turns=1,
+            protect_input_tokens=0,
+            min_input_tokens=1,
+        )
+
+        self.assertGreater(reclaimed, 0)
+        self.assertNotIn("structured_content=", pruned[1].content)

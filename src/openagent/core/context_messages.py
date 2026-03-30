@@ -269,3 +269,4 @@ def _write_tool_output(session_root: Path, call_id: str, content: str) -> Path:
     output_path = out_dir / f"{call_id}.txt"
     output_path.write_text(content, encoding="utf-8")
     return output_path
+

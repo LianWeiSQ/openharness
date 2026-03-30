@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Protocol
 
@@ -30,12 +30,17 @@ def _build_tool_definition(
         output = str(getattr(result, "output", "") or "")
         error = getattr(result, "error", None)
         metadata = dict(getattr(result, "metadata", {}) or {})
+        title = f"MCP {descriptor.server_name}/{descriptor.original_name}"
         metadata.setdefault("tool", descriptor.dynamic_name)
+        metadata.setdefault("title", title)
         metadata.setdefault("backend", "mcp")
         metadata.setdefault("mcp_server", descriptor.server_name)
-        metadata.setdefault("mcp_tool", descriptor.original_name)
+        metadata.setdefault("mcp_original_tool_name", descriptor.original_name)
+        metadata.setdefault("mcp_transport", None)
+        metadata.setdefault("mcp_tool_name", descriptor.dynamic_name)
+        metadata.setdefault("mcp_non_text_blocks", [])
         return ToolOutput(
-            title=descriptor.title or descriptor.dynamic_name,
+            title=title,
             output=output,
             metadata=metadata,
             error=str(error) if error else None,
