@@ -30,13 +30,17 @@ class ToolkitAdapter:
     def __init__(self, *, registry: ToolRegistry | None = None) -> None:
         self.registry = registry or ToolRegistry()
         self._middleware: list[Middleware] = []
+        self._builtin_loaded = False
 
     def load_builtin(self) -> None:
         """Register built-in tools into the registry."""
 
+        if self._builtin_loaded:
+            return
         from .builtin import register_builtin_tools
 
         register_builtin_tools(self.registry)
+        self._builtin_loaded = True
 
     def load_plugins(self, *, tool_paths: list[str], base_dir: Path) -> None:
         self.registry.load_plugins(tool_paths=tool_paths, base_dir=base_dir)
@@ -79,11 +83,11 @@ class ToolkitAdapter:
         self.registry.register(tool)
 
     def register_mcp(self, client: object, group: str = "mcp") -> None:
-        """Reserved compatibility API for future MCP integration."""
+        """Register tool-only MCP tools exposed by a remote MCP manager."""
 
-        raise NotImplementedError(
-            "MCP integration is not implemented yet; use register(registry) or load_plugins() for now."
-        )
+        from ..mcp.bridge import register_mcp_tools
+
+        register_mcp_tools(self.registry, client, group=group)
 
     def register_middleware(self, middleware: Middleware) -> None:
         self._middleware.append(middleware)

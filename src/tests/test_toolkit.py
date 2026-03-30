@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from openagent.core.mcp.types import RemoteMcpToolCallResult, RemoteMcpToolDescriptor
 from openagent.core.permission.manager import PermissionDeniedError
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.permission.ruleset import PermissionRuleset
@@ -69,10 +70,49 @@ class ToolkitTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(res.error)
         self.assertEqual(res.output, "pong:ok")
 
-    async def test_register_mcp_is_explicitly_not_implemented(self) -> None:
+    async def test_register_mcp_registers_remote_tools_and_executes(self) -> None:
+        class FakeMcpManager:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict[str, object] | None]] = []
+
+            def list_tool_descriptors(self) -> list[RemoteMcpToolDescriptor]:
+                return [
+                    RemoteMcpToolDescriptor(
+                        server_name="demo",
+                        original_name="echo",
+                        dynamic_name="mcp_tool_demo_echo",
+                        title="Remote Echo",
+                        description="Remote MCP echo tool",
+                        input_schema={
+                            "type": "object",
+                            "properties": {"value": {"type": "string"}},
+                            "required": ["value"],
+                        },
+                    )
+                ]
+
+            async def call_tool(
+                self, dynamic_name: str, arguments: dict[str, object] | None
+            ) -> RemoteMcpToolCallResult:
+                self.calls.append((dynamic_name, arguments))
+                return RemoteMcpToolCallResult(
+                    output=f"remote:{(arguments or {}).get('value', '')}",
+                    metadata={"backend": "mcp", "mcp_server": "demo", "mcp_tool": "echo"},
+                )
+
+        manager = FakeMcpManager()
         tk = ToolkitAdapter()
-        with self.assertRaises(NotImplementedError):
-            tk.register_mcp(object())
+        tk.register_mcp(manager)
+
+        tools = {tool.name: tool for tool in tk.get_all_tools()}
+        self.assertIn("mcp_tool_demo_echo", tools)
+        self.assertTrue(tools["mcp_tool_demo_echo"].dangerous)
+        self.assertEqual(tools["mcp_tool_demo_echo"].group, "mcp")
+
+        result = await tk.execute(name="mcp_tool_demo_echo", input={"value": "ok"}, context={})
+        self.assertIsNone(result.error)
+        self.assertEqual(result.output, "remote:ok")
+        self.assertEqual(manager.calls, [("mcp_tool_demo_echo", {"value": "ok"})])
 
     async def test_tool_semantic_truncation_is_preserved(self) -> None:
         tk = ToolkitAdapter()

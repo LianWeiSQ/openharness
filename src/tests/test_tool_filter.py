@@ -8,8 +8,10 @@ from uuid import uuid4
 
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.loop.processor import AgentLoop
+from openagent.core.mcp.types import RemoteMcpToolDescriptor
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.session.session import Session
+from openagent.core.tool.toolkit import ToolkitAdapter
 from openagent.core.types import AgentConfig
 
 
@@ -26,6 +28,23 @@ class CapturingModel:
     async def stream(self, *, system, messages, tools, temperature=None, max_output_tokens=None, options=None):
         self.seen_tools = [t.name for t in tools]
         yield {"type": "finish", "finish_reason": "stop", "usage": {}}
+
+
+class FakeMcpManager:
+    def list_tool_descriptors(self) -> list[RemoteMcpToolDescriptor]:
+        return [
+            RemoteMcpToolDescriptor(
+                server_name="demo",
+                original_name="search",
+                dynamic_name="mcp_tool_demo_search",
+                title="Remote Search",
+                description="Remote MCP search tool",
+                input_schema={"type": "object", "properties": {"query": {"type": "string"}}},
+            )
+        ]
+
+    async def call_tool(self, dynamic_name: str, arguments: dict[str, object] | None) -> object:
+        return None
 
 
 class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
@@ -48,6 +67,30 @@ class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(model.seen_tools)
         self.assertEqual(set(model.seen_tools or []), {"read", "glob", "grep", "ls", "todoread", "question"})
+
+
+    async def test_tools_readonly_excludes_remote_mcp_tools(self) -> None:
+        model = CapturingModel()
+        cfg = AgentConfig(name="u", permission="FULL", tools="readonly", max_steps=2)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        toolkit = ToolkitAdapter()
+        toolkit.load_builtin()
+        toolkit.register_mcp(FakeMcpManager())
+        tmp_root = Path("openagent/tests/workdir")
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        td = tmp_root / f"t_{uuid4().hex}"
+        td.mkdir(parents=True, exist_ok=True)
+        try:
+            session = Session(directory=Path(td))
+            loop = AgentLoop(agent=agent, session=session, permission_manager=pm, toolkit=toolkit)
+            async for _ev in loop.run("hi"):
+                pass
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
+        self.assertIsNotNone(model.seen_tools)
+        self.assertNotIn("mcp_tool_demo_search", model.seen_tools or [])
 
     async def test_permission_none_exposes_no_tools(self) -> None:
         model = CapturingModel()

@@ -13,3 +13,4 @@ For planning and multi-step design work:
 When planning depends on user preferences, missing constraints, or a tradeoff decision:
 - Use `question` to ask for the missing input instead of assuming.
 - Batch related clarifications into one structured `question` call when possible.
+

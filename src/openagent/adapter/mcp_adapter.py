@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+from typing import Protocol
 
-class MCPClientBase:
-    """
-    Placeholder for MCP integration.
+from openagent.core.mcp.types import RemoteMcpToolDescriptor
 
-    The compatibility method `ToolkitAdapter.register_mcp(client)` still exists,
-    but it intentionally raises `NotImplementedError` for now. New extensions
-    should use `register(registry)` plus `ToolRegistry.define_tool()` until the
-    MCP bridge is implemented.
-    """
 
-    pass
+class MCPClientBase(Protocol):
+    """Compatibility protocol for tool-only MCP bridges."""
+
+    def list_tool_descriptors(self) -> list[RemoteMcpToolDescriptor]: ...
+
+    async def call_tool(self, dynamic_name: str, arguments: dict[str, object] | None) -> object: ...
