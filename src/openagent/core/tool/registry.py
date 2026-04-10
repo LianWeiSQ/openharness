@@ -20,7 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from .definition import ToolContext, ToolDefinition, ToolOutput
+from .definition import ToolContext, ToolDefinition, ToolExecutionScope, ToolOutput
 
 T = TypeVar("T")
 
@@ -104,6 +104,7 @@ class ToolRegistry:
         description: str | None = None,
         group: str = "default",
         dangerous: bool = False,
+        execution_scope: ToolExecutionScope = "host_only",
     ) -> Callable[[Callable[[Any, ToolContext], Any]], Callable[[Any, ToolContext], Any]]:
         """
         装饰器：定义一个工具，并注册到当前 registry。
@@ -122,6 +123,7 @@ class ToolRegistry:
                 execute=execute_func,
                 dangerous=dangerous,
                 group=group,
+                execution_scope=execution_scope,
             )
             self._tools[tool.id] = tool
             return execute_func

@@ -21,6 +21,7 @@ from ..context_messages import (
     prune_old_tool_messages,
     recent_user_turn_start,
 )
+from ..execution import build_workspace_runtime
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
 from ..question import QuestionManager, QuestionRequest
@@ -106,6 +107,7 @@ class AgentLoop:
         self.snapshot_manager = snapshot_manager or SnapshotManager()
         self.doom_loop_detector = doom_loop_detector or DoomLoopDetector(self.config.doom_loop_threshold)
         self.toolkit = toolkit or ToolkitAdapter()
+        self.workspace_runtime = build_workspace_runtime(session)
         self.memory = MemoryAdapter()
         self.tool_log: list[dict[str, Any]] = []
         self.question_manager = question_manager or QuestionManager()
@@ -116,7 +118,7 @@ class AgentLoop:
         if self.agent.config.permission == "NONE":
             return []
 
-        tools = self.toolkit.get_all_tools()
+        tools = self.toolkit.get_all_tools(execution_mode=self.workspace_runtime.mode)
         allow = self.agent.config.tools
         if allow == "all":
             return tools
@@ -441,6 +443,7 @@ class AgentLoop:
         }
 
     def _tool_context(self) -> dict[str, Any]:
+        execution_metadata = dict(getattr(self.workspace_runtime, "execution_metadata", {}) or {})
         return {
             "session_id": self.session.id,
             "session_root": str(self.session.directory),
@@ -448,6 +451,10 @@ class AgentLoop:
             "session": self.session,
             "question_manager": self.question_manager,
             "agent_options": self.agent.config.options,
+            "execution_mode": self.workspace_runtime.mode,
+            "workspace_root": getattr(self.workspace_runtime, "workspace_root", str(self.session.directory)),
+            "workspace_runtime": self.workspace_runtime,
+            "execution_metadata": execution_metadata,
         }
 
     @staticmethod

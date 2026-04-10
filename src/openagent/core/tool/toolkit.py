@@ -14,7 +14,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 from ..context_budget import ContextBudgetConfigError, load_context_budget_options
 from ..id import new_id
 from ..types import ToolCall, ToolResult, ToolSchema
-from .definition import ToolContext, ToolDefinition, ToolOutput
+from .definition import ToolContext, ToolDefinition, ToolExecutionScope, ToolOutput
 from .middleware import Middleware
 from .registry import ToolRegistry
 from .truncation import Truncate
@@ -53,6 +53,7 @@ class ToolkitAdapter:
         schema: dict[str, Any] | None = None,
         group: str = "default",
         dangerous: bool = False,
+        execution_scope: ToolExecutionScope = "host_only",
     ) -> None:
         """Deprecated compatibility shim for legacy function-style tools."""
 
@@ -79,6 +80,7 @@ class ToolkitAdapter:
             dangerous=dangerous,
             group=group,
             schema_override=schema or {"type": "object", "properties": {}},
+            execution_scope=execution_scope,
         )
         self.registry.register(tool)
 
@@ -92,9 +94,11 @@ class ToolkitAdapter:
     def register_middleware(self, middleware: Middleware) -> None:
         self._middleware.append(middleware)
 
-    def get_all_tools(self) -> list[ToolSchema]:
+    def get_all_tools(self, *, execution_mode: str = "local") -> list[ToolSchema]:
         tools: list[ToolSchema] = []
         for tool in self.registry.all():
+            if not _tool_available(tool, execution_mode):
+                continue
             tools.append(
                 ToolSchema(
                     name=tool.id,
@@ -106,9 +110,9 @@ class ToolkitAdapter:
             )
         return tools
 
-    def get_tools_by_group(self, groups: list[str]) -> list[ToolSchema]:
+    def get_tools_by_group(self, groups: list[str], *, execution_mode: str = "local") -> list[ToolSchema]:
         allowed = set(groups)
-        return [tool for tool in self.get_all_tools() if tool.group in allowed]
+        return [tool for tool in self.get_all_tools(execution_mode=execution_mode) if tool.group in allowed]
 
     async def execute(
         self,
@@ -122,8 +126,18 @@ class ToolkitAdapter:
         if tool is None:
             raise ToolNotFoundError(name)
 
+        ctx = dict(context or {})
+        execution_mode = str(ctx.get("execution_mode") or "local")
+        if not _tool_available(tool, execution_mode):
+            return ToolResult(
+                call_id=call_id or new_id("toolcall"),
+                output="",
+                error=f"Tool \"{name}\" is not available in {execution_mode} mode.",
+                metadata={"tool": tool.id, "execution_mode": execution_mode, "error_kind": "execution_scope_unavailable"},
+            )
+
         call = ToolCall(name=name, input=input, call_id=call_id or new_id("toolcall"))
-        ctx = context or {}
+        ctx = dict(context or {})
 
         async def _invoke(tool_call: ToolCall) -> ToolResult:
             session_root_value = ctx.get("session_root") or ctx.get("cwd")
@@ -132,7 +146,11 @@ class ToolkitAdapter:
                 session_id=str(ctx.get("session_id") or ""),
                 session_root=session_root,
                 call_id=tool_call.call_id,
-                extra={k: v for k, v in ctx.items() if k not in ("session_root", "cwd", "session_id")},
+                extra={k: v for k, v in ctx.items() if k not in ("session_root", "cwd", "session_id", "execution_mode", "workspace_root", "workspace_runtime", "execution_metadata")},
+                execution_mode=str(ctx.get("execution_mode") or "local"),
+                workspace_root=str(ctx.get("workspace_root")) if ctx.get("workspace_root") is not None else None,
+                workspace_runtime=ctx.get("workspace_runtime"),
+                execution_metadata=dict(ctx.get("execution_metadata") or {}),
             )
             try:
                 args_obj = _coerce_params(tool.parameters, tool_call.input)
@@ -181,6 +199,12 @@ class ToolkitAdapter:
                 return await middleware(tool_call, next_handler, ctx)
 
         return await handler(call)
+
+
+def _tool_available(tool: ToolDefinition, execution_mode: str) -> bool:
+    if execution_mode != "opensandbox":
+        return True
+    return tool.execution_scope in {"workspace", "agnostic"}
 
 
 def _tool_truncation_options(context: dict[str, Any]) -> dict[str, int]:
@@ -278,6 +302,13 @@ def _legacy_context_from_tool_context(tool_ctx: ToolContext) -> dict[str, Any]:
     legacy_ctx["session_root"] = str(tool_ctx.session_root)
     legacy_ctx.setdefault("cwd", str(tool_ctx.session_root))
     legacy_ctx["call_id"] = tool_ctx.call_id
+    legacy_ctx["execution_mode"] = tool_ctx.execution_mode
+    if tool_ctx.workspace_root is not None:
+        legacy_ctx["workspace_root"] = tool_ctx.workspace_root
+    if tool_ctx.workspace_runtime is not None:
+        legacy_ctx["workspace_runtime"] = tool_ctx.workspace_runtime
+    if tool_ctx.execution_metadata:
+        legacy_ctx["execution_metadata"] = dict(tool_ctx.execution_metadata)
     return legacy_ctx
 
 

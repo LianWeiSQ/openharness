@@ -640,8 +640,8 @@ async def web_search_tool(args: WebSearchParameters, _ctx: ToolContext) -> ToolO
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="web_fetch", parameters=WebFetchParameters, description_md="web_fetch.md", group="web", dangerous=True)(web_fetch_tool)
-    registry.define_tool(tool_id="web_search", parameters=WebSearchParameters, description_md="web_search.md", group="web", dangerous=True)(web_search_tool)
+    registry.define_tool(tool_id="web_fetch", parameters=WebFetchParameters, description_md="web_fetch.md", group="web", dangerous=True, execution_scope="agnostic")(web_fetch_tool)
+    registry.define_tool(tool_id="web_search", parameters=WebSearchParameters, description_md="web_search.md", group="web", dangerous=True, execution_scope="agnostic")(web_search_tool)
 
 
 __all__ = ["register"]

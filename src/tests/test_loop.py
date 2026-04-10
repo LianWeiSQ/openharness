@@ -2,6 +2,7 @@
 
 import shutil
 import unittest
+from unittest.mock import patch
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
@@ -100,6 +101,45 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         types = [event["type"] for event in events]
         self.assertIn("tool-result", types)
         self.assertIn("patch", types)
+
+    async def test_sandbox_session_hides_host_only_tools_from_model(self) -> None:
+        model = ScriptedLanguageModel(script=_success_script())
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=5)
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.metadata["execution"] = {
+            "mode": "opensandbox",
+            "sandbox_id": "sbx_123",
+            "remote_workdir": "/workspace/project",
+        }
+
+        fake_runtime = type(
+            "FakeRuntime",
+            (),
+            {
+                "mode": "opensandbox",
+                "workspace_root": "/workspace/project",
+                "execution_metadata": {
+                    "execution_mode": "opensandbox",
+                    "sandbox_id": "sbx_123",
+                    "remote_workdir": "/workspace/project",
+                },
+            },
+        )()
+
+        with patch("openagent.core.loop.processor.build_workspace_runtime", return_value=fake_runtime):
+            loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+            events = []
+            async for event in loop.run("show available tools"):
+                events.append(event)
+
+        self.assertTrue(any(event["type"] == "step-finish" for event in events))
+        exposed = set(model.seen_tools_by_call[0])
+        self.assertIn("bash", exposed)
+        self.assertIn("read", exposed)
+        self.assertIn("web_fetch", exposed)
+        self.assertNotIn("code_search", exposed)
 
     async def test_loop_errors_before_provider_call_when_context_budget_overflows(self) -> None:
         model = ScriptedLanguageModel(script=_success_script())

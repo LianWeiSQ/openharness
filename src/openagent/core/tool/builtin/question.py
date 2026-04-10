@@ -102,7 +102,7 @@ def _questions_to_metadata(questions: list[QuestionInfo]) -> list[dict[str, obje
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="question", parameters=QuestionParameters, description_md="question.md", group="interactive", dangerous=False)(
+    registry.define_tool(tool_id="question", parameters=QuestionParameters, description_md="question.md", group="interactive", dangerous=False, execution_scope="agnostic")(
         question_tool
     )
 

@@ -15,6 +15,7 @@ dependencies = [
     "markdownify>=0.13,<1",
     "tiktoken>=0.7,<1",
     "mcp>=1,<2",
+    "opensandbox",
 ]
 
 [tool.setuptools]

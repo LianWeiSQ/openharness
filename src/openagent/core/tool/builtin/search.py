@@ -70,7 +70,7 @@ async def code_search_tool(args: CodeSearchParameters, ctx: ToolContext) -> Tool
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="code_search", parameters=CodeSearchParameters, description_md="code_search.md", group="search", dangerous=False)(
+    registry.define_tool(tool_id="code_search", parameters=CodeSearchParameters, description_md="code_search.md", group="search", dangerous=False, execution_scope="host_only")(
         code_search_tool
     )
 

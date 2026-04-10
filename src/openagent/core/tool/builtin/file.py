@@ -501,6 +501,11 @@ def _render_ls_tree(label: str, tree: dict[str, object], *, truncated: bool) -> 
 
 
 async def read_tool(args: ReadParameters, ctx: ToolContext) -> ToolOutput:
+    if ctx.execution_mode == "opensandbox":
+        from . import file_sandbox
+
+        return await file_sandbox.read_tool(args, ctx)
+
     root = ctx.session_root.resolve()
     target = resolve_path_in_root(root, args.file_path)
     if not target.exists():
@@ -517,6 +522,11 @@ async def read_tool(args: ReadParameters, ctx: ToolContext) -> ToolOutput:
 
 
 async def write_tool(args: WriteParameters, ctx: ToolContext) -> ToolOutput:
+    if ctx.execution_mode == "opensandbox":
+        from . import file_sandbox
+
+        return await file_sandbox.write_tool(args, ctx)
+
     root = ctx.session_root.resolve()
     target = resolve_path_in_root(root, args.file_path)
     existed = target.exists()
@@ -531,6 +541,11 @@ async def write_tool(args: WriteParameters, ctx: ToolContext) -> ToolOutput:
 
 
 async def edit_tool(args: EditParameters, ctx: ToolContext) -> ToolOutput:
+    if ctx.execution_mode == "opensandbox":
+        from . import file_sandbox
+
+        return await file_sandbox.edit_tool(args, ctx)
+
     root = ctx.session_root.resolve()
     target = resolve_path_in_root(root, args.file_path)
     _require_existing_file_was_read(ctx, target, action="editing")
@@ -561,6 +576,11 @@ async def edit_tool(args: EditParameters, ctx: ToolContext) -> ToolOutput:
 
 
 async def glob_tool(args: GlobParameters, ctx: ToolContext) -> ToolOutput:
+    if ctx.execution_mode == "opensandbox":
+        from . import file_sandbox
+
+        return await file_sandbox.glob_tool(args, ctx)
+
     root = ctx.session_root.resolve()
     base = resolve_optional_path(root, args.path)
     matches, truncated = _glob_paths(root, base, args.pattern)
@@ -580,6 +600,11 @@ async def glob_tool(args: GlobParameters, ctx: ToolContext) -> ToolOutput:
 
 
 async def grep_tool(args: GrepParameters, ctx: ToolContext) -> ToolOutput:
+    if ctx.execution_mode == "opensandbox":
+        from . import file_sandbox
+
+        return await file_sandbox.grep_tool(args, ctx)
+
     root = ctx.session_root.resolve()
     base = resolve_optional_path(root, args.path)
     include_glob = _parse_grep_include(args)
@@ -601,6 +626,11 @@ async def grep_tool(args: GrepParameters, ctx: ToolContext) -> ToolOutput:
 
 
 async def ls_tool(args: LsParameters, ctx: ToolContext) -> ToolOutput:
+    if ctx.execution_mode == "opensandbox":
+        from . import file_sandbox
+
+        return await file_sandbox.ls_tool(args, ctx, default_ignore=DEFAULT_LS_IGNORE)
+
     root = ctx.session_root.resolve()
     base = resolve_optional_path(root, args.path)
     ignore_patterns = list(DEFAULT_LS_IGNORE)
@@ -619,12 +649,12 @@ async def ls_tool(args: LsParameters, ctx: ToolContext) -> ToolOutput:
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="read", parameters=ReadParameters, description_md="read.md", group="file", dangerous=False)(read_tool)
-    registry.define_tool(tool_id="write", parameters=WriteParameters, description_md="write.md", group="file", dangerous=True)(write_tool)
-    registry.define_tool(tool_id="edit", parameters=EditParameters, description_md="edit.md", group="file", dangerous=True)(edit_tool)
-    registry.define_tool(tool_id="glob", parameters=GlobParameters, description_md="glob.md", group="file", dangerous=False)(glob_tool)
-    registry.define_tool(tool_id="grep", parameters=GrepParameters, description_md="grep.md", group="file", dangerous=False)(grep_tool)
-    registry.define_tool(tool_id="ls", parameters=LsParameters, description_md="ls.md", group="file", dangerous=False)(ls_tool)
+    registry.define_tool(tool_id="read", parameters=ReadParameters, description_md="read.md", group="file", dangerous=False, execution_scope="workspace")(read_tool)
+    registry.define_tool(tool_id="write", parameters=WriteParameters, description_md="write.md", group="file", dangerous=True, execution_scope="workspace")(write_tool)
+    registry.define_tool(tool_id="edit", parameters=EditParameters, description_md="edit.md", group="file", dangerous=True, execution_scope="workspace")(edit_tool)
+    registry.define_tool(tool_id="glob", parameters=GlobParameters, description_md="glob.md", group="file", dangerous=False, execution_scope="workspace")(glob_tool)
+    registry.define_tool(tool_id="grep", parameters=GrepParameters, description_md="grep.md", group="file", dangerous=False, execution_scope="workspace")(grep_tool)
+    registry.define_tool(tool_id="ls", parameters=LsParameters, description_md="ls.md", group="file", dangerous=False, execution_scope="workspace")(ls_tool)
 
 
 __all__ = ["register"]

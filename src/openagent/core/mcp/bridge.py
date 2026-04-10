@@ -54,5 +54,6 @@ def _build_tool_definition(
         dangerous=True,
         group=group,
         schema_override=descriptor.input_schema,
+        execution_scope="agnostic",
     )
 

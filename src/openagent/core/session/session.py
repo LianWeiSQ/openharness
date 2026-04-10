@@ -49,4 +49,6 @@ class Session:
 
     @staticmethod
     def _normalize_file_key(path: str | Path) -> str:
+        if isinstance(path, str) and "://" in path:
+            return path
         return str(Path(path).resolve())

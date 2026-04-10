@@ -107,10 +107,10 @@ async def todo_read_tool(_args: TodoReadParameters, ctx: ToolContext) -> ToolOut
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="todowrite", parameters=TodoWriteParameters, description_md="todowrite.md", group="todo", dangerous=False)(
+    registry.define_tool(tool_id="todowrite", parameters=TodoWriteParameters, description_md="todowrite.md", group="todo", dangerous=False, execution_scope="agnostic")(
         todo_write_tool
     )
-    registry.define_tool(tool_id="todoread", parameters=TodoReadParameters, description_md="todoread.md", group="todo", dangerous=False)(
+    registry.define_tool(tool_id="todoread", parameters=TodoReadParameters, description_md="todoread.md", group="todo", dangerous=False, execution_scope="agnostic")(
         todo_read_tool
     )
 

@@ -15,6 +15,8 @@ from pathlib import Path
 from types import UnionType
 from typing import Any, Awaitable, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
+ToolExecutionScope = Literal["workspace", "agnostic", "host_only"]
+
 
 @dataclass
 class ToolContext:
@@ -24,6 +26,10 @@ class ToolContext:
     session_root: Path
     call_id: str
     extra: dict[str, Any] = field(default_factory=dict)
+    execution_mode: str = "local"
+    workspace_root: str | None = None
+    workspace_runtime: Any | None = None
+    execution_metadata: dict[str, Any] = field(default_factory=dict)
 
     def metadata(self, **kwargs: Any) -> None:
         """Store extra metadata for downstream consumers."""
@@ -54,6 +60,7 @@ class ToolDefinition:
     dangerous: bool = False
     group: str = "default"
     schema_override: dict[str, Any] | None = None
+    execution_scope: ToolExecutionScope = "host_only"
 
     def parameters_schema(self) -> dict[str, Any]:
         """Return an OpenAI-compatible JSON schema for the tool parameters."""

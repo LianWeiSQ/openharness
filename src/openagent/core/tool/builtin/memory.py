@@ -43,10 +43,10 @@ async def memory_write_tool(args: MemoryWriteParameters, ctx: ToolContext) -> To
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="memory_read", parameters=MemoryReadParameters, description_md="memory_read.md", group="memory", dangerous=False)(
+    registry.define_tool(tool_id="memory_read", parameters=MemoryReadParameters, description_md="memory_read.md", group="memory", dangerous=False, execution_scope="agnostic")(
         memory_read_tool
     )
-    registry.define_tool(tool_id="memory_write", parameters=MemoryWriteParameters, description_md="memory_write.md", group="memory", dangerous=False)(
+    registry.define_tool(tool_id="memory_write", parameters=MemoryWriteParameters, description_md="memory_write.md", group="memory", dangerous=False, execution_scope="agnostic")(
         memory_write_tool
     )
 

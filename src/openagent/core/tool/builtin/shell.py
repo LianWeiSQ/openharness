@@ -1,23 +1,21 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """
 Shell tool (bash).
 
-中文说明：
-- 该工具属于高风险工具，默认需要 PermissionManager 放行
-- workdir 必须限制在 session_root 内（避免越界执行）
-- 删除类命令会被直接拦截，避免误删工作区内容
+Notes:
+- This tool is dangerous and still goes through PermissionManager.
+- workdir must remain inside the active workspace root.
+- destructive delete commands are blocked before execution.
 """
 
-import asyncio
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ...execution.runtime import LocalWorkspaceRuntime
 from ..definition import ToolContext, ToolOutput
 from ..registry import ToolRegistry
-from ..utils import resolve_optional_path
 
 DEFAULT_TIMEOUT_MS = 120_000
 FORBIDDEN_COMMAND_RE = re.compile(
@@ -27,11 +25,10 @@ FORBIDDEN_COMMAND_RE = re.compile(
 
 @dataclass
 class BashParameters:
-    command: str = field(metadata={"description": "要执行的 shell 命令"})
-    timeout: int = field(default=DEFAULT_TIMEOUT_MS, metadata={"description": "超时（毫秒）"})
-    workdir: str | None = field(default=None, metadata={"description": "工作目录（默认 session_root）"})
-    description: str | None = field(default=None, metadata={"description": "对命令目的的简短描述（可选）"})
-
+    command: str = field(metadata={"description": "Shell command to execute"})
+    timeout: int = field(default=DEFAULT_TIMEOUT_MS, metadata={"description": "Timeout in milliseconds"})
+    workdir: str | None = field(default=None, metadata={"description": "Working directory, defaults to workspace root"})
+    description: str | None = field(default=None, metadata={"description": "Optional short description of the command purpose"})
 
 
 def _blocked_command(command: str) -> str | None:
@@ -39,6 +36,13 @@ def _blocked_command(command: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def _workspace_runtime(ctx: ToolContext):
+    runtime = ctx.workspace_runtime
+    if runtime is not None:
+        return runtime
+    return LocalWorkspaceRuntime(ctx.session_root.resolve())
 
 
 async def bash_tool(args: BashParameters, ctx: ToolContext) -> ToolOutput:
@@ -49,42 +53,45 @@ async def bash_tool(args: BashParameters, ctx: ToolContext) -> ToolOutput:
     if blocked:
         raise ValueError(f"{blocked} command is disabled for security reasons")
 
-    root = ctx.session_root.resolve()
-    cwd = resolve_optional_path(root, args.workdir)
+    runtime = _workspace_runtime(ctx)
+    command_result = await runtime.run_command(args.command, args.workdir, args.timeout)
+    combined = ((command_result.stdout or "") + (command_result.stderr or "")).strip()
+    output = combined or f"Command exited with return code {command_result.returncode}."
 
-    def _run() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            args.command,
-            cwd=str(cwd),
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=args.timeout / 1000.0,
-        )
+    if ctx.execution_mode == "opensandbox":
+        title = runtime.display_path(command_result.cwd)
+    else:
+        root = ctx.session_root.resolve()
+        cwd = Path(command_result.cwd)
+        try:
+            title = str(cwd.relative_to(root))
+        except Exception:  # noqa: BLE001
+            title = str(cwd)
 
-    completed = await asyncio.to_thread(_run)
-    combined = ((completed.stdout or "") + (completed.stderr or "")).strip()
-    output = combined or f"Command exited with return code {completed.returncode}."
-
-    try:
-        title = str(Path(cwd).relative_to(root))
-    except Exception:  # noqa: BLE001
-        title = str(cwd)
+    metadata = {
+        "returncode": command_result.returncode,
+        "description": args.description or "",
+        "workdir": command_result.cwd,
+    }
+    if ctx.execution_mode == "opensandbox":
+        metadata.update(ctx.execution_metadata or {})
 
     return ToolOutput(
         title=title,
         output=output,
-        metadata={
-            "returncode": completed.returncode,
-            "description": args.description or "",
-            "workdir": str(cwd),
-        },
+        metadata=metadata,
     )
 
 
-
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="bash", parameters=BashParameters, description_md="bash.md", group="shell", dangerous=True)(bash_tool)
+    registry.define_tool(
+        tool_id="bash",
+        parameters=BashParameters,
+        description_md="bash.md",
+        group="shell",
+        dangerous=True,
+        execution_scope="workspace",
+    )(bash_tool)
 
 
 __all__ = ["register"]
