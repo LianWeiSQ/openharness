@@ -375,7 +375,7 @@ class OpenSandboxWorkspaceRuntime:
     async def glob(self, base_path: str, pattern: str) -> list[str]:
         sandbox = await self._sandbox_client()
         _Sandbox, _ConnectionConfig, _WriteEntry, SearchEntry = _load_opensandbox_sdk()
-        results = await _maybe_await(sandbox.files.search([SearchEntry(path=base_path, pattern=pattern)]))
+        results = await _maybe_await(sandbox.files.search(SearchEntry(path=base_path, pattern=pattern)))
         return sorted(_extract_search_paths(results))
 
     async def grep(self, base_path: str, pattern: str, include_glob: str | None) -> list[dict[str, str | int | float]]:
