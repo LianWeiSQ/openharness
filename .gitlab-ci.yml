@@ -1,0 +1,18 @@
+stages:
+  - ai-review
+
+ai_review:
+  stage: ai-review
+  image: nexus-docker.zs.example.online/dev/claude:2.1.97
+
+  tags:
+    - docker
+
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"'
+      when: always
+    # 其他情况（如提交到 feature 分支）不运行该任务
+    - when: never
+
+  script:
+    - bash /root/review.sh
