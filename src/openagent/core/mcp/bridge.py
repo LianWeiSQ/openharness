@@ -19,6 +19,7 @@ def register_mcp_tools(registry: ToolRegistry, client: RemoteMcpManager, *, grou
         registry.register(_build_tool_definition(client, descriptor, group=group))
 
 
+
 def _build_tool_definition(
     client: RemoteMcpManager,
     descriptor: RemoteMcpToolDescriptor,

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from openagent.core.context_messages import (
     build_messages_for_model,
+    build_trimmed_messages_for_model,
     project_tool_result_to_message,
     prune_old_tool_messages,
 )
@@ -160,3 +161,41 @@ class ContextMessagesTests(unittest.TestCase):
 
         self.assertGreater(reclaimed, 0)
         self.assertNotIn("structured_content=", pruned[1].content)
+
+    def test_build_trimmed_messages_for_model_compacts_recent_tool_messages_for_overflow(self) -> None:
+        tool_message = ChatMessage(
+            role="tool",
+            name="web_search",
+            tool_call_id="tool-2",
+            content="[Tool result] web_search\npreview:\nOriginal long preview content",
+            metadata={
+                "title": "Web search: release notes",
+                "count": 8,
+                "returned_count": 8,
+                "context_preview": "\n".join(f"Result {index}: detailed search context" for index in range(1, 10)),
+                "output_path": "search.txt",
+            },
+        )
+        messages = [
+            ChatMessage(role="user", content="older question"),
+            ChatMessage(role="assistant", content="older answer"),
+            ChatMessage(role="user", content="recent question"),
+            tool_message,
+        ]
+
+        trimmed = build_trimmed_messages_for_model(
+            messages,
+            {},
+            keep_recent_user_turns=1,
+            compact_tool_messages=True,
+        )
+
+        self.assertEqual(trimmed[0].content, "recent question")
+        self.assertEqual(tool_message.content, "[Tool result] web_search\npreview:\nOriginal long preview content")
+        self.assertEqual(trimmed[1].role, "tool")
+        self.assertIn("[Overflow tool context summary]", trimmed[1].content)
+        self.assertIn("tool=web_search", trimmed[1].content)
+        self.assertIn("count=8", trimmed[1].content)
+        self.assertIn("full_output=search.txt", trimmed[1].content)
+        self.assertTrue(trimmed[1].metadata["overflow_context_compacted"])
+        self.assertLess(len(trimmed[1].content), 512)

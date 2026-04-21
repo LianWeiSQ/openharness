@@ -781,9 +781,50 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.seen_tools_by_call[-1], [])
         self.assertEqual(model.seen_max_output_tokens_by_call[-1], 32)
         self.assertTrue(any("CONTEXT OVERFLOW RECOVERY" in message.content for message in model.seen_messages_by_call[-1]))
+        self.assertEqual(session.metadata["last_context_budget"]["reserved_output_tokens"], 32)
         self.assertNotIn("error", [event["type"] for event in events])
         self.assertEqual(events[-1]["type"], "step-finish")
         self.assertEqual(events[-1]["finish_reason"], "stop")
+
+    async def test_loop_final_text_only_error_reports_overflow_final_reserved_output_tokens(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="big-1", name="big"),
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=["big"],
+            model=_make_model_metadata(context_window=520, max_output=64),
+            options={
+                "context_budget": {
+                    "bytes_per_token": 1,
+                    "overflow_keep_recent_user_turns": 1,
+                    "overflow_final_max_output_tokens": 32,
+                }
+            },
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="You are helpful.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        toolkit = ToolkitAdapter()
+
+        async def run_big(_args: NoArgs, _ctx: ToolContext) -> ToolOutput:
+            return ToolOutput(title="Big search", output="alpha\n" * 2000, metadata={"count": 2000})
+
+        toolkit.registry.define_tool(tool_id="big", parameters=NoArgs, description=("A" * 120))(run_big)
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm, toolkit=toolkit)
+
+        events = []
+        async for event in loop.run("current ask"):
+            events.append(event)
+
+        self.assertEqual(model.call_index, 1)
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("fallback_stage=final_text_only", events[-1]["error"])
+        self.assertIn("reserved_output_tokens=32", events[-1]["error"])
 
     async def test_loop_records_last_model_usage_metadata(self) -> None:
         model = ScriptedLanguageModel(script=_success_script())

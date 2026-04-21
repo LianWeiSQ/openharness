@@ -41,6 +41,16 @@ pip install -e openagent
 python openagent/src/examples/run_mock.py
 ```
 
+## 与 Web 的边界
+
+`web` 作为 HTTP runtime 服务层，应该通过已安装的 `openagent-core` 包来消费 core。
+
+约束如下：
+
+- `web` 及其他正式消费方不得依赖仓库根的 repo-local bootstrap 壳
+- `web` 应统一从 `openagent.sdk.http_runtime` 导入其运行时所需能力
+- 仓库根的兼容壳只用于 core 自己的示例和仓库内直跑
+
 ## 运行测试
 
 ```powershell

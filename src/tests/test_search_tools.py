@@ -208,7 +208,10 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res.metadata["num_results"], 8)
             self.assertEqual(res.metadata["type"], "auto")
             self.assertEqual(res.metadata["livecrawl"], "fallback")
-            self.assertEqual(res.metadata["preview_strategy"], "block_extract")
+            self.assertEqual(res.metadata["preview_strategy"], "search_summary")
+            self.assertEqual(res.metadata["returned_count"], 1)
+            self.assertEqual(res.metadata["count"], 1)
+            self.assertIn("1. Fresh search context", res.metadata["preview"])
 
             self.assertEqual(mocked_post.call_args.kwargs["accept"], "application/json, text/event-stream")
             self.assertEqual(mocked_post.call_args.kwargs["timeout"], 30)
@@ -287,6 +290,8 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIsNone(res.error)
             self.assertEqual(res.output, "No search results found. Please try a different query.")
+            self.assertEqual(res.metadata["returned_count"], 0)
+            self.assertEqual(res.metadata["count"], 0)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

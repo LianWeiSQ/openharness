@@ -10,6 +10,9 @@ from .types import ChatMessage, Model, ToolResult
 
 CONTEXT_COMPACTION_METADATA_KEY = "context_compaction"
 SYNTHETIC_COMPACTION_HEADER = "[Compacted context summary]"
+OVERFLOW_TOOL_PREVIEW_BYTES = 1024
+OVERFLOW_TOOL_PREVIEW_LINES = 8
+OVERFLOW_TOOL_LINE_MAX_CHARS = 160
 
 
 def recent_user_turn_start(messages: list[ChatMessage], keep_recent_user_turns: int) -> int:
@@ -77,11 +80,13 @@ def build_trimmed_messages_for_model(
     metadata: dict[str, Any],
     *,
     keep_recent_user_turns: int,
+    compact_tool_messages: bool = False,
 ) -> list[ChatMessage]:
     compaction = get_context_compaction(metadata, message_count=len(messages))
     boundary = recent_user_turn_start(messages, keep_recent_user_turns)
     if compaction is None:
-        return list(messages[boundary:])
+        trimmed_messages = list(messages[boundary:])
+        return _overflow_compacted_messages(trimmed_messages) if compact_tool_messages else trimmed_messages
     compacted_until = int(compaction["compacted_until"])
     summary_message = ChatMessage(
         role="assistant",
@@ -92,7 +97,10 @@ def build_trimmed_messages_for_model(
         },
     )
     start = max(boundary, compacted_until)
-    return [summary_message, *messages[start:]]
+    trimmed_messages = list(messages[start:])
+    if compact_tool_messages:
+        trimmed_messages = _overflow_compacted_messages(trimmed_messages)
+    return [summary_message, *trimmed_messages]
 
 
 def project_tool_result_to_message(
@@ -217,9 +225,7 @@ def _compact_tool_message(message: ChatMessage) -> ChatMessage:
     metadata["compacted"] = True
     metadata["compacted_at"] = int(time() * 1000)
 
-    count_value = metadata.get("count")
-    if not isinstance(count_value, int):
-        count_value = metadata.get("returned_count") if isinstance(metadata.get("returned_count"), int) else 0
+    count_value = _tool_count_value(metadata)
     original_bytes = metadata.get("original_bytes")
     if not isinstance(original_bytes, int):
         original_bytes = len(message.content.encode("utf-8")) if message.content else 0
@@ -240,6 +246,69 @@ def _compact_tool_message(message: ChatMessage) -> ChatMessage:
         content="\n".join(lines),
         metadata=metadata,
     )
+
+
+def _overflow_compacted_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+    compacted: list[ChatMessage] = []
+    for message in messages:
+        if message.role != "tool":
+            compacted.append(message)
+            continue
+        compacted.append(_compact_tool_message_for_overflow(message))
+    return compacted
+
+
+def _compact_tool_message_for_overflow(message: ChatMessage) -> ChatMessage:
+    metadata = dict(message.metadata or {})
+    metadata["overflow_context_compacted"] = True
+
+    preview_source = metadata.get("context_preview")
+    if not isinstance(preview_source, str) or not preview_source.strip():
+        preview_source = metadata.get("preview")
+    if not isinstance(preview_source, str) or not preview_source.strip():
+        preview_source = message.content
+    preview = _build_preview(
+        str(preview_source),
+        max_bytes=OVERFLOW_TOOL_PREVIEW_BYTES,
+        max_lines=OVERFLOW_TOOL_PREVIEW_LINES,
+        line_max_chars=OVERFLOW_TOOL_LINE_MAX_CHARS,
+    )
+
+    lines = [
+        "[Overflow tool context summary]",
+        f"tool={message.name or metadata.get('tool', '')}",
+        f"title={metadata.get('title', '')}",
+        f"status={_tool_status(message, metadata)}",
+        f"count={_tool_count_value(metadata)}",
+        "preview:",
+        preview,
+        f"full_output={metadata.get('output_path') or 'unavailable'}",
+    ]
+    return ChatMessage(
+        role="tool",
+        name=message.name,
+        tool_call_id=message.tool_call_id,
+        content="\n".join(lines),
+        metadata=metadata,
+    )
+
+
+def _tool_count_value(metadata: dict[str, Any]) -> int:
+    count_value = metadata.get("count")
+    if isinstance(count_value, int):
+        return count_value
+    returned_count = metadata.get("returned_count")
+    if isinstance(returned_count, int):
+        return returned_count
+    return 0
+
+
+def _tool_status(message: ChatMessage, metadata: dict[str, Any]) -> str:
+    if isinstance(metadata.get("error_kind"), str) and metadata.get("error_kind"):
+        return "error"
+    if "status=error" in message.content:
+        return "error"
+    return "ok"
 
 
 def _build_preview(text: str, *, max_bytes: int, max_lines: int, line_max_chars: int) -> str:

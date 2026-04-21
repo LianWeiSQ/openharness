@@ -227,17 +227,30 @@ class AgentLoop:
         messages: list[ChatMessage],
         tools: list[ToolSchema],
         fallback_stage: str,
+        reserve_output_tokens_override: int | None = None,
     ) -> ContextBudgetResult | None:
+        options = self._context_budget_options_override(reserve_output_tokens_override=reserve_output_tokens_override)
         budget = check_context_budget(
             system=self.agent.system_prompt,
             messages=messages,
             tools=tools,
             model=self.agent.config.model,
-            options=self.agent.config.options,
+            options=options,
             fallback_stage=fallback_stage,
         )
         self._record_budget_diagnostics(budget)
         return budget
+
+    def _context_budget_options_override(self, *, reserve_output_tokens_override: int | None = None) -> dict[str, Any]:
+        if reserve_output_tokens_override is None:
+            return self.agent.config.options
+
+        options = dict(self.agent.config.options)
+        raw_context_budget = options.get("context_budget")
+        context_budget = dict(raw_context_budget) if isinstance(raw_context_budget, dict) else {}
+        context_budget["reserve_output_tokens"] = int(reserve_output_tokens_override)
+        options["context_budget"] = context_budget
+        return options
 
     def _apply_tool_output_pruning(self, config: dict[str, Any]) -> int:
         if not bool(config["prune_old_tool_outputs"]):
@@ -324,6 +337,7 @@ class AgentLoop:
             self.session.messages,
             self.session.metadata,
             keep_recent_user_turns=int(config["overflow_keep_recent_user_turns"]),
+            compact_tool_messages=True,
         )
 
     def _current_user_only_budget_error(self) -> str | None:
@@ -390,7 +404,12 @@ class AgentLoop:
 
         final_tools = [] if bool(config["overflow_disable_tools_on_final_attempt"]) else tools
         final_messages = self._messages_for_overflow_final_attempt(trimmed_messages)
-        final_budget = self._check_budget(messages=final_messages, tools=final_tools, fallback_stage="final_text_only")
+        final_budget = self._check_budget(
+            messages=final_messages,
+            tools=final_tools,
+            fallback_stage="final_text_only",
+            reserve_output_tokens_override=int(config["overflow_final_max_output_tokens"]),
+        )
         if final_budget is None or not final_budget.overflowed:
             return (
                 PreparedModelCall(

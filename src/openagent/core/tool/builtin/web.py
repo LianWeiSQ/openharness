@@ -48,6 +48,8 @@ RAW_NOISE_BLOCK_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 RAW_NOISE_VOID_RE = re.compile(r"<(?:meta|link)\b[^>]*>", re.IGNORECASE)
+SEARCH_PREVIEW_MAX_RESULTS = 4
+SEARCH_PREVIEW_BLOCK_MAX_CHARS = 220
 
 
 @dataclass
@@ -480,6 +482,20 @@ def _block_preview_from_text(text: str) -> str:
     return "\n\n".join(selected_blocks)
 
 
+def _search_preview_from_text(text: str, *, num_results: int) -> tuple[str, int]:
+    requested = max(1, int(num_results or 1))
+    blocks = _dedupe_preserving_order([_compact_block(block) for block in _blocks_from_text(text)])
+    if not blocks:
+        return "", 0
+
+    selected_blocks = blocks[: min(len(blocks), requested, SEARCH_PREVIEW_MAX_RESULTS)]
+    preview_lines: list[str] = []
+    for index, block in enumerate(selected_blocks, start=1):
+        shortened = block if len(block) <= SEARCH_PREVIEW_BLOCK_MAX_CHARS else block[:SEARCH_PREVIEW_BLOCK_MAX_CHARS] + "..."
+        preview_lines.append(f"{index}. {shortened}")
+    return "\n".join(preview_lines), min(len(blocks), requested)
+
+
 def _build_exa_search_request(args: WebSearchParameters) -> dict[str, Any]:
     search_type = args.type or "auto"
     livecrawl = args.livecrawl or "fallback"
@@ -598,6 +614,7 @@ async def web_fetch_tool(args: WebFetchParameters, _ctx: ToolContext) -> ToolOut
 async def web_search_tool(args: WebSearchParameters, _ctx: ToolContext) -> ToolOutput:
     timeout = _timeout_seconds(args.timeout)
     request_payload = _build_exa_search_request(args)
+    requested_num_results = int(request_payload["params"]["arguments"]["numResults"])
 
     try:
         response_text, _content_type = _post_json(
@@ -615,22 +632,27 @@ async def web_search_tool(args: WebSearchParameters, _ctx: ToolContext) -> ToolO
         raise RuntimeError(f"Search request failed: {error}") from error
 
     output = _parse_exa_search_response(response_text)
-    if not output:
+    no_results = not output
+    if no_results:
         output = "No search results found. Please try a different query."
 
     metadata: dict[str, Any] = {
         "backend": "exa_mcp",
         "query": args.query,
-        "num_results": request_payload["params"]["arguments"]["numResults"],
+        "num_results": requested_num_results,
         "timeout": timeout,
         "livecrawl": request_payload["params"]["arguments"]["livecrawl"],
         "type": request_payload["params"]["arguments"]["type"],
         "context_max_characters": request_payload["params"]["arguments"].get("contextMaxCharacters"),
     }
-    preview = _block_preview_from_text(output)
+    preview, returned_count = _search_preview_from_text(output, num_results=requested_num_results)
+    if no_results:
+        returned_count = 0
+    metadata["returned_count"] = returned_count
+    metadata["count"] = returned_count
     if preview:
         metadata["preview"] = preview
-        metadata["preview_strategy"] = "block_extract"
+        metadata["preview_strategy"] = "search_summary"
 
     return ToolOutput(
         title=f"Web search: {args.query}",
