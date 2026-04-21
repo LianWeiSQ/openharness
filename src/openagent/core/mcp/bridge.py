@@ -20,6 +20,7 @@ def register_mcp_tools(registry: ToolRegistry, client: RemoteMcpManager, *, grou
 
 
 
+
 def _build_tool_definition(
     client: RemoteMcpManager,
     descriptor: RemoteMcpToolDescriptor,
