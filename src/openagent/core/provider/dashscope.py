@@ -55,6 +55,65 @@ def _map_finish_reason(value: Any, *, has_tool_calls: bool) -> str:
     return "unknown"
 
 
+def _next_text_delta(raw_text: str, emitted_text: str) -> tuple[str, str]:
+    if not raw_text:
+        return "", emitted_text
+    if raw_text.startswith(emitted_text):
+        return raw_text[len(emitted_text) :], raw_text
+    if emitted_text.startswith(raw_text):
+        return "", emitted_text
+    return raw_text, emitted_text + raw_text
+
+
+def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return dict(arguments)
+    if isinstance(arguments, list):
+        return {"_value": arguments}
+    if not isinstance(arguments, str):
+        return {}
+
+    raw_arguments = arguments.strip()
+    if not raw_arguments:
+        return {}
+
+    parsed = _best_effort_load_json(raw_arguments)
+    if parsed is None:
+        return {"_raw": arguments}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"_value": parsed}
+
+
+def _best_effort_load_json(raw_text: str) -> Any | None:
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    best_candidate: Any | None = None
+    best_score: tuple[int, int, int] | None = None
+
+    for index, char in enumerate(raw_text):
+        if char not in "{[":
+            continue
+        try:
+            candidate, end_index = decoder.raw_decode(raw_text, index)
+        except json.JSONDecodeError:
+            continue
+
+        trailing = raw_text[end_index:].strip()
+        score = (1 if not trailing else 0, end_index - index, -index)
+        if best_score is None or score > best_score:
+            best_candidate = candidate
+            best_score = score
+            if score[0] == 1:
+                break
+
+    return best_candidate
+
+
 def _parse_openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
     if not isinstance(tool_calls, list):
         return []
@@ -65,15 +124,7 @@ def _parse_openai_tool_calls(tool_calls: Any) -> list[dict[str, Any]]:
         call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
         fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
         name = str(fn.get("name") or tool_call.get("name") or "")
-        arguments = fn.get("arguments")
-        input_obj: dict[str, Any] = {}
-        if isinstance(arguments, str) and arguments.strip():
-            try:
-                input_obj = json.loads(arguments)
-                if not isinstance(input_obj, dict):
-                    input_obj = {"_value": input_obj}
-            except json.JSONDecodeError:
-                input_obj = {"_raw": arguments}
+        input_obj = _parse_tool_arguments(fn.get("arguments"))
         if not call_id:
             call_id = f"dashscope_call_{len(parsed)}"
         parsed.append({"call_id": call_id, "name": name, "input": input_obj})
@@ -213,14 +264,20 @@ class DashScopeLanguageModel(LanguageModel):
                         if not isinstance(tool_call, dict):
                             continue
                         idx = int(tool_call.get("index", 0))
-                        record = tool_calls_by_index.setdefault(idx, {"id": None, "name": None, "arguments": ""})
+                        record = tool_calls_by_index.setdefault(idx, {"id": None, "name": None, "arguments": "", "arguments_emitted": ""})
                         if tool_call.get("id"):
                             record["id"] = tool_call.get("id")
                         fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
                         if fn.get("name"):
                             record["name"] = fn.get("name")
                         if isinstance(fn.get("arguments"), str):
-                            record["arguments"] += fn.get("arguments")
+                            arguments_delta, arguments_emitted = _next_text_delta(
+                                fn.get("arguments"),
+                                str(record.get("arguments_emitted") or ""),
+                            )
+                            if arguments_delta:
+                                record["arguments"] += arguments_delta
+                            record["arguments_emitted"] = arguments_emitted
 
                 if choice0.get("finish_reason") is not None:
                     finish_reason_raw = choice0.get("finish_reason")
@@ -242,13 +299,7 @@ class DashScopeLanguageModel(LanguageModel):
                 call_id = str(record.get("id") or f"dashscope_call_{idx}")
                 name = str(record.get("name") or "")
                 args_text = str(record.get("arguments") or "")
-                input_obj: dict[str, Any] = {}
-                if args_text.strip():
-                    try:
-                        loaded = json.loads(args_text)
-                        input_obj = loaded if isinstance(loaded, dict) else {"_value": loaded}
-                    except json.JSONDecodeError:
-                        input_obj = {"_raw": args_text}
+                input_obj = _parse_tool_arguments(args_text)
                 tool_calls.append({"call_id": call_id, "name": name, "input": input_obj})
 
             for tool_call in tool_calls:

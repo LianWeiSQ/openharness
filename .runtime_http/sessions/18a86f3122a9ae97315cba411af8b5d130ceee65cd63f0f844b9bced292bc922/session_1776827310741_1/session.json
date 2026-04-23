@@ -1,0 +1,37 @@
+{
+  "id": "session_1776827310741_1",
+  "tenant_id": "default",
+  "project_id": "default",
+  "principal": "18a86f3122a9ae97315cba411af8b5d130ceee65cd63f0f844b9bced292bc922",
+  "title": "default/default",
+  "status": "idle",
+  "created_at": 1776827310.7432787,
+  "updated_at": 1776827390.0374596,
+  "workspace_dir": "C:\\coding\\openagent-v.1\\openagent\\.runtime_http\\sessions\\18a86f3122a9ae97315cba411af8b5d130ceee65cd63f0f844b9bced292bc922\\session_1776827310741_1\\workspace",
+  "last_error": null,
+  "message_count": 1,
+  "tool_call_count": 0,
+  "patch_count": 0,
+  "resolved_model": {
+    "id": "glm47",
+    "provider_id": "openai",
+    "name": "OpenAICompatible/glm47"
+  },
+  "options": {
+    "agent_id": "universal",
+    "provider_id": "openai",
+    "model_id": null,
+    "base_url": null,
+    "host_header": null,
+    "permission": "FULL",
+    "tool_scope": "all",
+    "max_steps": 10,
+    "temperature": 0.2,
+    "system_prompt": "",
+    "execution": null,
+    "options": {
+      "stream": true
+    }
+  },
+  "session_status": "stop"
+}

@@ -28,11 +28,15 @@ from ..question import QuestionManager, QuestionRequest
 from ..tool.middleware import logging_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
 from ..tool_policy import (
+    ToolCapability,
+    actionable_missing_capabilities,
     classify_tool_policy,
     format_missing_tools_error,
+    format_tool_policy_reminder,
     format_tool_policy_retry_error,
     looks_like_clarification_request,
     missing_required_tools,
+    recent_failed_required_tools,
     should_accept_tool_calls,
 )
 from ..types import ChatMessage, FinishReason, SessionStatus, StreamEvent, ToolResult, ToolSchema, Usage
@@ -546,12 +550,35 @@ class AgentLoop:
             lines.append("Failed tools: " + ", ".join(tool_names))
         return [ChatMessage(role="assistant", content="\n".join(lines), metadata={"synthetic": True, "tool_failure_followup": True})]
 
+    def _policy_followup_messages(
+        self,
+        policy,
+        missing_capabilities: list[ToolCapability],
+        *,
+        failed_tools: set[str],
+    ) -> list[ChatMessage]:
+        if not missing_capabilities:
+            return []
+        lines = [
+            "[Tool policy follow-up]",
+            "This request still needs tool-backed work before the final answer.",
+            format_tool_policy_reminder(policy, missing_capabilities),
+        ]
+        if failed_tools:
+            lines.append(
+                "Avoid blindly retrying the same failed tool. Prefer a different valid tool path, or give a bounded answer if the remaining tool path is blocked."
+            )
+        return [ChatMessage(role="assistant", content="\n".join(lines), metadata={"synthetic": True, "tool_policy_followup": True})]
+
     async def run(self, user_text: str):
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
         self.session.status = SessionStatus.RUNNING
         self.session.add(ChatMessage(role="user", content=user_text))
         tool_policy = classify_tool_policy(user_text) if self.agent.uses_default_system_prompt else None
         followup_messages: list[ChatMessage] = []
+        policy_successful_tools: set[str] = set()
+        policy_failed_tools: set[str] = recent_failed_required_tools(self.session.messages, tool_policy) if tool_policy is not None else set()
+        policy_soft_followup_used = False
 
         steps = 0
         try:
@@ -561,10 +588,11 @@ class AgentLoop:
                 snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
                 yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
                 available_tools = self._tools_for_agent()
+                available_tool_names = {tool.name for tool in available_tools}
                 requested_tools = [] if is_last_step else available_tools
 
                 if steps == 1 and tool_policy is not None and not is_last_step:
-                    missing_tools = missing_required_tools(tool_policy, {tool.name for tool in available_tools})
+                    missing_tools = missing_required_tools(tool_policy, available_tool_names)
                     if missing_tools:
                         yield {"type": "error", "error": format_missing_tools_error(tool_policy, missing_tools)}  # type: ignore[misc]
                         return
@@ -589,7 +617,22 @@ class AgentLoop:
 
                 attempt = 0
                 assistant_text_chunks: list[str] = []
-                policy_guard_active = steps == 1 and tool_policy is not None and not is_last_step
+                current_step_missing_capabilities = (
+                    actionable_missing_capabilities(
+                        tool_policy,
+                        policy_successful_tools,
+                        available_tools=available_tool_names,
+                        failed_tools=policy_failed_tools,
+                    )
+                    if tool_policy is not None and not is_last_step
+                    else []
+                )
+                policy_guard_active = (
+                    steps == 1
+                    and tool_policy is not None
+                    and not is_last_step
+                    and bool(current_step_missing_capabilities)
+                )
                 policy_retry_used = False
                 while True:
                     attempt += 1
@@ -597,7 +640,10 @@ class AgentLoop:
                     adapter = self.agent.adapter()
                     effective_system_prompt = self.agent.system_prompt
                     if policy_guard_active and policy_retry_used:
-                        effective_system_prompt = f"{effective_system_prompt}\n\n{tool_policy.reminder}"
+                        effective_system_prompt = (
+                            f"{effective_system_prompt}\n\n"
+                            f"{format_tool_policy_reminder(tool_policy, current_step_missing_capabilities)}"
+                        )
 
                     stream = adapter.reply_stream(
                         system=effective_system_prompt,
@@ -621,7 +667,11 @@ class AgentLoop:
                         if policy_guard_active and tool_policy is not None:
                             assistant_content = "".join(assistant_text_chunks)
                             tool_call_names = [call.name for call in info.tool_calls]
-                            if should_accept_tool_calls(tool_policy, tool_call_names) or looks_like_clarification_request(assistant_content):
+                            if (
+                                should_accept_tool_calls(tool_policy, tool_call_names)
+                                or "question" in tool_call_names
+                                or looks_like_clarification_request(assistant_content)
+                            ):
                                 assert buffered_events is not None
                                 for event in buffered_events:
                                     yield event
@@ -631,7 +681,10 @@ class AgentLoop:
                                 policy_retry_used = True
                                 attempt = 0
                                 continue
-                            yield {"type": "error", "error": format_tool_policy_retry_error(tool_policy)}  # type: ignore[misc]
+                            yield {
+                                "type": "error",
+                                "error": format_tool_policy_retry_error(tool_policy, current_step_missing_capabilities),
+                            }  # type: ignore[misc]
                             return
 
                         break
@@ -715,6 +768,11 @@ class AgentLoop:
                     }  # type: ignore[misc]
                     self.session.add(tool_message)
                     self._apply_tool_output_pruning(context_budget_config)
+                    if tool_policy is not None and call.name in tool_policy.required_tools:
+                        if result.error:
+                            policy_failed_tools.add(call.name)
+                        else:
+                            policy_successful_tools.add(call.name)
                     if result.error:
                         step_failures.append(ToolFailureHint(kind=str(result.metadata.get("error_kind") or "tool_error"), tool_name=call.name))
 
@@ -732,9 +790,36 @@ class AgentLoop:
                     "cost": usage.cost,
                     "finish_reason": finish_reason,
                 }  # type: ignore[misc]
+                next_followup_messages: list[ChatMessage] = []
                 if step_failures:
-                    followup_messages = self._failure_followup_messages(step_failures)
+                    next_followup_messages.extend(self._failure_followup_messages(step_failures))
+                if (
+                    tool_policy is not None
+                    and finish_reason == "stop"
+                    and not info_tool_calls
+                    and not is_last_step
+                    and not policy_soft_followup_used
+                ):
+                    remaining_capabilities = actionable_missing_capabilities(
+                        tool_policy,
+                        policy_successful_tools,
+                        available_tools=available_tool_names,
+                        failed_tools=policy_failed_tools,
+                    )
+                    if remaining_capabilities:
+                        next_followup_messages.extend(
+                            self._policy_followup_messages(
+                                tool_policy,
+                                remaining_capabilities,
+                                failed_tools=policy_failed_tools,
+                            )
+                        )
+                        policy_soft_followup_used = True
+                if next_followup_messages:
+                    followup_messages = next_followup_messages
                 if info_tool_calls:
+                    continue
+                if followup_messages and finish_reason == "stop" and not is_last_step:
                     continue
                 if finish_reason == "stop" or is_last_step:
                     return

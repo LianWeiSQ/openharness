@@ -2,5 +2,6 @@
 !pyproject.toml
 !README.md
 !src/
+src/*
 !src/openagent/
 !src/openagent/**

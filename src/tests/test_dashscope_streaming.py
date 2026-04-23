@@ -113,3 +113,74 @@ class DashScopeStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(finish["usage"], Usage)
         self.assertEqual(finish["usage"].input_tokens, 3)
         self.assertEqual(finish["usage"].output_tokens, 2)
+
+    async def test_sse_streaming_parses_cumulative_tool_argument_snapshots(self) -> None:
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "web_search",
+                                        "arguments": '{"query":"climate tipping points","num_results":8,"timeout":60',
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {
+                                        "arguments": '{"query":"climate tipping points","num_results":8,"timeout":60}',
+                                    },
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            },
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            },
+        ]
+        sse_lines = [f"data: {json.dumps(c, ensure_ascii=False)}\n".encode("utf-8") for c in chunks] + [b"data: [DONE]\n"]
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ANN001,ANN201
+            del req, timeout
+            return _FakeResponse(sse_lines)
+
+        model = DashScopeLanguageModel(api_key="test", model_id="qwen-test", base_url="https://example.invalid")
+
+        events: list[dict] = []
+        with patch("urllib.request.urlopen", new=_fake_urlopen):
+            async for ev in model.stream(system="You are helpful.", messages=[], tools=[]):
+                events.append(ev)
+
+        tool_call = next(e for e in events if e["type"] == "tool-call")
+        self.assertEqual(tool_call["call_id"], "call_1")
+        self.assertEqual(tool_call["name"], "web_search")
+        self.assertEqual(
+            tool_call["input"],
+            {
+                "query": "climate tipping points",
+                "num_results": 8,
+                "timeout": 60,
+            },
+        )

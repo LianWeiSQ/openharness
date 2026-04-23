@@ -13,6 +13,115 @@ from ..types import Model, ModelCapabilities, ToolSchema, Usage
 from .base import LanguageModel, ProviderBase
 
 
+def _extract_text_content(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(part for item in value if (part := _extract_text_content(item)))
+    if isinstance(value, dict):
+        text_value = value.get("text")
+        if isinstance(text_value, str):
+            return text_value
+        if isinstance(text_value, dict):
+            nested = text_value.get("value")
+            if isinstance(nested, str):
+                return nested
+
+        delta_value = value.get("delta")
+        if isinstance(delta_value, str):
+            return delta_value
+        if isinstance(delta_value, (dict, list)):
+            nested_delta = _extract_text_content(delta_value)
+            if nested_delta:
+                return nested_delta
+
+        for key in ("content", "value", "output_text"):
+            nested = value.get(key)
+            if isinstance(nested, (str, dict, list)):
+                extracted = _extract_text_content(nested)
+                if extracted:
+                    return extracted
+        return ""
+    return ""
+
+
+def _extract_choice_text(choice: dict[str, Any]) -> str:
+    delta = choice.get("delta")
+    if isinstance(delta, dict):
+        extracted = _extract_text_content(delta)
+        if extracted:
+            return extracted
+
+    message = choice.get("message")
+    if isinstance(message, dict):
+        extracted = _extract_text_content(message)
+        if extracted:
+            return extracted
+
+    return ""
+
+
+def _next_text_delta(raw_text: str, emitted_text: str) -> tuple[str, str]:
+    if not raw_text:
+        return "", emitted_text
+    if raw_text.startswith(emitted_text):
+        return raw_text[len(emitted_text) :], raw_text
+    if emitted_text.startswith(raw_text):
+        return "", emitted_text
+    return raw_text, emitted_text + raw_text
+
+
+def _parse_tool_arguments(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return dict(arguments)
+    if isinstance(arguments, list):
+        return {"_value": arguments}
+    if not isinstance(arguments, str):
+        return {}
+
+    raw_arguments = arguments.strip()
+    if not raw_arguments:
+        return {}
+
+    parsed = _best_effort_load_json(raw_arguments)
+    if parsed is None:
+        return {"_raw": arguments}
+    if isinstance(parsed, dict):
+        return parsed
+    return {"_value": parsed}
+
+
+def _best_effort_load_json(raw_text: str) -> Any | None:
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    best_candidate: Any | None = None
+    best_score: tuple[int, int, int] | None = None
+
+    for index, char in enumerate(raw_text):
+        if char not in "{[":
+            continue
+        try:
+            candidate, end_index = decoder.raw_decode(raw_text, index)
+        except json.JSONDecodeError:
+            continue
+
+        trailing = raw_text[end_index:].strip()
+        score = (1 if not trailing else 0, end_index - index, -index)
+        if best_score is None or score > best_score:
+            best_candidate = candidate
+            best_score = score
+            if score[0] == 1:
+                break
+
+    return best_candidate
+
+
 def _post_json(*, url: str, headers: dict[str, str], payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url=url, data=data, method="POST")
@@ -65,15 +174,7 @@ def _parse_openai_tool_calls(tool_calls: Any, *, prefix: str) -> list[dict[str, 
         call_id = str(tool_call.get("id") or tool_call.get("call_id") or "")
         fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
         name = str(fn.get("name") or tool_call.get("name") or "")
-        arguments = fn.get("arguments")
-        input_obj: dict[str, Any] = {}
-        if isinstance(arguments, str) and arguments.strip():
-            try:
-                input_obj = json.loads(arguments)
-                if not isinstance(input_obj, dict):
-                    input_obj = {"_value": input_obj}
-            except json.JSONDecodeError:
-                input_obj = {"_raw": arguments}
+        input_obj = _parse_tool_arguments(fn.get("arguments"))
         if not call_id:
             call_id = f"{prefix}_{len(parsed)}"
         parsed.append({"call_id": call_id, "name": name, "input": input_obj})
@@ -174,9 +275,10 @@ class OpenAILanguageModel(LanguageModel):
             if choices and isinstance(choices, list):
                 first = choices[0] or {}
                 finish_reason_raw = first.get("finish_reason")
-                message = first.get("message") or {}
-                content = str(message.get("content") or "")
-                tool_calls = _parse_openai_tool_calls(message.get("tool_calls"), prefix="openai_call")
+                if isinstance(first, dict):
+                    content = _extract_choice_text(first)
+                    message = first.get("message") or {}
+                    tool_calls = _parse_openai_tool_calls(message.get("tool_calls"), prefix="openai_call")
 
             usage = _usage_from_openai(data.get("usage"))
             if content:
@@ -201,18 +303,21 @@ class OpenAILanguageModel(LanguageModel):
             tool_calls_by_index: dict[int, dict[str, Any]] = {}
             finish_reason_raw: Any = None
             usage_raw: dict[str, Any] | None = None
+            emitted_text = ""
 
             def _on_obj(obj: dict[str, Any]) -> None:
-                nonlocal finish_reason_raw, usage_raw
+                nonlocal finish_reason_raw, usage_raw, emitted_text
                 choices = obj.get("choices") or []
                 if not isinstance(choices, list) or not choices:
                     return
                 choice0 = choices[0] or {}
                 delta = choice0.get("delta") or {}
 
-                content = delta.get("content")
-                if content:
-                    _put({"type": "text-delta", "text": str(content)})
+                if isinstance(choice0, dict):
+                    text_snapshot = _extract_choice_text(choice0)
+                    text_delta, emitted_text = _next_text_delta(text_snapshot, emitted_text)
+                    if text_delta:
+                        _put({"type": "text-delta", "text": text_delta})
 
                 tool_calls = delta.get("tool_calls") or []
                 if isinstance(tool_calls, list):
@@ -220,14 +325,20 @@ class OpenAILanguageModel(LanguageModel):
                         if not isinstance(tool_call, dict):
                             continue
                         idx = int(tool_call.get("index", 0))
-                        record = tool_calls_by_index.setdefault(idx, {"id": None, "name": None, "arguments": ""})
+                        record = tool_calls_by_index.setdefault(idx, {"id": None, "name": None, "arguments": "", "arguments_emitted": ""})
                         if tool_call.get("id"):
                             record["id"] = tool_call.get("id")
                         fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
                         if fn.get("name"):
                             record["name"] = fn.get("name")
                         if isinstance(fn.get("arguments"), str):
-                            record["arguments"] += fn.get("arguments")
+                            arguments_delta, arguments_emitted = _next_text_delta(
+                                fn.get("arguments"),
+                                str(record.get("arguments_emitted") or ""),
+                            )
+                            if arguments_delta:
+                                record["arguments"] += arguments_delta
+                            record["arguments_emitted"] = arguments_emitted
 
                 if choice0.get("finish_reason") is not None:
                     finish_reason_raw = choice0.get("finish_reason")
@@ -249,13 +360,7 @@ class OpenAILanguageModel(LanguageModel):
                 call_id = str(record.get("id") or f"openai_call_{idx}")
                 name = str(record.get("name") or "")
                 args_text = str(record.get("arguments") or "")
-                input_obj: dict[str, Any] = {}
-                if args_text.strip():
-                    try:
-                        loaded = json.loads(args_text)
-                        input_obj = loaded if isinstance(loaded, dict) else {"_value": loaded}
-                    except json.JSONDecodeError:
-                        input_obj = {"_raw": args_text}
+                input_obj = _parse_tool_arguments(args_text)
                 tool_calls.append({"call_id": call_id, "name": name, "input": input_obj})
 
             for tool_call in tool_calls:
