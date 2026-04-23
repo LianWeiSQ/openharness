@@ -66,7 +66,7 @@ class ToolFilterTests(unittest.IsolatedAsyncioTestCase):
             shutil.rmtree(td, ignore_errors=True)
 
         self.assertIsNotNone(model.seen_tools)
-        self.assertEqual(set(model.seen_tools or []), {"read", "glob", "grep", "ls", "todoread", "question"})
+        self.assertEqual(set(model.seen_tools or []), {"read", "glob", "grep", "ls", "skill", "todoread", "question"})
 
 
     async def test_tools_readonly_excludes_remote_mcp_tools(self) -> None:

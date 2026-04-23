@@ -81,7 +81,7 @@ class PermissionManager:
         # - 文件类工具优先用 file_path / path
         # - shell 类工具优先用 command
         if isinstance(payload, dict):
-            for key in ("file_path", "filePath", "path", "pattern", "command"):
+            for key in ("file_path", "filePath", "path", "pattern", "command", "name"):
                 v = payload.get(key)
                 if isinstance(v, str) and v:
                     return v

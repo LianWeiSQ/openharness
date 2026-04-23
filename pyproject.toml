@@ -13,6 +13,7 @@ authors = [{ name = "OpenAgent" }]
 dependencies = [
     "beautifulsoup4>=4.12,<5",
     "markdownify>=0.13,<1",
+    "PyYAML>=6,<7",
     "tiktoken>=0.7,<1",
     "mcp>=1,<2",
     "opensandbox",

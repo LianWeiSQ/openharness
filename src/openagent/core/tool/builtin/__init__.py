@@ -17,6 +17,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     from . import question as question_tools
     from . import search as search_tools
     from . import shell as shell_tools
+    from . import skill as skill_tools
     from . import todo as todo_tools
     from . import web as web_tools
 
@@ -24,6 +25,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
     shell_tools.register(registry)
     search_tools.register(registry)
     web_tools.register(registry)
+    skill_tools.register(registry)
     memory_tools.register(registry)
     todo_tools.register(registry)
     question_tools.register(registry)

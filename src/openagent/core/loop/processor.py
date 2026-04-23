@@ -127,7 +127,7 @@ class AgentLoop:
         if allow == "all":
             return tools
         if allow == "readonly":
-            allowed_names = {"read", "glob", "grep", "ls", "todoread", "question"}
+            allowed_names = {"read", "glob", "grep", "ls", "skill", "todoread", "question"}
             return [tool for tool in tools if tool.name in allowed_names]
         if isinstance(allow, list):
             allowed_names = set(allow)
