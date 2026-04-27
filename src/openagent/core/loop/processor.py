@@ -66,6 +66,10 @@ CONTEXT_OVERFLOW_TEXT_ONLY_PROMPT = (
     "Respond with text only using the remaining context. Summarize the most important completed work, provide the "
     "best available answer, and call out only the most important missing information or next step if needed."
 )
+WEB_SEARCH_TOOL_NAME = "web_search"
+WEB_FETCH_TOOL_NAME = "web_fetch"
+WEB_SEARCH_SUCCESS_THRESHOLD = 3
+WEB_FETCH_FAILURE_THRESHOLD = 2
 
 
 @dataclass(slots=True)
@@ -89,6 +93,37 @@ class PreparedModelCall:
 class ToolFailureHint:
     kind: str
     tool_name: str
+
+
+@dataclass(slots=True)
+class WebResearchState:
+    successful_web_search_count: int = 0
+    failed_web_fetch_count: int = 0
+    web_search_quota_blocked: bool = False
+    convergence_reminder_used: bool = False
+
+    @property
+    def fetch_failure_converged(self) -> bool:
+        return (
+            self.failed_web_fetch_count >= WEB_FETCH_FAILURE_THRESHOLD
+            and self.successful_web_search_count >= 1
+        )
+
+    @property
+    def web_search_converged(self) -> bool:
+        return self.successful_web_search_count >= WEB_SEARCH_SUCCESS_THRESHOLD
+
+    @property
+    def disable_web_search(self) -> bool:
+        return self.web_search_quota_blocked or self.web_search_converged or self.fetch_failure_converged
+
+    @property
+    def disable_web_fetch(self) -> bool:
+        return self.fetch_failure_converged
+
+    @property
+    def needs_reminder(self) -> bool:
+        return (self.disable_web_search or self.disable_web_fetch) and not self.convergence_reminder_used
 
 
 class AgentLoop:
@@ -133,6 +168,78 @@ class AgentLoop:
             allowed_names = set(allow)
             return [tool for tool in tools if tool.name in allowed_names]
         return tools
+
+    def _filter_web_tools_for_state(self, tools: list[ToolSchema], state: WebResearchState) -> list[ToolSchema]:
+        if not state.disable_web_search and not state.disable_web_fetch:
+            return tools
+
+        filtered: list[ToolSchema] = []
+        for tool in tools:
+            if state.disable_web_search and tool.name == WEB_SEARCH_TOOL_NAME:
+                continue
+            if state.disable_web_fetch and tool.name == WEB_FETCH_TOOL_NAME:
+                continue
+            filtered.append(tool)
+        return filtered
+
+    def _update_web_research_state(self, *, tool_name: str, result: ToolResult, state: WebResearchState) -> None:
+        metadata = result.metadata or {}
+        error_kind = str(metadata.get("error_kind") or "")
+        if tool_name == WEB_SEARCH_TOOL_NAME:
+            if result.error:
+                error_text = str(result.error).lower()
+                if error_kind == "web_search_quota" or any(
+                    marker in error_text
+                    for marker in ("quota", "rate limit", "free credit", "too many requests", " 429", "(429)")
+                ):
+                    state.web_search_quota_blocked = True
+                return
+            returned_count = metadata.get("returned_count", metadata.get("count", 0))
+            try:
+                has_results = int(returned_count or 0) > 0
+            except (TypeError, ValueError):
+                has_results = bool(result.output)
+            if has_results:
+                state.successful_web_search_count += 1
+            return
+
+        if tool_name == WEB_FETCH_TOOL_NAME and result.error:
+            state.failed_web_fetch_count += 1
+
+    def _web_research_convergence_message(self, state: WebResearchState) -> ChatMessage | None:
+        if not state.needs_reminder:
+            return None
+
+        lines = ["[Web research convergence]"]
+        if state.web_search_quota_blocked:
+            lines.append(
+                "web_search is currently blocked by quota or rate limits. Do not call web_search again in this turn."
+            )
+            if state.successful_web_search_count > 0:
+                lines.append(
+                    "Use the evidence already gathered and produce a bounded answer, clearly naming any remaining gaps."
+                )
+            else:
+                lines.append(
+                    "If no usable evidence is available, say that search quota is unavailable and ask for configured search credentials or source URLs."
+                )
+        elif state.fetch_failure_converged:
+            lines.append(
+                "web_fetch has failed repeatedly after search evidence was already collected. Stop expanding web research with web_search or web_fetch."
+            )
+            lines.append("Use existing evidence, answer with caveats, and explicitly state any missing source detail.")
+        elif state.web_search_converged:
+            lines.append(
+                "Enough web_search evidence has been collected for this turn. Do not call web_search again."
+            )
+            lines.append("Synthesize from the gathered evidence and only use non-web tools if they are still necessary.")
+
+        state.convergence_reminder_used = True
+        return ChatMessage(
+            role="assistant",
+            content="\n".join(lines),
+            metadata={"synthetic": True, "web_research_convergence": True},
+        )
 
     def _init_tools(self) -> None:
         self.toolkit.register_middleware(permission_middleware(self.permission_manager))
@@ -542,6 +649,18 @@ class AgentLoop:
             lines.append(
                 "A required user question was dismissed. Continue with the best safe fallback and clearly state what information is still missing."
             )
+        if "web_search_quota" in kinds:
+            lines.append(
+                "web_search hit quota or rate limits. Do not retry the same search path; use existing evidence or explain that configured search credentials/source URLs are needed."
+            )
+        if any(failure.tool_name == WEB_FETCH_TOOL_NAME for failure in failures):
+            lines.append(
+                "web_fetch failed. Do not keep broadening web research just because a page fetch failed; use existing search evidence when possible."
+            )
+        if any(failure.tool_name == WEB_SEARCH_TOOL_NAME for failure in failures) and "web_search_quota" not in kinds:
+            lines.append(
+                "web_search failed. Avoid repeating equivalent searches; answer from available evidence or state the search gap."
+            )
         if "tool_error" in kinds:
             lines.append(
                 "A tool execution failed. Prefer summarizing the failure and trying a different source or method instead of blindly retrying the same call."
@@ -579,6 +698,7 @@ class AgentLoop:
         policy_successful_tools: set[str] = set()
         policy_failed_tools: set[str] = recent_failed_required_tools(self.session.messages, tool_policy) if tool_policy is not None else set()
         policy_soft_followup_used = False
+        web_research_state = WebResearchState()
 
         steps = 0
         try:
@@ -587,7 +707,7 @@ class AgentLoop:
                 is_last_step = steps >= self.config.max_steps
                 snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
                 yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
-                available_tools = self._tools_for_agent()
+                available_tools = self._filter_web_tools_for_state(self._tools_for_agent(), web_research_state)
                 available_tool_names = {tool.name for tool in available_tools}
                 requested_tools = [] if is_last_step else available_tools
 
@@ -751,6 +871,7 @@ class AgentLoop:
                                 await question_task
 
                     result = self._normalize_tool_result_error_kind(tool_name=call.name, result=result)
+                    self._update_web_research_state(tool_name=call.name, result=result, state=web_research_state)
                     result, tool_message = project_tool_result_to_message(
                         result=result,
                         tool_name=call.name,
@@ -793,6 +914,9 @@ class AgentLoop:
                 next_followup_messages: list[ChatMessage] = []
                 if step_failures:
                     next_followup_messages.extend(self._failure_followup_messages(step_failures))
+                web_convergence_message = self._web_research_convergence_message(web_research_state)
+                if web_convergence_message is not None:
+                    next_followup_messages.append(web_convergence_message)
                 if (
                     tool_policy is not None
                     and finish_reason == "stop"

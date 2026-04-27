@@ -224,6 +224,7 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
                     "type": "auto",
                     "numResults": 8,
                     "livecrawl": "fallback",
+                    "contextMaxCharacters": 10000,
                 },
             )
         finally:
@@ -316,6 +317,61 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIsNotNone(res.error)
             self.assertIn("Search error (502): upstream unavailable", res.error)
+            self.assertEqual(res.metadata["error_kind"], "web_search_error")
+            self.assertEqual(res.metadata["status_code"], 502)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_search_classifies_quota_errors_without_large_body(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            long_body = "free credits exceeded " + ("x" * 2000)
+            with patch.object(
+                web_tools,
+                "_post_json",
+                side_effect=web_tools.WebRequestError(
+                    "Request failed with status code: 429",
+                    status_code=429,
+                    body=long_body,
+                ),
+            ):
+                res = await toolkit.execute(
+                    name="web_search",
+                    input={"query": "latest outage report"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNotNone(res.error)
+            self.assertEqual(res.metadata["error_kind"], "web_search_quota")
+            self.assertEqual(res.metadata["status_code"], 429)
+            self.assertLess(len(res.error or ""), 1000)
+            self.assertNotIn("x" * 1000, res.error or "")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_search_passes_exa_api_key_header_from_env(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            response_text = json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "result": {"content": [{"type": "text", "text": "Search context."}]},
+                }
+            )
+            with patch.dict("os.environ", {"OPENAGENT_WEB_SEARCH_EXA_API_KEY": "test-exa-key"}, clear=False):
+                with patch.object(web_tools, "_post_json", return_value=(response_text, "application/json")) as mocked_post:
+                    res = await toolkit.execute(
+                        name="web_search",
+                        input={"query": "configured search"},
+                        context={"session_root": str(root)},
+                    )
+
+            self.assertIsNone(res.error)
+            self.assertEqual(mocked_post.call_args.kwargs["extra_headers"], {"x-api-key": "test-exa-key"})
+            self.assertNotIn("test-exa-key", str(res.metadata))
+            self.assertNotIn("test-exa-key", res.output)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

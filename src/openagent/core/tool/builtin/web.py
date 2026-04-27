@@ -14,6 +14,7 @@ Notes:
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 import json
+import os
 import re
 import socket
 from typing import Any, Literal
@@ -34,7 +35,12 @@ MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 120
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
+EXA_MCP_URL_ENV = "OPENAGENT_WEB_SEARCH_EXA_MCP_URL"
+EXA_API_KEY_ENV = "OPENAGENT_WEB_SEARCH_EXA_API_KEY"
+EXA_API_KEY_FALLBACK_ENV = "EXA_API_KEY"
 EXA_DEFAULT_NUM_RESULTS = 8
+EXA_DEFAULT_CONTEXT_MAX_CHARACTERS = 10000
+HTTP_ERROR_PREVIEW_CHARS = 800
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -50,6 +56,17 @@ RAW_NOISE_BLOCK_RE = re.compile(
 RAW_NOISE_VOID_RE = re.compile(r"<(?:meta|link)\b[^>]*>", re.IGNORECASE)
 SEARCH_PREVIEW_MAX_RESULTS = 4
 SEARCH_PREVIEW_BLOCK_MAX_CHARS = 220
+QUOTA_ERROR_PATTERNS = (
+    "quota",
+    "rate limit",
+    "rate-limit",
+    "rate_limit",
+    "free credit",
+    "free credits",
+    "insufficient credit",
+    "insufficient credits",
+    "too many requests",
+)
 
 
 @dataclass
@@ -156,6 +173,68 @@ def _request_headers(*, accept: str, content_type: str | None = None) -> dict[st
     return headers
 
 
+def _exa_mcp_url() -> str:
+    configured = os.environ.get(EXA_MCP_URL_ENV, "").strip()
+    return configured or EXA_MCP_URL
+
+
+def _exa_api_key() -> str | None:
+    for env_name in (EXA_API_KEY_ENV, EXA_API_KEY_FALLBACK_ENV):
+        configured = os.environ.get(env_name, "").strip()
+        if configured:
+            return configured
+    return None
+
+
+def _exa_request_headers() -> dict[str, str]:
+    api_key = _exa_api_key()
+    if not api_key:
+        return {}
+    return {"x-api-key": api_key}
+
+
+def _summarize_error_body(body: str | None) -> str:
+    if not body:
+        return ""
+
+    compact = re.sub(r"\s+", " ", body).strip()
+    if not compact:
+        return ""
+
+    lower_head = compact[:500].lower()
+    if lower_head.startswith("<!doctype html") or "<html" in lower_head:
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.IGNORECASE | re.DOTALL)
+        title = ""
+        if title_match:
+            title = re.sub(r"\s+", " ", title_match.group(1)).strip()
+        if "web application firewall" in compact.lower() or "waf" in compact.lower():
+            return "upstream returned HTML error page: Alibaba Cloud Web Application Firewall (WAF)"
+        if title:
+            return f"upstream returned HTML error page: {title[:160]}"
+        return "upstream returned HTML error page"
+
+    if len(compact) > HTTP_ERROR_PREVIEW_CHARS:
+        return compact[:HTTP_ERROR_PREVIEW_CHARS] + "..."
+    return compact
+
+
+def _is_web_search_quota_error(error: WebRequestError) -> bool:
+    if error.status_code in {402, 429}:
+        return True
+    haystack = f"{error} {error.body or ''}".lower()
+    return any(pattern in haystack for pattern in QUOTA_ERROR_PATTERNS)
+
+
+def _http_error_message(prefix: str, error: WebRequestError) -> str:
+    status = error.status_code
+    summary = _summarize_error_body(error.body)
+    if status is None:
+        return f"{prefix}: {summary or str(error)}"
+    if summary:
+        return f"{prefix} ({status}): {summary}"
+    return f"{prefix} ({status})"
+
+
 def _decode_http_error_body(error: HTTPError) -> str:
     try:
         payload = error.read()
@@ -206,13 +285,23 @@ def _fetch(url: str, *, timeout: int, accept: str) -> tuple[str, str]:
     return _request_text(request, timeout=timeout)
 
 
-def _post_json(url: str, *, payload: dict[str, Any], timeout: int, accept: str) -> tuple[str, str]:
+def _post_json(
+    url: str,
+    *,
+    payload: dict[str, Any],
+    timeout: int,
+    accept: str,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[str, str]:
     body = json.dumps(payload).encode("utf-8")
+    headers = _request_headers(accept=accept, content_type="application/json")
+    if extra_headers:
+        headers.update({key: value for key, value in extra_headers.items() if value})
     request = Request(
         url,
         data=body,
         method="POST",
-        headers=_request_headers(accept=accept, content_type="application/json"),
+        headers=headers,
     )
     return _request_text(request, timeout=timeout)
 
@@ -506,9 +595,12 @@ def _build_exa_search_request(args: WebSearchParameters) -> dict[str, Any]:
         "type": search_type,
         "numResults": num_results,
         "livecrawl": livecrawl,
+        "contextMaxCharacters": (
+            int(args.context_max_characters)
+            if args.context_max_characters is not None
+            else EXA_DEFAULT_CONTEXT_MAX_CHARACTERS
+        ),
     }
-    if args.context_max_characters is not None:
-        arguments["contextMaxCharacters"] = int(args.context_max_characters)
 
     return {
         "jsonrpc": "2.0",
@@ -578,11 +670,25 @@ async def web_fetch_tool(args: WebFetchParameters, _ctx: ToolContext) -> ToolOut
     try:
         content, content_type = _fetch(url, timeout=timeout, accept=accept)
     except WebRequestError as error:
-        if error.timeout:
-            raise RuntimeError("Request timed out") from error
+        metadata: dict[str, Any] = {
+            "url": url,
+            "format": args.format,
+            "error_kind": "web_fetch_timeout" if error.timeout else "web_fetch_error",
+        }
         if error.status_code is not None:
-            raise RuntimeError(f"Request failed with status code: {error.status_code}") from error
-        raise RuntimeError(str(error)) from error
+            metadata["status_code"] = error.status_code
+        if error.timeout:
+            message = "Request timed out"
+        elif error.status_code is not None:
+            message = _http_error_message("Request failed", error)
+        else:
+            message = str(error)
+        return ToolOutput(
+            title=f"{url} fetch failed",
+            output="",
+            error=message,
+            metadata=metadata,
+        )
 
     if args.format == "html":
         output = content
@@ -615,36 +721,58 @@ async def web_search_tool(args: WebSearchParameters, _ctx: ToolContext) -> ToolO
     timeout = _timeout_seconds(args.timeout)
     request_payload = _build_exa_search_request(args)
     requested_num_results = int(request_payload["params"]["arguments"]["numResults"])
-
-    try:
-        response_text, _content_type = _post_json(
-            EXA_MCP_URL,
-            payload=request_payload,
-            timeout=timeout,
-            accept="application/json, text/event-stream",
-        )
-    except WebRequestError as error:
-        if error.timeout:
-            raise RuntimeError("Search request timed out") from error
-        if error.status_code is not None:
-            detail = f": {error.body}" if error.body else ""
-            raise RuntimeError(f"Search error ({error.status_code}){detail}") from error
-        raise RuntimeError(f"Search request failed: {error}") from error
-
-    output = _parse_exa_search_response(response_text)
-    no_results = not output
-    if no_results:
-        output = "No search results found. Please try a different query."
+    arguments = request_payload["params"]["arguments"]
 
     metadata: dict[str, Any] = {
         "backend": "exa_mcp",
         "query": args.query,
         "num_results": requested_num_results,
         "timeout": timeout,
-        "livecrawl": request_payload["params"]["arguments"]["livecrawl"],
-        "type": request_payload["params"]["arguments"]["type"],
-        "context_max_characters": request_payload["params"]["arguments"].get("contextMaxCharacters"),
+        "livecrawl": arguments["livecrawl"],
+        "type": arguments["type"],
+        "context_max_characters": arguments.get("contextMaxCharacters"),
     }
+
+    try:
+        response_text, _content_type = _post_json(
+            _exa_mcp_url(),
+            payload=request_payload,
+            timeout=timeout,
+            accept="application/json, text/event-stream",
+            extra_headers=_exa_request_headers(),
+        )
+    except WebRequestError as error:
+        if error.timeout:
+            metadata["error_kind"] = "web_search_timeout"
+            message = "Search request timed out"
+        elif _is_web_search_quota_error(error):
+            metadata["error_kind"] = "web_search_quota"
+            message = (
+                "Search quota or rate limit reached. Configure "
+                "OPENAGENT_WEB_SEARCH_EXA_API_KEY or provide source URLs."
+            )
+            summary = _summarize_error_body(error.body)
+            if summary:
+                message = f"{message} Details: {summary}"
+        else:
+            metadata["error_kind"] = "web_search_error"
+            message = _http_error_message("Search error", error)
+        if error.status_code is not None:
+            metadata["status_code"] = error.status_code
+        metadata["returned_count"] = 0
+        metadata["count"] = 0
+        return ToolOutput(
+            title=f"Web search: {args.query}",
+            output="",
+            error=message,
+            metadata=metadata,
+        )
+
+    output = _parse_exa_search_response(response_text)
+    no_results = not output
+    if no_results:
+        output = "No search results found. Please try a different query."
+
     preview, returned_count = _search_preview_from_text(output, num_results=requested_num_results)
     if no_results:
         returned_count = 0

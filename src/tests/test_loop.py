@@ -14,7 +14,7 @@ from openagent.core.permission.rule import PermissionAction
 from openagent.core.session.session import Session
 from openagent.core.tool.definition import ToolContext, ToolOutput
 from openagent.core.tool.toolkit import ToolkitAdapter
-from openagent.core.types import AgentConfig, ChatMessage, Model, SessionStatus
+from openagent.core.types import AgentConfig, ChatMessage, Model, SessionStatus, ToolResult
 
 from _mock_model import ScriptedLanguageModel
 
@@ -74,6 +74,9 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[Runtime context]", runtime.content)
         self.assertRegex(runtime.content, r"Current local datetime: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
         self.assertIn("UTC", runtime.content)
+
+    def _convergence_messages(self, messages: list[ChatMessage]) -> list[ChatMessage]:
+        return [message for message in messages if bool((message.metadata or {}).get("web_research_convergence"))]
 
     async def test_loop_executes_tool_and_emits_patch(self) -> None:
         model = ScriptedLanguageModel(
@@ -140,6 +143,117 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("read", exposed)
         self.assertIn("web_fetch", exposed)
         self.assertNotIn("code_search", exposed)
+
+    async def test_loop_stops_exposing_web_search_after_three_successful_searches(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="w1", name="web_search", input={"query": "q1"}),
+                _tool_call_step(call_id="w2", name="web_search", input={"query": "q2"}),
+                _tool_call_step(call_id="w3", name="web_search", input={"query": "q3"}),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "bounded synthesis"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=6, tools=["web_search", "web_fetch"])
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=PermissionManager())
+
+        async def fake_execute(**kwargs) -> ToolResult:
+            return ToolResult(
+                call_id=str(kwargs["call_id"]),
+                output="Search evidence.",
+                metadata={"tool": "web_search", "returned_count": 1, "count": 1},
+            )
+
+        loop.toolkit.execute = fake_execute  # type: ignore[method-assign]
+
+        async for _event in loop.run("research"):
+            pass
+
+        self.assertEqual(model.call_index, 4)
+        self.assertIn("web_search", model.seen_tools_by_call[0])
+        self.assertNotIn("web_search", model.seen_tools_by_call[3])
+        self.assertIn("web_fetch", model.seen_tools_by_call[3])
+        self.assertEqual(len(self._convergence_messages(model.seen_messages_by_call[3])), 1)
+
+    async def test_loop_stops_web_research_after_repeated_fetch_failures(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="w1", name="web_search", input={"query": "q1"}),
+                _tool_call_step(call_id="f1", name="web_fetch", input={"url": "https://example.com/a"}),
+                _tool_call_step(call_id="f2", name="web_fetch", input={"url": "https://example.com/b"}),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "bounded synthesis after fetch failures"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=6, tools=["web_search", "web_fetch"])
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=PermissionManager())
+
+        async def fake_execute(**kwargs) -> ToolResult:
+            if kwargs["name"] == "web_search":
+                return ToolResult(
+                    call_id=str(kwargs["call_id"]),
+                    output="Search evidence.",
+                    metadata={"tool": "web_search", "returned_count": 1, "count": 1},
+                )
+            return ToolResult(
+                call_id=str(kwargs["call_id"]),
+                output="",
+                error="Request failed (404)",
+                metadata={"tool": "web_fetch", "error_kind": "web_fetch_error"},
+            )
+
+        loop.toolkit.execute = fake_execute  # type: ignore[method-assign]
+
+        async for _event in loop.run("research"):
+            pass
+
+        self.assertEqual(model.call_index, 4)
+        self.assertNotIn("web_search", model.seen_tools_by_call[3])
+        self.assertNotIn("web_fetch", model.seen_tools_by_call[3])
+        self.assertEqual(len(self._convergence_messages(model.seen_messages_by_call[3])), 1)
+
+    async def test_loop_stops_web_search_after_quota_error(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                _tool_call_step(call_id="w1", name="web_search", input={"query": "q1"}),
+                [
+                    {"type": "text-delta", "id": "t1", "text": "search quota unavailable"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        cfg = AgentConfig(name="u", permission="FULL", max_steps=5, tools=["web_search", "web_fetch"])
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=PermissionManager())
+
+        async def fake_execute(**kwargs) -> ToolResult:
+            return ToolResult(
+                call_id=str(kwargs["call_id"]),
+                output="",
+                error="Search quota or rate limit reached.",
+                metadata={"tool": "web_search", "error_kind": "web_search_quota"},
+            )
+
+        loop.toolkit.execute = fake_execute  # type: ignore[method-assign]
+
+        async for _event in loop.run("research"):
+            pass
+
+        self.assertEqual(model.call_index, 2)
+        self.assertIn("web_search", model.seen_tools_by_call[0])
+        self.assertNotIn("web_search", model.seen_tools_by_call[1])
+        reminders = self._convergence_messages(model.seen_messages_by_call[1])
+        self.assertEqual(len(reminders), 1)
+        self.assertIn("quota", reminders[0].content)
 
     async def test_loop_errors_before_provider_call_when_context_budget_overflows(self) -> None:
         model = ScriptedLanguageModel(script=_success_script())

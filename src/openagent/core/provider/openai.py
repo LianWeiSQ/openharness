@@ -1,8 +1,10 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -11,6 +13,8 @@ from typing import Any, Callable
 from ..message_materializer import materialize_openai_compatible_payload
 from ..types import Model, ModelCapabilities, ToolSchema, Usage
 from .base import LanguageModel, ProviderBase
+
+HTTP_ERROR_BODY_PREVIEW_CHARS = 800
 
 
 def _extract_text_content(value: Any) -> str:
@@ -122,6 +126,48 @@ def _best_effort_load_json(raw_text: str) -> Any | None:
     return best_candidate
 
 
+def _http_error_message(exc: urllib.error.HTTPError) -> str:
+    raw = exc.read().decode("utf-8", errors="replace")
+    headers = exc.headers or {}
+    content_type = str(headers.get("Content-Type") or headers.get("content-type") or "")
+    return f"OpenAI-compatible HTTP {exc.code}: {_summarize_http_error_body(raw, content_type)}"
+
+
+def _summarize_http_error_body(raw: str, content_type: str) -> str:
+    text = raw or ""
+    lower_type = content_type.lower()
+    stripped = text.lstrip()
+    looks_like_html = "text/html" in lower_type or stripped.lower().startswith(("<!doctype html", "<html"))
+    if looks_like_html:
+        title = _extract_html_title(text)
+        if "Alibaba Cloud Web Application Firewall" in text:
+            title = "Alibaba Cloud Web Application Firewall (WAF)"
+        suffix = f": {title}" if title else ""
+        return f"upstream returned HTML error page{suffix}"
+
+    compact = _compact_error_text(text)
+    if not compact:
+        return "empty response body"
+    return _truncate_error_text(compact)
+
+
+def _extract_html_title(raw: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", raw, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return _truncate_error_text(_compact_error_text(html.unescape(match.group(1))))
+
+
+def _compact_error_text(raw: str) -> str:
+    return " ".join(str(raw or "").split())
+
+
+def _truncate_error_text(text: str) -> str:
+    if len(text) <= HTTP_ERROR_BODY_PREVIEW_CHARS:
+        return text
+    return text[:HTTP_ERROR_BODY_PREVIEW_CHARS].rstrip() + "..."
+
+
 def _post_json(*, url: str, headers: dict[str, str], payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url=url, data=data, method="POST")
@@ -132,8 +178,7 @@ def _post_json(*, url: str, headers: dict[str, str], payload: dict[str, Any], ti
             raw = resp.read().decode("utf-8", errors="replace")
             return json.loads(raw)
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI-compatible HTTP {exc.code}: {raw}") from exc
+        raise RuntimeError(_http_error_message(exc)) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"OpenAI-compatible request failed: {exc}") from exc
 
@@ -209,8 +254,7 @@ def _post_sse(
                 if isinstance(obj, dict):
                     on_event(obj)
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"OpenAI-compatible HTTP {exc.code}: {raw}") from exc
+        raise RuntimeError(_http_error_message(exc)) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"OpenAI-compatible request failed: {exc}") from exc
 
@@ -398,7 +442,12 @@ class OpenAIProvider(ProviderBase):
     ) -> None:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or ""
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
-        self.host_header = host_header or os.getenv("OPENAI_HOST_HEADER") or None
+        if host_header is not None:
+            self.host_header = host_header or None
+        elif base_url is not None:
+            self.host_header = None
+        else:
+            self.host_header = os.getenv("OPENAI_HOST_HEADER") or None
 
     async def get_language_model(self, model: Model) -> LanguageModel:
         if not self.api_key:
