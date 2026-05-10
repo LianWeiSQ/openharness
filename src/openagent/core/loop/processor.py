@@ -25,10 +25,11 @@ from ..context_messages import (
 )
 from ..context_state import build_compaction_record
 from ..execution import build_workspace_runtime
+from ..observability import ObservationRecorder
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
 from ..question import QuestionManager, QuestionRequest
-from ..tool.middleware import logging_middleware, permission_middleware
+from ..tool.middleware import logging_middleware, observability_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
 from ..tool_policy import (
     ToolCapability,
@@ -178,6 +179,7 @@ class AgentLoop:
         self.workspace_runtime = build_workspace_runtime(session)
         self.memory = MemoryAdapter()
         self.tool_log: list[dict[str, Any]] = []
+        self.observation_recorder: ObservationRecorder | None = None
         self.question_manager = question_manager or QuestionManager()
         self.question_manager.set_hooks(on_requested=self._on_question_requested, on_resolved=self._on_question_resolved)
         self._init_tools()
@@ -272,6 +274,7 @@ class AgentLoop:
 
     def _init_tools(self) -> None:
         self.toolkit.register_middleware(permission_middleware(self.permission_manager))
+        self.toolkit.register_middleware(observability_middleware())
         self.toolkit.register_middleware(logging_middleware(self.tool_log))
         self.toolkit.load_builtin()
 
@@ -303,6 +306,16 @@ class AgentLoop:
         }
         self.session.metadata["last_context_budget"] = diagnostics
         self._append_context_projection_diagnostic(budget=budget, config=config)
+        self._record_observation(
+            "context.budget_checked",
+            kind="context",
+            attributes={
+                **diagnostics,
+                "projection": _projection_for_fallback_stage(budget.fallback_stage),
+                "strategy": config.get("strategy"),
+                "prune_old_tool_outputs": bool(config.get("prune_old_tool_outputs")),
+            },
+        )
 
     def _append_context_projection_diagnostic(self, *, budget: ContextBudgetResult, config: dict[str, Any]) -> None:
         trace_raw = self.session.metadata.get("context_projection_trace")
@@ -331,6 +344,15 @@ class AgentLoop:
             "cost": usage.cost,
         }
         self.session.metadata["last_model_usage_at"] = int(time.time() * 1000)
+        self._record_observation(
+            "model.usage",
+            kind="model",
+            attributes={
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cost": usage.cost,
+            },
+        )
 
     def _last_usage_needs_preemptive_reduction(self) -> bool:
         usage = self.session.metadata.get("last_model_usage")
@@ -435,6 +457,77 @@ class AgentLoop:
         self.session.metadata["last_tool_output_prune_tokens"] = reclaimed
         return reclaimed
 
+    def _record_observation(
+        self,
+        name: str,
+        *,
+        kind: str = "event",
+        status: str = "ok",
+        attributes: dict[str, Any] | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        if self.observation_recorder is None:
+            return
+        self.observation_recorder.event(
+            name,
+            kind=kind,
+            status=status,
+            attributes=attributes,
+            duration_ms=duration_ms,
+        )
+
+    def _mark_observed_error(
+        self,
+        span,
+        *,
+        message: str,
+        error_kind: str,
+        step_index: int | None = None,
+        attempt_index: int | None = None,
+    ) -> None:
+        if span is not None:
+            span.status = "error"
+            span.error = {
+                "type": error_kind,
+                "message": message,
+                "error_kind": error_kind,
+            }
+        self._record_observation(
+            "run.failed",
+            kind="run",
+            status="error",
+            attributes={
+                "error_kind": error_kind,
+                "message": message,
+                "step_index": step_index,
+                "attempt_index": attempt_index,
+            },
+        )
+        self._record_observation(
+            "error",
+            kind="error",
+            status="error",
+            attributes={
+                "error_kind": error_kind,
+                "message": message,
+                "step_index": step_index,
+                "attempt_index": attempt_index,
+            },
+        )
+
+    def _new_observation_recorder(self) -> ObservationRecorder:
+        model = self.agent.config.model
+        return ObservationRecorder.for_session(
+            session_id=self.session.id,
+            session_metadata=self.session.metadata,
+            agent_name=self.agent.config.name,
+            model_id=model.id if model is not None else None,
+            provider_id=model.provider_id if model is not None else None,
+            workspace=str(self.session.directory),
+            options=self.agent.config.options,
+            base_dir=Path(self.session.directory),
+        )
+
     async def _run_compaction_model(self, messages_to_compact: list[ChatMessage], *, max_output_tokens: int) -> str:
         todo_payload = [todo.to_dict() for todo in self.session.todos]
         todo_section = ""
@@ -446,17 +539,41 @@ class AgentLoop:
             ChatMessage(role="user", content=COMPACTION_USER_PROMPT + todo_section),
         ]
         chunks: list[str] = []
-        async for event in self.agent.model.stream(
-            system=COMPACTION_SYSTEM_PROMPT,
-            messages=prompt_messages,
-            tools=[],
-            temperature=self.agent.config.temperature,
-            max_output_tokens=max_output_tokens,
-            options=self.agent.config.options,
-        ):
-            if event.get("type") == "text-delta":
-                chunks.append(str(event.get("text", "")))
-        return "".join(chunks).strip()
+        recorder = self.observation_recorder
+        if recorder is None:
+            async for event in self.agent.model.stream(
+                system=COMPACTION_SYSTEM_PROMPT,
+                messages=prompt_messages,
+                tools=[],
+                temperature=self.agent.config.temperature,
+                max_output_tokens=max_output_tokens,
+                options=self.agent.config.options,
+            ):
+                if event.get("type") == "text-delta":
+                    chunks.append(str(event.get("text", "")))
+            return "".join(chunks).strip()
+
+        with recorder.span(
+            "context.compaction",
+            kind="context",
+            attributes={
+                "message_count": len(messages_to_compact),
+                "max_output_tokens": max_output_tokens,
+            },
+        ) as span:
+            async for event in self.agent.model.stream(
+                system=COMPACTION_SYSTEM_PROMPT,
+                messages=prompt_messages,
+                tools=[],
+                temperature=self.agent.config.temperature,
+                max_output_tokens=max_output_tokens,
+                options=self.agent.config.options,
+            ):
+                if event.get("type") == "text-delta":
+                    chunks.append(str(event.get("text", "")))
+            raw = "".join(chunks).strip()
+            span.set_attribute("output_chars", len(raw))
+            return raw
 
     async def _compact_context(self, config: dict[str, Any]) -> bool:
         compacted_until = recent_user_turn_start(self.session.messages, int(config["prune_keep_recent_user_turns"]))
@@ -472,12 +589,28 @@ class AgentLoop:
             max_output_tokens=int(config["compact_summary_max_output_tokens"]),
         )
         if not raw_compaction:
+            self._record_observation(
+                "context.compaction.finished",
+                kind="context",
+                attributes={"compacted": False, "reason": "empty_model_output"},
+            )
             return False
 
-        self.session.metadata[CONTEXT_COMPACTION_METADATA_KEY] = build_compaction_record(
+        record = build_compaction_record(
             raw_text=raw_compaction,
             compacted_until=compacted_until,
             updated_at=int(time.time() * 1000),
+        )
+        self.session.metadata[CONTEXT_COMPACTION_METADATA_KEY] = record
+        self._record_observation(
+            "context.compaction.finished",
+            kind="context",
+            attributes={
+                "compacted": True,
+                "source": record.get("source"),
+                "format": record.get("format"),
+                "compacted_until": compacted_until,
+            },
         )
         return True
 
@@ -658,6 +791,7 @@ class AgentLoop:
             "workspace_root": getattr(self.workspace_runtime, "workspace_root", str(self.session.directory)),
             "workspace_runtime": self.workspace_runtime,
             "execution_metadata": execution_metadata,
+            "observation_recorder": self.observation_recorder,
         }
 
     @staticmethod
@@ -763,9 +897,21 @@ class AgentLoop:
         return [ChatMessage(role="assistant", content="\n".join(lines), metadata={"synthetic": True, "tool_policy_followup": True})]
 
     async def run(self, user_text: str):
+        self.observation_recorder = self._new_observation_recorder()
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
         self.session.status = SessionStatus.RUNNING
         self.session.add(ChatMessage(role="user", content=user_text))
+        self._record_observation(
+            "run.started",
+            kind="run",
+            attributes={
+                "agent_name": self.agent.config.name,
+                "model_id": self.agent.config.model.id if self.agent.config.model is not None else None,
+                "provider_id": self.agent.config.model.provider_id if self.agent.config.model is not None else None,
+                "permission": self.agent.config.permission,
+                "input_chars": len(user_text),
+            },
+        )
         tool_policy = classify_tool_policy(user_text) if self.agent.uses_default_system_prompt else None
         followup_messages: list[ChatMessage] = []
         policy_successful_tools: set[str] = set()
@@ -779,6 +925,16 @@ class AgentLoop:
                 steps += 1
                 is_last_step = steps >= self.config.max_steps
                 snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
+                step_started_at = time.time()
+                self._record_observation(
+                    "step.started",
+                    kind="step",
+                    attributes={
+                        "step_index": steps,
+                        "snapshot_id": snapshot_id,
+                        "is_last_step": is_last_step,
+                    },
+                )
                 yield {"type": "step-start", "snapshot_id": snapshot_id}  # type: ignore[misc]
                 available_tools = self._filter_web_tools_for_state(self._tools_for_agent(), web_research_state)
                 available_tool_names = {tool.name for tool in available_tools}
@@ -787,11 +943,24 @@ class AgentLoop:
                 if steps == 1 and tool_policy is not None and not is_last_step:
                     missing_tools = missing_required_tools(tool_policy, available_tool_names)
                     if missing_tools:
-                        yield {"type": "error", "error": format_missing_tools_error(tool_policy, missing_tools)}  # type: ignore[misc]
+                        error_message = format_missing_tools_error(tool_policy, missing_tools)
+                        self._mark_observed_error(
+                            None,
+                            message=error_message,
+                            error_kind="missing_required_tools",
+                            step_index=steps,
+                        )
+                        yield {"type": "error", "error": error_message}  # type: ignore[misc]
                         return
 
                 prepared, budget_error, context_budget_config = await self._prepare_messages_for_model(tools=requested_tools)
                 if budget_error is not None:
+                    self._mark_observed_error(
+                        None,
+                        message=budget_error,
+                        error_kind="context_budget_error",
+                        step_index=steps,
+                    )
                     yield {"type": "error", "error": budget_error}  # type: ignore[misc]
                     return
                 assert prepared is not None
@@ -838,24 +1007,68 @@ class AgentLoop:
                             f"{format_tool_policy_reminder(tool_policy, current_step_missing_capabilities)}"
                         )
 
-                    stream = adapter.reply_stream(
-                        system=effective_system_prompt,
-                        messages=messages,
-                        tools=tools,
-                        max_output_tokens=max_output_tokens,
+                    recorder = self.observation_recorder
+                    model_span_cm = (
+                        recorder.span(
+                            "model.call",
+                            kind="model",
+                            attributes={
+                                "step_index": steps,
+                                "attempt_index": attempt,
+                                "tool_schema_count": len(tools),
+                                "message_count": len(messages),
+                                "max_output_tokens": max_output_tokens,
+                            },
+                        )
+                        if recorder is not None
+                        else None
                     )
                     buffered_events: list[StreamEvent] | None = [] if policy_guard_active else None
                     try:
-                        assistant_text_chunks = []
-                        async for event in stream:
-                            yielded = True
-                            if event["type"] == "text-delta":
-                                assistant_text_chunks.append(event["text"])
-                            if buffered_events is not None:
-                                buffered_events.append(event)
-                            else:
-                                yield event
-                        info = await stream.info()
+                        if model_span_cm is None:
+                            stream = adapter.reply_stream(
+                                system=effective_system_prompt,
+                                messages=messages,
+                                tools=tools,
+                                max_output_tokens=max_output_tokens,
+                            )
+                            assistant_text_chunks = []
+                            async for event in stream:
+                                yielded = True
+                                if event["type"] == "text-delta":
+                                    assistant_text_chunks.append(event["text"])
+                                if buffered_events is not None:
+                                    buffered_events.append(event)
+                                else:
+                                    yield event
+                            info = await stream.info()
+                        else:
+                            with model_span_cm as model_span:
+                                stream = adapter.reply_stream(
+                                    system=effective_system_prompt,
+                                    messages=messages,
+                                    tools=tools,
+                                    max_output_tokens=max_output_tokens,
+                                )
+                                assistant_text_chunks = []
+                                async for event in stream:
+                                    yielded = True
+                                    if event["type"] == "text-delta":
+                                        assistant_text_chunks.append(event["text"])
+                                    if buffered_events is not None:
+                                        buffered_events.append(event)
+                                    else:
+                                        yield event
+                                info = await stream.info()
+                                model_span.set_attributes(
+                                    {
+                                        "finish_reason": info.finish_reason,
+                                        "tool_call_count": len(info.tool_calls),
+                                        "input_tokens": info.usage.input_tokens,
+                                        "output_tokens": info.usage.output_tokens,
+                                        "cost": info.usage.cost,
+                                    }
+                                )
 
                         if policy_guard_active and tool_policy is not None:
                             assistant_content = "".join(assistant_text_chunks)
@@ -874,15 +1087,27 @@ class AgentLoop:
                                 policy_retry_used = True
                                 attempt = 0
                                 continue
-                            yield {
-                                "type": "error",
-                                "error": format_tool_policy_retry_error(tool_policy, current_step_missing_capabilities),
-                            }  # type: ignore[misc]
+                            error_message = format_tool_policy_retry_error(tool_policy, current_step_missing_capabilities)
+                            self._mark_observed_error(
+                                None,
+                                message=error_message,
+                                error_kind="tool_policy_retry_failed",
+                                step_index=steps,
+                                attempt_index=attempt,
+                            )
+                            yield {"type": "error", "error": error_message}  # type: ignore[misc]
                             return
 
                         break
                     except Exception as error:  # noqa: BLE001
                         if attempt > self.config.max_retry or yielded:
+                            self._mark_observed_error(
+                                None,
+                                message=str(error),
+                                error_kind=type(error).__name__,
+                                step_index=steps,
+                                attempt_index=attempt,
+                            )
                             yield {"type": "error", "error": str(error)}  # type: ignore[misc]
                             return
                         await asyncio.sleep(self.config.retry_base_delay_s * (2 ** (attempt - 1)))
@@ -907,7 +1132,26 @@ class AgentLoop:
                 step_failures: list[ToolFailureHint] = []
                 for call in info_tool_calls:
                     if self.doom_loop_detector.record(call):
-                        yield {"type": "error", "error": self._repeated_tool_call_error(call)}  # type: ignore[misc]
+                        error_message = self._repeated_tool_call_error(call)
+                        self._record_observation(
+                            "doom_loop.detected",
+                            kind="error",
+                            status="error",
+                            attributes={
+                                "step_index": steps,
+                                "tool_name": call.name,
+                                "call_id": call.call_id,
+                                "error_kind": "doom_loop",
+                            },
+                        )
+                        self._mark_observed_error(
+                            None,
+                            message=error_message,
+                            error_kind="doom_loop",
+                            step_index=steps,
+                            attempt_index=attempt,
+                        )
+                        yield {"type": "error", "error": error_message}  # type: ignore[misc]
                         return
 
                     question_task: asyncio.Task[QuestionRequest] | None = None
@@ -925,6 +1169,16 @@ class AgentLoop:
                             done, _ = await asyncio.wait({tool_task, question_task}, return_when=asyncio.FIRST_COMPLETED)
                             if question_task in done:
                                 request = question_task.result()
+                                self._record_observation(
+                                    "question.requested",
+                                    kind="question",
+                                    attributes={
+                                        "step_index": steps,
+                                        "tool_call_id": request.tool_call_id,
+                                        "request_id": request.request_id,
+                                        "question_count": len(request.questions),
+                                    },
+                                )
                                 yield self._question_request_event(request)  # type: ignore[misc]
                                 question_task = asyncio.create_task(self.question_manager.next_request())
                                 continue
@@ -972,12 +1226,41 @@ class AgentLoop:
 
                 patch = self.snapshot_manager.patch(snapshot_id)
                 if patch.get("files"):
+                    self._record_observation(
+                        "patch.detected",
+                        kind="patch",
+                        attributes={
+                            "step_index": steps,
+                            "snapshot_id": snapshot_id,
+                            "hash": patch.get("hash"),
+                            "file_count": len(patch.get("files") or []),
+                            "files": [
+                                item.get("path") or item.get("file") or item.get("name")
+                                for item in (patch.get("files") or [])
+                                if isinstance(item, dict)
+                            ],
+                        },
+                    )
                     yield {"type": "patch", "snapshot_id": snapshot_id, "hash": patch["hash"], "files": patch["files"]}  # type: ignore[misc]
                 usage: Usage = info.usage
                 self._record_model_usage(usage)
                 finish_reason: FinishReason = info.finish_reason
                 if info_tool_calls and finish_reason == "unknown":
                     finish_reason = "tool_call"
+                self._record_observation(
+                    "step.finished",
+                    kind="step",
+                    attributes={
+                        "step_index": steps,
+                        "attempt_index": attempt,
+                        "finish_reason": finish_reason,
+                        "tool_call_count": len(info_tool_calls),
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "cost": usage.cost,
+                    },
+                    duration_ms=int((time.time() - step_started_at) * 1000),
+                )
                 yield {
                     "type": "step-finish",
                     "tokens": {"input": usage.input_tokens, "output": usage.output_tokens},
@@ -1019,7 +1302,22 @@ class AgentLoop:
                 if followup_messages and finish_reason == "stop" and not is_last_step:
                     continue
                 if finish_reason == "stop" or is_last_step:
+                    self._record_observation(
+                        "run.finished",
+                        kind="run",
+                        attributes={
+                            "status": "completed",
+                            "steps": steps,
+                            "finish_reason": finish_reason,
+                        },
+                    )
                     return
+            self._mark_observed_error(
+                None,
+                message="max_steps exceeded",
+                error_kind="max_steps_exceeded",
+                step_index=steps,
+            )
             yield {"type": "error", "error": "max_steps exceeded"}  # type: ignore[misc]
         finally:
             self.session.status = SessionStatus.STOP

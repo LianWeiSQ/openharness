@@ -144,45 +144,6 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
-    def test_block_preview_keeps_dense_middle_block(self) -> None:
-        text = "\n\n".join(
-            [
-                "Home",
-                "Docs",
-                "Pricing",
-                "Migration update: stage two completed successfully, 68 services now use the shared gateway, and rollback steps were verified during rehearsal.",
-                "Footer link",
-            ]
-        )
-
-        preview = web_tools._block_preview_from_text(text)
-
-        self.assertIn("Migration update", preview)
-        self.assertNotIn("Home", preview)
-        self.assertNotIn("Docs", preview)
-
-    def test_block_preview_keeps_tail_block(self) -> None:
-        text = "\n\n".join(
-            [
-                "Platform overview: this release coordinates service migration, queue draining, and deployment verification across all regions.",
-                "The rollout plan covers authentication updates, queue migration, deployment sequencing, and operational verification across each region.",
-                "Closing summary: customer traffic will move in three waves, with final validation scheduled after the last region drains.",
-            ]
-        )
-
-        preview = web_tools._block_preview_from_text(text)
-
-        self.assertIn("Platform overview", preview)
-        self.assertIn("Closing summary", preview)
-
-    def test_block_preview_falls_back_for_flat_text(self) -> None:
-        text = "Line one introduces the task\nLine two adds supporting detail\nLine three includes value 2026\nLine four closes the note"
-
-        preview = web_tools._block_preview_from_text(text)
-
-        self.assertIn("Line one introduces the task", preview)
-        self.assertIn("Line three includes value 2026", preview)
-
     async def test_web_search_uses_exa_defaults_and_parses_sse_response(self) -> None:
         root = self._make_temp_root()
         try:

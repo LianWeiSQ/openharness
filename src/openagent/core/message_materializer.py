@@ -6,7 +6,7 @@ from typing import Any
 from .types import ChatMessage, Model, ToolSchema
 
 OPENAI_COMPATIBLE_PROVIDER_IDS = frozenset({"openai", "dashscope"})
-RUNTIME_OPTION_KEYS = frozenset({"context_budget", "compaction"})
+RUNTIME_OPTION_KEYS = frozenset({"context_budget", "compaction", "observability"})
 
 
 @dataclass(frozen=True, slots=True)

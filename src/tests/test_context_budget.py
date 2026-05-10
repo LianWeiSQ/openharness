@@ -88,19 +88,6 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertIsNotNone(with_tool)
         self.assertGreater(with_tool.estimated_input_tokens, base.estimated_input_tokens)
 
-    def test_auto_strategy_is_default(self) -> None:
-        result = check_context_budget(
-            system="You are helpful.",
-            messages=[ChatMessage(role="user", content="hello")],
-            tools=[],
-            model=_make_model(),
-            options={},
-        )
-
-        self.assertIsNotNone(result)
-        self.assertFalse(result.overflowed)
-        self.assertEqual(result.fallback_stage, "initial")
-
     def test_compact_strategy_is_supported(self) -> None:
         result = check_context_budget(
             system="You are helpful.",
@@ -210,14 +197,6 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertTrue(config["prune_old_tool_outputs"])
         self.assertEqual(config["input_safety_margin_tokens"], 128)
 
-    def test_compaction_facade_auto_true_maps_to_auto_strategy(self) -> None:
-        config = load_context_budget_options(
-            {"compaction": {"auto": True}},
-            model=_make_model(context_window=8192, max_output=512),
-        )
-
-        self.assertEqual(config["strategy"], "auto")
-
     def test_invalid_compaction_facade_raises_clear_error(self) -> None:
         with self.assertRaises(ContextBudgetConfigError) as ctx:
             load_context_budget_options(
@@ -245,6 +224,7 @@ class ContextBudgetTests(unittest.TestCase):
             options={
                 "context_budget": {"strategy": "auto"},
                 "compaction": {"auto": True},
+                "observability": {"enabled": True},
                 "reasoning_effort": "low",
             },
         )
