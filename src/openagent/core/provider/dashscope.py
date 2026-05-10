@@ -8,7 +8,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from ..message_materializer import materialize_openai_compatible_payload
+from ..message_materializer import RUNTIME_OPTION_KEYS, materialize_openai_compatible_payload
 from ..types import Model, ModelCapabilities, ToolSchema, Usage
 from .base import LanguageModel, ProviderBase
 
@@ -32,7 +32,7 @@ def _post_json(*, url: str, headers: dict[str, str], payload: dict[str, Any], ti
 def _provider_options(options: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(options, dict):
         return {}
-    return {key: value for key, value in options.items() if key != "context_budget"}
+    return {key: value for key, value in options.items() if key not in RUNTIME_OPTION_KEYS}
 
 
 def _usage_from_openai(usage: dict[str, Any] | None) -> Usage:

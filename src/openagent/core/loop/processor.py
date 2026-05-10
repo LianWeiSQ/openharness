@@ -13,6 +13,8 @@ from ..agent.base import BaseAgent
 from ..context_budget import ContextBudgetConfigError, ContextBudgetResult, check_context_budget, format_context_budget_error, load_context_budget_options
 from ..context_messages import (
     CONTEXT_COMPACTION_METADATA_KEY,
+    build_brief_messages_for_model,
+    build_brief_trimmed_messages_for_model,
     build_messages_for_model,
     build_trimmed_messages_for_model,
     count_new_messages_since_compaction,
@@ -21,6 +23,7 @@ from ..context_messages import (
     prune_old_tool_messages,
     recent_user_turn_start,
 )
+from ..context_state import build_compaction_record
 from ..execution import build_workspace_runtime
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
@@ -45,13 +48,25 @@ from .doom_loop import DoomLoopDetector
 from .snapshot import SnapshotManager
 
 COMPACTION_SYSTEM_PROMPT = (
-    "You condense coding sessions so a later model call can continue the work with minimal loss. "
-    "Write a concise but specific summary."
+    "You condense coding sessions into a structured work state so a later model call can continue with minimal loss. "
+    "Return only a JSON object. Do not wrap it in markdown."
 )
 COMPACTION_USER_PROMPT = (
-    "Summarize the conversation above for continuation in a new context. Include: the current goal; completed work; "
-    "important tool findings; key files read or changed; the current todo list; blockers or open questions; and the "
-    "most likely next step. Keep it compact but concrete."
+    "Create a structured work state for continuing the conversation above. Return exactly one JSON object with this shape:\n"
+    "{\n"
+    '  "task": "current goal and user intent",\n'
+    '  "progress": ["completed work and durable facts"],\n'
+    '  "decisions": ["decisions, constraints, assumptions, or user preferences"],\n'
+    '  "files": [{"path": "relative/or/display/path", "status": "read|modified|created|deleted|mentioned|unknown", "note": "why it matters"}],\n'
+    '  "tool_findings": ["important tool results, errors, evidence, or commands run"],\n'
+    '  "todos": ["active todo items, preserving status when useful"],\n'
+    '  "open_questions": ["questions that still need user input"],\n'
+    '  "blockers": ["external blockers or missing information"],\n'
+    '  "next_steps": ["most likely next actions"],\n'
+    '  "risks": ["verification gaps or risks to mention later"]\n'
+    "}\n"
+    "Preserve concrete filenames, commands, errors, design decisions, and test results. "
+    "Drop stale chatter, repeated attempts, and generic politeness. Keep each item compact but specific."
 )
 MAX_STEPS_TEXT_ONLY_PROMPT = (
     "CRITICAL - MAXIMUM STEPS REACHED\n\n"
@@ -70,6 +85,20 @@ WEB_SEARCH_TOOL_NAME = "web_search"
 WEB_FETCH_TOOL_NAME = "web_fetch"
 WEB_SEARCH_SUCCESS_THRESHOLD = 3
 WEB_FETCH_FAILURE_THRESHOLD = 2
+
+
+def _projection_for_fallback_stage(stage: str) -> str:
+    if stage in {"initial", "after_prune", "after_compact"}:
+        return "full"
+    if stage == "after_compact_brief":
+        return "brief"
+    if stage in {"after_compact_minimal", "after_trim"}:
+        return "minimal"
+    if stage == "final_text_only":
+        return "text_only"
+    if stage == "current_user_only":
+        return "current_user_only"
+    return "unknown"
 
 
 @dataclass(slots=True)
@@ -256,7 +285,8 @@ class AgentLoop:
     def _record_budget_diagnostics(self, budget: ContextBudgetResult | None) -> None:
         if budget is None:
             return
-        self.session.metadata["last_context_budget"] = {
+        config = self._context_budget_config()
+        diagnostics = {
             "estimated_input_tokens": budget.estimated_input_tokens,
             "input_limit_tokens": budget.input_limit_tokens,
             "context_window": budget.context_window,
@@ -269,7 +299,30 @@ class AgentLoop:
             "counting_exact": budget.counting_exact,
             "fallback_stage": budget.fallback_stage,
             "payload_kind": budget.payload_kind,
+            "compaction_mode": config.get("compaction_mode"),
         }
+        self.session.metadata["last_context_budget"] = diagnostics
+        self._append_context_projection_diagnostic(budget=budget, config=config)
+
+    def _append_context_projection_diagnostic(self, *, budget: ContextBudgetResult, config: dict[str, Any]) -> None:
+        trace_raw = self.session.metadata.get("context_projection_trace")
+        trace = list(trace_raw) if isinstance(trace_raw, list) else []
+        trace.append(
+            {
+                "stage": budget.fallback_stage,
+                "projection": _projection_for_fallback_stage(budget.fallback_stage),
+                "estimated_input_tokens": budget.estimated_input_tokens,
+                "input_limit_tokens": budget.input_limit_tokens,
+                "overflowed": budget.overflowed,
+                "tool_message_count": budget.tool_message_count,
+                "largest_tool_message_tokens": budget.largest_tool_message_tokens,
+                "largest_tool_message_name": budget.largest_tool_message_name,
+                "compaction_mode": config.get("compaction_mode"),
+                "prune_old_tool_outputs": bool(config.get("prune_old_tool_outputs")),
+                "reserved_output_tokens": budget.reserved_output_tokens,
+            }
+        )
+        self.session.metadata["context_projection_trace"] = trace[-20:]
 
     def _record_model_usage(self, usage: Usage) -> None:
         self.session.metadata["last_model_usage"] = {
@@ -382,7 +435,7 @@ class AgentLoop:
         self.session.metadata["last_tool_output_prune_tokens"] = reclaimed
         return reclaimed
 
-    async def _run_compaction_summary(self, messages_to_compact: list[ChatMessage], *, max_output_tokens: int) -> str:
+    async def _run_compaction_model(self, messages_to_compact: list[ChatMessage], *, max_output_tokens: int) -> str:
         todo_payload = [todo.to_dict() for todo in self.session.todos]
         todo_section = ""
         if todo_payload:
@@ -414,18 +467,18 @@ class AgentLoop:
         if not messages_to_compact:
             return False
 
-        summary = await self._run_compaction_summary(
+        raw_compaction = await self._run_compaction_model(
             messages_to_compact,
             max_output_tokens=int(config["compact_summary_max_output_tokens"]),
         )
-        if not summary:
+        if not raw_compaction:
             return False
 
-        self.session.metadata[CONTEXT_COMPACTION_METADATA_KEY] = {
-            "summary": summary,
-            "compacted_until": compacted_until,
-            "updated_at": int(time.time() * 1000),
-        }
+        self.session.metadata[CONTEXT_COMPACTION_METADATA_KEY] = build_compaction_record(
+            raw_text=raw_compaction,
+            compacted_until=compacted_until,
+            updated_at=int(time.time() * 1000),
+        )
         return True
 
     async def _maybe_refresh_context_compaction(self, config: dict[str, Any], *, force: bool = False) -> None:
@@ -504,6 +557,26 @@ class AgentLoop:
                 budget = self._check_budget(messages=messages, tools=tools, fallback_stage="after_compact")
                 if budget is None or not budget.overflowed:
                     return PreparedModelCall(messages=messages, tools=tools, budget=budget), None, config
+                brief_messages = self._append_runtime_context(
+                    build_brief_messages_for_model(self.session.messages, self.session.metadata)
+                )
+                brief_budget = self._check_budget(messages=brief_messages, tools=tools, fallback_stage="after_compact_brief")
+                if brief_budget is None or not brief_budget.overflowed:
+                    return PreparedModelCall(messages=brief_messages, tools=tools, budget=brief_budget), None, config
+                minimal_messages = self._append_runtime_context(
+                    build_brief_trimmed_messages_for_model(
+                        self.session.messages,
+                        self.session.metadata,
+                        keep_recent_user_turns=1,
+                    )
+                )
+                minimal_budget = self._check_budget(
+                    messages=minimal_messages,
+                    tools=tools,
+                    fallback_stage="after_compact_minimal",
+                )
+                if minimal_budget is None or not minimal_budget.overflowed:
+                    return PreparedModelCall(messages=minimal_messages, tools=tools, budget=minimal_budget), None, config
 
         if config["strategy"] == "compact":
             return None, format_context_budget_error(budget), config

@@ -6,6 +6,13 @@ from time import time
 from typing import Any
 
 from .context_budget import estimate_message_tokens
+from .context_state import (
+    STRUCTURED_WORK_STATE_FORMAT,
+    STRUCTURED_WORK_STATE_HEADER,
+    normalize_work_state,
+    render_work_state,
+    render_work_state_brief,
+)
 from .types import ChatMessage, Model, ToolResult
 
 CONTEXT_COMPACTION_METADATA_KEY = "context_compaction"
@@ -34,21 +41,26 @@ def get_context_compaction(metadata: dict[str, Any], *, message_count: int) -> d
     if not isinstance(raw, dict):
         return None
 
-    summary = raw.get("summary")
     compacted_until = raw.get("compacted_until")
-    if not isinstance(summary, str) or not summary.strip():
-        return None
     if not isinstance(compacted_until, int):
         return None
     if compacted_until <= 0 or compacted_until > message_count:
         return None
 
+    summary = _render_compaction_summary(raw)
+    if not summary:
+        return None
+
     updated_at = raw.get("updated_at")
-    return {
+    result = {
         "summary": summary.strip(),
         "compacted_until": compacted_until,
         "updated_at": int(updated_at) if isinstance(updated_at, int) else 0,
     }
+    for key in ("schema_version", "format", "state", "source", "parse_error"):
+        if key in raw:
+            result[key] = raw[key]
+    return result
 
 
 def count_new_messages_since_compaction(messages: list[ChatMessage], metadata: dict[str, Any]) -> int:
@@ -66,10 +78,12 @@ def build_messages_for_model(messages: list[ChatMessage], metadata: dict[str, An
     compacted_until = int(compaction["compacted_until"])
     summary_message = ChatMessage(
         role="assistant",
-        content=f"{SYNTHETIC_COMPACTION_HEADER}\n{compaction['summary']}",
+        content=_format_compaction_message(compaction),
         metadata={
             "synthetic_context_compaction": True,
             "compacted_until": compacted_until,
+            "format": compaction.get("format"),
+            "schema_version": compaction.get("schema_version"),
         },
     )
     return [summary_message, *messages[compacted_until:]]
@@ -90,10 +104,12 @@ def build_trimmed_messages_for_model(
     compacted_until = int(compaction["compacted_until"])
     summary_message = ChatMessage(
         role="assistant",
-        content=f"{SYNTHETIC_COMPACTION_HEADER}\n{compaction['summary']}",
+        content=_format_compaction_message(compaction),
         metadata={
             "synthetic_context_compaction": True,
             "compacted_until": compacted_until,
+            "format": compaction.get("format"),
+            "schema_version": compaction.get("schema_version"),
         },
     )
     start = max(boundary, compacted_until)
@@ -101,6 +117,66 @@ def build_trimmed_messages_for_model(
     if compact_tool_messages:
         trimmed_messages = _overflow_compacted_messages(trimmed_messages)
     return [summary_message, *trimmed_messages]
+
+
+def build_brief_messages_for_model(messages: list[ChatMessage], metadata: dict[str, Any]) -> list[ChatMessage]:
+    compaction = get_context_compaction(metadata, message_count=len(messages))
+    if compaction is None:
+        return list(messages)
+
+    state = compaction.get("state")
+    if not isinstance(state, dict):
+        return build_messages_for_model(messages, metadata)
+
+    compacted_until = int(compaction["compacted_until"])
+    summary_message = ChatMessage(
+        role="assistant",
+        content=render_work_state_brief(normalize_work_state(state)),
+        metadata={
+            "synthetic_context_compaction": True,
+            "compacted_until": compacted_until,
+            "format": compaction.get("format"),
+            "schema_version": compaction.get("schema_version"),
+            "brief": True,
+        },
+    )
+    return [summary_message, *messages[compacted_until:]]
+
+
+def build_brief_trimmed_messages_for_model(
+    messages: list[ChatMessage],
+    metadata: dict[str, Any],
+    *,
+    keep_recent_user_turns: int,
+) -> list[ChatMessage]:
+    compaction = get_context_compaction(metadata, message_count=len(messages))
+    if compaction is None:
+        return list(messages[recent_user_turn_start(messages, keep_recent_user_turns) :])
+
+    state = compaction.get("state")
+    if not isinstance(state, dict):
+        return build_trimmed_messages_for_model(
+            messages,
+            metadata,
+            keep_recent_user_turns=keep_recent_user_turns,
+            compact_tool_messages=True,
+        )
+
+    compacted_until = int(compaction["compacted_until"])
+    summary_message = ChatMessage(
+        role="assistant",
+        content=render_work_state_brief(normalize_work_state(state)),
+        metadata={
+            "synthetic_context_compaction": True,
+            "compacted_until": compacted_until,
+            "format": compaction.get("format"),
+            "schema_version": compaction.get("schema_version"),
+            "brief": True,
+            "trimmed": True,
+        },
+    )
+    start = max(recent_user_turn_start(messages, keep_recent_user_turns), compacted_until)
+    return [summary_message, *messages[start:]]
 
 
 def project_tool_result_to_message(
@@ -248,6 +324,24 @@ def _compact_tool_message(message: ChatMessage) -> ChatMessage:
     )
 
 
+def _render_compaction_summary(raw: dict[str, Any]) -> str:
+    if raw.get("format") == STRUCTURED_WORK_STATE_FORMAT and isinstance(raw.get("state"), dict):
+        return render_work_state(normalize_work_state(raw["state"]))
+    summary = raw.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()
+    if isinstance(raw.get("state"), dict):
+        return render_work_state(normalize_work_state(raw["state"]))
+    return ""
+
+
+def _format_compaction_message(compaction: dict[str, Any]) -> str:
+    summary = str(compaction.get("summary") or "").strip()
+    if summary.startswith(STRUCTURED_WORK_STATE_HEADER):
+        return summary
+    return f"{SYNTHETIC_COMPACTION_HEADER}\n{summary}"
+
+
 def _overflow_compacted_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
     compacted: list[ChatMessage] = []
     for message in messages:
@@ -338,4 +432,3 @@ def _write_tool_output(session_root: Path, call_id: str, content: str) -> Path:
     output_path = out_dir / f"{call_id}.txt"
     output_path.write_text(content, encoding="utf-8")
     return output_path
-

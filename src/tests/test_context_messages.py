@@ -6,6 +6,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from openagent.core.context_messages import (
+    build_brief_messages_for_model,
+    build_brief_trimmed_messages_for_model,
     build_messages_for_model,
     build_trimmed_messages_for_model,
     project_tool_result_to_message,
@@ -106,6 +108,105 @@ class ContextMessagesTests(unittest.TestCase):
         self.assertEqual(model_messages[0].role, "assistant")
         self.assertIn("[Compacted context summary]", model_messages[0].content)
         self.assertEqual(model_messages[1:], messages[2:])
+
+    def test_build_messages_for_model_injects_structured_work_state(self) -> None:
+        messages = [
+            ChatMessage(role="user", content="older"),
+            ChatMessage(role="assistant", content="older answer"),
+            ChatMessage(role="user", content="recent"),
+        ]
+        model_messages = build_messages_for_model(
+            messages,
+            {
+                "context_compaction": {
+                    "schema_version": 1,
+                    "format": "structured_work_state",
+                    "state": {
+                        "task": "Continue structured compaction",
+                        "progress": ["Design doc landed"],
+                        "files": [
+                            {
+                                "path": "src/openagent/core/context_state.py",
+                                "status": "created",
+                                "note": "parses model output",
+                            }
+                        ],
+                        "next_steps": ["Wire loop integration"],
+                    },
+                    "summary": "ignored because state is canonical",
+                    "compacted_until": 2,
+                    "updated_at": 123,
+                }
+            },
+        )
+
+        self.assertEqual(model_messages[0].role, "assistant")
+        self.assertIn("[Structured work state]", model_messages[0].content)
+        self.assertIn("Continue structured compaction", model_messages[0].content)
+        self.assertIn("src/openagent/core/context_state.py (created)", model_messages[0].content)
+        self.assertEqual(model_messages[0].metadata["format"], "structured_work_state")
+        self.assertEqual(model_messages[1:], messages[2:])
+
+    def test_build_brief_messages_for_model_uses_minimal_structured_state(self) -> None:
+        messages = [
+            ChatMessage(role="user", content="older"),
+            ChatMessage(role="assistant", content="older answer"),
+            ChatMessage(role="user", content="recent"),
+        ]
+        model_messages = build_brief_messages_for_model(
+            messages,
+            {
+                "context_compaction": {
+                    "schema_version": 1,
+                    "format": "structured_work_state",
+                    "state": {
+                        "task": "Continue structured compaction",
+                        "progress": ["This should be omitted from brief mode"],
+                        "next_steps": ["Wire loop integration"],
+                    },
+                    "summary": "ignored because state is canonical",
+                    "compacted_until": 2,
+                    "updated_at": 123,
+                }
+            },
+        )
+
+        self.assertIn("[Structured work state]", model_messages[0].content)
+        self.assertIn("Task: Continue structured compaction", model_messages[0].content)
+        self.assertIn("Next: Wire loop integration", model_messages[0].content)
+        self.assertNotIn("This should be omitted", model_messages[0].content)
+        self.assertTrue(model_messages[0].metadata["brief"])
+        self.assertEqual(model_messages[1:], messages[2:])
+
+    def test_build_brief_trimmed_messages_for_model_keeps_only_recent_turns(self) -> None:
+        messages = [
+            ChatMessage(role="user", content="older"),
+            ChatMessage(role="assistant", content="older answer"),
+            ChatMessage(role="user", content="middle"),
+            ChatMessage(role="assistant", content="middle answer"),
+            ChatMessage(role="user", content="current"),
+        ]
+        model_messages = build_brief_trimmed_messages_for_model(
+            messages,
+            {
+                "context_compaction": {
+                    "schema_version": 1,
+                    "format": "structured_work_state",
+                    "state": {
+                        "task": "Continue structured compaction",
+                        "next_steps": ["Answer current ask"],
+                    },
+                    "summary": "ignored because state is canonical",
+                    "compacted_until": 2,
+                    "updated_at": 123,
+                }
+            },
+            keep_recent_user_turns=1,
+        )
+
+        self.assertIn("Task: Continue structured compaction", model_messages[0].content)
+        self.assertEqual([message.content for message in model_messages[1:]], ["current"])
+        self.assertTrue(model_messages[0].metadata["trimmed"])
 
     def test_project_tool_result_to_message_prefers_metadata_preview(self) -> None:
         root = self._make_temp_root()

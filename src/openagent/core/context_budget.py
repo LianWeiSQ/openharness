@@ -21,8 +21,10 @@ DEFAULT_PRUNE_MIN_INPUT_TOKENS = 4_000
 DEFAULT_COMPACT_SUMMARY_MAX_OUTPUT_TOKENS = 512
 DEFAULT_COMPACT_REFRESH_MIN_NEW_MESSAGES = 6
 DEFAULT_OVERFLOW_KEEP_RECENT_USER_TURNS = 2
+DEFAULT_COMPACTION_MODE = "structured_work_state"
 SUPPORTED_STRATEGIES = {"auto", "error", "compact"}
 SUPPORTED_COUNTING = {"auto", "tiktoken", "heuristic"}
+SUPPORTED_COMPACTION_MODES = {"structured_work_state"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +143,7 @@ def load_context_budget_options(
     model: Model | None,
 ) -> dict[str, Any]:
     raw_options = options or {}
-    raw_context_budget = raw_options.get("context_budget", {})
+    raw_context_budget = _merge_compaction_facade_options(raw_options)
     if not isinstance(raw_context_budget, dict):
         raise ContextBudgetConfigError("AgentConfig.options['context_budget'] must be a dict.")
 
@@ -153,6 +155,16 @@ def load_context_budget_options(
     counting = raw_context_budget.get("counting", "auto")
     if not isinstance(counting, str) or not counting.strip():
         raise ContextBudgetConfigError("context_budget.counting must be a non-empty string.")
+
+    compaction_mode = raw_context_budget.get("compaction_mode", DEFAULT_COMPACTION_MODE)
+    if not isinstance(compaction_mode, str) or not compaction_mode.strip():
+        raise ContextBudgetConfigError("context_budget.compaction_mode must be a non-empty string.")
+    compaction_mode = compaction_mode.strip()
+    if compaction_mode not in SUPPORTED_COMPACTION_MODES:
+        raise ContextBudgetConfigError(
+            f"Unsupported context_budget.compaction_mode: {compaction_mode}. "
+            "Supported modes: structured_work_state."
+        )
 
     reserve_output_tokens = raw_context_budget.get("reserve_output_tokens", model.max_output if model is not None else 0)
     guard_ratio = raw_context_budget.get("guard_ratio", DEFAULT_GUARD_RATIO)
@@ -265,6 +277,7 @@ def load_context_budget_options(
         "enabled": enabled,
         "strategy": strategy.strip(),
         "counting": counting.strip(),
+        "compaction_mode": compaction_mode,
         "reserve_output_tokens": reserve_output_tokens,
         "guard_ratio": guard_ratio,
         "input_safety_margin_tokens": input_safety_margin_tokens,
@@ -285,6 +298,47 @@ def load_context_budget_options(
         "overflow_disable_tools_on_final_attempt": overflow_disable_tools_on_final_attempt,
         "overflow_final_max_output_tokens": overflow_final_max_output_tokens,
     }
+
+
+def _merge_compaction_facade_options(raw_options: dict[str, Any]) -> dict[str, Any]:
+    raw_context_budget = raw_options.get("context_budget", {})
+    if raw_context_budget is None:
+        raw_context_budget = {}
+    if not isinstance(raw_context_budget, dict):
+        return raw_context_budget
+
+    raw_compaction = raw_options.get("compaction")
+    if raw_compaction is None:
+        return raw_context_budget
+    if not isinstance(raw_compaction, dict):
+        raise ContextBudgetConfigError("AgentConfig.options['compaction'] must be a dict.")
+
+    merged: dict[str, Any] = {}
+    if "auto" in raw_compaction:
+        auto = _expect_bool(raw_compaction["auto"], field_name="auto", prefix="compaction")
+        merged["strategy"] = "auto" if auto else "error"
+    if "prune" in raw_compaction:
+        merged["prune_old_tool_outputs"] = _expect_bool(
+            raw_compaction["prune"],
+            field_name="prune",
+            prefix="compaction",
+        )
+    if "reserved" in raw_compaction:
+        merged["input_safety_margin_tokens"] = _expect_int(
+            raw_compaction["reserved"],
+            field_name="reserved",
+            minimum=0,
+            prefix="compaction",
+        )
+    if "mode" in raw_compaction:
+        mode = raw_compaction["mode"]
+        if not isinstance(mode, str) or not mode.strip():
+            raise ContextBudgetConfigError("compaction.mode must be a non-empty string.")
+        merged["compaction_mode"] = mode.strip()
+
+    # Explicit low-level context_budget options win over the facade.
+    merged.update(raw_context_budget)
+    return merged
 
 
 def estimate_message_tokens(
@@ -353,17 +407,17 @@ def _tool_message_diagnostics(
     }
 
 
-def _expect_bool(value: Any, *, field_name: str) -> bool:
+def _expect_bool(value: Any, *, field_name: str, prefix: str = "context_budget") -> bool:
     if isinstance(value, bool):
         return value
-    raise ContextBudgetConfigError(f"context_budget.{field_name} must be a bool.")
+    raise ContextBudgetConfigError(f"{prefix}.{field_name} must be a bool.")
 
 
-def _expect_int(value: Any, *, field_name: str, minimum: int) -> int:
+def _expect_int(value: Any, *, field_name: str, minimum: int, prefix: str = "context_budget") -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ContextBudgetConfigError(f"context_budget.{field_name} must be an int.")
+        raise ContextBudgetConfigError(f"{prefix}.{field_name} must be an int.")
     if value < minimum:
-        raise ContextBudgetConfigError(f"context_budget.{field_name} must be >= {minimum}.")
+        raise ContextBudgetConfigError(f"{prefix}.{field_name} must be >= {minimum}.")
     return value
 
 

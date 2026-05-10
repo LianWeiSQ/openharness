@@ -6,6 +6,7 @@ from typing import Any
 from .types import ChatMessage, Model, ToolSchema
 
 OPENAI_COMPATIBLE_PROVIDER_IDS = frozenset({"openai", "dashscope"})
+RUNTIME_OPTION_KEYS = frozenset({"context_budget", "compaction"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +69,7 @@ def materialize_openai_compatible_payload(
     if model is not None:
         payload["model"] = model.id
     if isinstance(options, dict):
-        provider_options = {key: value for key, value in options.items() if key != "context_budget"}
+        provider_options = {key: value for key, value in options.items() if key not in RUNTIME_OPTION_KEYS}
         if provider_options:
             payload["provider_options"] = provider_options
     return payload
@@ -108,6 +109,7 @@ def materialize_payload(
 __all__ = [
     "MaterializedPayload",
     "OPENAI_COMPATIBLE_PROVIDER_IDS",
+    "RUNTIME_OPTION_KEYS",
     "is_openai_compatible_model",
     "materialize_openai_compatible_messages",
     "materialize_openai_compatible_payload",

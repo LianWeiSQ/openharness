@@ -717,7 +717,11 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         model = ScriptedLanguageModel(
             script=[
                 [
-                    {"type": "text-delta", "id": "summary", "text": "Goal: continue implementing"},
+                    {
+                        "type": "text-delta",
+                        "id": "summary",
+                        "text": '{"task":"Continue implementing","progress":["Old work reviewed"],"next_steps":["Answer current ask"]}',
+                    },
                     {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
                 ],
                 [
@@ -751,7 +755,24 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]["type"], "step-finish")
         self.assertEqual(events[-1]["finish_reason"], "stop")
         self.assertIn("context_compaction", session.metadata)
-        self.assertEqual(session.metadata["context_compaction"]["summary"], "Goal: continue implementing")
+        compaction = session.metadata["context_compaction"]
+        self.assertEqual(compaction["schema_version"], 1)
+        self.assertEqual(compaction["format"], "structured_work_state")
+        self.assertEqual(compaction["source"], "model_json")
+        self.assertEqual(compaction["state"]["task"], "Continue implementing")
+        self.assertIn("[Structured work state]", compaction["summary"])
+        self.assertIn("Old work reviewed", compaction["summary"])
+        projection_trace = session.metadata["context_projection_trace"]
+        stages = [item["stage"] for item in projection_trace]
+        projections = [item["projection"] for item in projection_trace]
+        self.assertIn("after_compact", stages)
+        self.assertIn("after_compact_brief", stages)
+        self.assertIn("after_compact_minimal", stages)
+        self.assertIn("full", projections)
+        self.assertIn("brief", projections)
+        self.assertIn("minimal", projections)
+        self.assertEqual(session.metadata["last_context_budget"]["fallback_stage"], "after_compact_minimal")
+        self.assertEqual(session.metadata["last_context_budget"]["compaction_mode"], "structured_work_state")
 
     async def test_loop_compact_strategy_falls_back_to_error_when_summary_fails(self) -> None:
         model = ScriptedLanguageModel(
@@ -997,7 +1018,11 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         model = ScriptedLanguageModel(
             script=[
                 [
-                    {"type": "text-delta", "id": "summary", "text": "Goal: continue implementing"},
+                    {
+                        "type": "text-delta",
+                        "id": "summary",
+                        "text": '{"task":"Continue implementing","progress":["Old work reviewed"],"next_steps":["Answer current ask"]}',
+                    },
                     {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
                 ],
                 [

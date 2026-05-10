@@ -3,7 +3,8 @@
 import unittest
 from unittest.mock import patch
 
-from openagent.core.context_budget import ContextBudgetConfigError, check_context_budget
+from openagent.core.context_budget import ContextBudgetConfigError, check_context_budget, load_context_budget_options
+from openagent.core.message_materializer import materialize_openai_compatible_payload
 from openagent.core.types import ChatMessage, Model, ToolSchema
 
 
@@ -168,3 +169,84 @@ class ContextBudgetTests(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result.input_limit_tokens, 4096 - 512 - 256)
+
+    def test_compaction_facade_maps_to_context_budget_options(self) -> None:
+        config = load_context_budget_options(
+            {
+                "compaction": {
+                    "auto": False,
+                    "prune": False,
+                    "reserved": 2048,
+                    "mode": "structured_work_state",
+                }
+            },
+            model=_make_model(context_window=8192, max_output=512),
+        )
+
+        self.assertEqual(config["strategy"], "error")
+        self.assertFalse(config["prune_old_tool_outputs"])
+        self.assertEqual(config["input_safety_margin_tokens"], 2048)
+        self.assertTrue(config["use_safety_margin_tokens"])
+        self.assertEqual(config["compaction_mode"], "structured_work_state")
+
+    def test_context_budget_options_override_compaction_facade(self) -> None:
+        config = load_context_budget_options(
+            {
+                "compaction": {
+                    "auto": False,
+                    "prune": False,
+                    "reserved": 2048,
+                },
+                "context_budget": {
+                    "strategy": "compact",
+                    "prune_old_tool_outputs": True,
+                    "input_safety_margin_tokens": 128,
+                },
+            },
+            model=_make_model(context_window=8192, max_output=512),
+        )
+
+        self.assertEqual(config["strategy"], "compact")
+        self.assertTrue(config["prune_old_tool_outputs"])
+        self.assertEqual(config["input_safety_margin_tokens"], 128)
+
+    def test_compaction_facade_auto_true_maps_to_auto_strategy(self) -> None:
+        config = load_context_budget_options(
+            {"compaction": {"auto": True}},
+            model=_make_model(context_window=8192, max_output=512),
+        )
+
+        self.assertEqual(config["strategy"], "auto")
+
+    def test_invalid_compaction_facade_raises_clear_error(self) -> None:
+        with self.assertRaises(ContextBudgetConfigError) as ctx:
+            load_context_budget_options(
+                {"compaction": {"auto": "yes"}},
+                model=_make_model(),
+            )
+
+        self.assertIn("compaction.auto must be a bool", str(ctx.exception))
+
+    def test_invalid_compaction_mode_raises_clear_error(self) -> None:
+        with self.assertRaises(ContextBudgetConfigError) as ctx:
+            load_context_budget_options(
+                {"compaction": {"mode": "research_summary"}},
+                model=_make_model(),
+            )
+
+        self.assertIn("Unsupported context_budget.compaction_mode", str(ctx.exception))
+
+    def test_runtime_options_are_not_forwarded_as_provider_options(self) -> None:
+        payload = materialize_openai_compatible_payload(
+            system="You are helpful.",
+            messages=[ChatMessage(role="user", content="hello")],
+            tools=[],
+            model=_make_model(provider_id="openai"),
+            options={
+                "context_budget": {"strategy": "auto"},
+                "compaction": {"auto": True},
+                "reasoning_effort": "low",
+            },
+        )
+
+        self.assertEqual(payload["provider_options"], {"reasoning_effort": "low"})

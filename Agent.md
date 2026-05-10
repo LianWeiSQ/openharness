@@ -1,6 +1,6 @@
 ﻿# OpenAgent Core 架构分析（代码对齐版）
 
-> 文档范围：`openagent/src/openagent/`
+> 文档范围：`src/openagent/`
 > 
 > 本文档以当前 Python 实现为准，优先描述“已经落地的运行时架构”，并把“预留接口 / 尚未完成的能力”单独标注，避免把设计目标和现状混写。
 
@@ -644,7 +644,7 @@ RemoteMcpManager -> descriptor list -> bridge -> ToolRegistry -> ToolkitAdapter.
 ## 12. 目录地图（当前重点）
 
 ```text
-openagent/src/openagent/
+src/openagent/
 ├── __init__.py                    # lazy export: AgentLoop / Session / Agents
 ├── adapter/
 │   ├── agent_adapter.py          # 标准化 LanguageModel 事件流
