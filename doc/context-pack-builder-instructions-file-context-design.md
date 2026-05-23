@@ -299,7 +299,8 @@ Session.metadata["file_context_state"]
 
 ```json
 {
-  "files": {
+  "schema_version": 1,
+  "records": {
     "/abs/path/src/app.py": {
       "path": "src/app.py",
       "absolute_path": "/abs/path/src/app.py",
@@ -313,6 +314,14 @@ Session.metadata["file_context_state"]
   }
 }
 ```
+
+实现说明：
+
+- `FileContextState` 已落在 `src/openagent/core/file_context.py`。
+- `record_file_read()` 可把读取记录写入 `Session.metadata["file_context_state"]`。
+- `FileContextState.changed_records()` 可判断已读文件是否 missing、size changed 或 hash changed。
+- `FileContextState.to_context_items()` 可输出 `ContextItem(kind="file")`，供后续 ContextPackBuilder 接入。
+- read/write/edit 工具接入留给 CE-009，避免核心状态模型和工具行为变更混在一个提交。
 
 ### 8.3 工具接入
 
