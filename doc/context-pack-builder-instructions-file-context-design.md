@@ -266,6 +266,14 @@ class InstructionContext:
 
 每个 `InstructionItem` 可转为 `ContextItem(kind="instruction")`。
 
+实现说明：
+
+- `InstructionContextLoader` 已落在 `src/openagent/core/instructions.py`。
+- 默认单文件限制 16KB，总量限制 48KB。
+- workspace 查找顺序为当前目录到父目录，支持 `OPENAGENT.md`、`AGENTS.md`、`CLAUDE.md`、`.openagent/instructions.md`、`.openagent/rules/*.md`。
+- user 查找目录为 `~/.openagent`，支持 `OPENAGENT.md`、`instructions.md`、`rules/*.md`。
+- `AgentLoop` 已把 instruction items 接入 `context_pack_trace`，但仍保持 trace-only，不改变实际模型输入。
+
 ## 8. FileContextState 设计
 
 ### 8.1 当前 OpenAgent 状态

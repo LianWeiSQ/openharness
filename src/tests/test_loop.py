@@ -1006,6 +1006,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
         pm = PermissionManager()
         session = Session(directory=self._make_temp_dir())
+        (session.directory / "OPENAGENT.md").write_text("Always keep project instructions.", encoding="utf-8")
         session.set_todos([TodoItem(content="wire context trace", status="in_progress", priority="high", id="t1")])
         session.metadata["execution"] = {
             "mode": "opensandbox",
@@ -1026,9 +1027,11 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(last["message_count"], len(model.seen_messages_by_call[0]))
         kinds = {item["kind"] for item in last["items"]}
         self.assertIn("runtime", kinds)
+        self.assertIn("instruction", kinds)
         self.assertIn("sandbox", kinds)
         self.assertIn("todo", kinds)
         self.assertIn("message", kinds)
+        self.assertEqual(session.metadata["last_instruction_context"]["item_count"], 1)
         sandbox_item = next(item for item in last["items"] if item["kind"] == "sandbox")
         self.assertTrue(sandbox_item["included"])
         self.assertNotIn("secret", str(last))
