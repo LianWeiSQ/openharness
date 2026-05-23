@@ -331,6 +331,13 @@ Session.metadata["file_context_state"]
 - `write` / `edit` 成功后更新或标记 changed。
 - `ls` / `grep` / `glob` 不记录完整文件 context，只记录 tool result preview。
 
+实现说明：
+
+- 本地 `read` / `write` / `edit` 已接入 `record_file_read()`。
+- sandbox `read` / `write` / `edit` 已接入 `record_virtual_file_read()`，key 形如 `opensandbox://{sandbox_id}/workspace/file.py`。
+- `AgentLoop` 已把 `FileContextState.to_context_items()` 合并进 `context_pack_trace`。
+- `ls` / `grep` / `glob` 仍只作为 tool result preview，不写入 file context。
+
 ### 8.4 后续扩展
 
 - changed file attachment。

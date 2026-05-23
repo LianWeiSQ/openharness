@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
+from openagent.core.file_context import FILE_CONTEXT_METADATA_KEY, FileContextState
 from openagent.core.session.session import Session
 from openagent.core.tool.toolkit import ToolkitAdapter
 
@@ -108,6 +109,49 @@ class FileToolTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIsNone(replace_all_res.error)
             self.assertEqual((root / "a.txt").read_text(encoding="utf-8"), "hi hi")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_file_tools_update_file_context_state(self) -> None:
+        tmp_root = Path("openagent/tests/workdir")
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        root = (tmp_root / f"t_{uuid4().hex}").resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        try:
+            toolkit = ToolkitAdapter()
+            toolkit.load_builtin()
+            session = Session(directory=root)
+            ctx = {"session_root": str(root), "session": session}
+
+            write_res = await toolkit.execute(
+                name="write",
+                input={"file_path": "tracked.txt", "content": "alpha"},
+                context=ctx,
+            )
+            self.assertIsNone(write_res.error)
+            self.assertIn(FILE_CONTEXT_METADATA_KEY, session.metadata)
+            state = FileContextState.from_metadata(session.metadata)
+            record = state.records[str((root / "tracked.txt").resolve())]
+            self.assertEqual(record.path, "tracked.txt")
+            self.assertEqual(record.source_tool, "write")
+            self.assertIn("alpha", record.preview)
+
+            read_res = await toolkit.execute(name="read", input={"file_path": "tracked.txt"}, context=ctx)
+            self.assertIsNone(read_res.error)
+            state = FileContextState.from_metadata(session.metadata)
+            record = state.records[str((root / "tracked.txt").resolve())]
+            self.assertEqual(record.source_tool, "read")
+
+            edit_res = await toolkit.execute(
+                name="edit",
+                input={"file_path": "tracked.txt", "old_string": "alpha", "new_string": "beta"},
+                context=ctx,
+            )
+            self.assertIsNone(edit_res.error)
+            state = FileContextState.from_metadata(session.metadata)
+            record = state.records[str((root / "tracked.txt").resolve())]
+            self.assertEqual(record.source_tool, "edit")
+            self.assertIn("beta", record.preview)
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

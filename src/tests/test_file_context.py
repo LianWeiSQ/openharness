@@ -9,6 +9,7 @@ from openagent.core.file_context import (
     FILE_CONTEXT_METADATA_KEY,
     FileContextState,
     record_file_read,
+    record_virtual_file_read,
 )
 
 
@@ -142,6 +143,25 @@ class FileContextStateTests(unittest.TestCase):
 
         self.assertEqual(record.preview, "model")
         self.assertNotEqual(record.content_hash, FileContextState().record_read(target, workspace_root=root).content_hash)
+
+    def test_record_virtual_file_read_supports_remote_paths(self) -> None:
+        metadata = {}
+
+        record = record_virtual_file_read(
+            metadata,
+            absolute_path="opensandbox://sbx_1/workspace/a.txt",
+            display_path="/workspace/a.txt",
+            content="remote content",
+            source_tool="read",
+        )
+
+        self.assertEqual(record.path, "/workspace/a.txt")
+        self.assertEqual(record.absolute_path, "opensandbox://sbx_1/workspace/a.txt")
+        state = FileContextState.from_metadata(metadata)
+        self.assertIn(record.absolute_path, state.records)
+        self.assertIn("remote content", state.to_context_items()[0].content)
+        self.assertEqual(state.change_for(record.absolute_path).reason, "remote_unchecked")
+        self.assertEqual(state.changed_records(), [])
 
 
 if __name__ == "__main__":

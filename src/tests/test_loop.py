@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from openagent.core.file_context import record_file_read
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
@@ -1007,6 +1008,8 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         pm = PermissionManager()
         session = Session(directory=self._make_temp_dir())
         (session.directory / "OPENAGENT.md").write_text("Always keep project instructions.", encoding="utf-8")
+        (session.directory / "seen.py").write_text("print('seen')", encoding="utf-8")
+        record_file_read(session.metadata, session.directory / "seen.py", workspace_root=session.directory)
         session.set_todos([TodoItem(content="wire context trace", status="in_progress", priority="high", id="t1")])
         session.metadata["execution"] = {
             "mode": "opensandbox",
@@ -1028,6 +1031,7 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         kinds = {item["kind"] for item in last["items"]}
         self.assertIn("runtime", kinds)
         self.assertIn("instruction", kinds)
+        self.assertIn("file", kinds)
         self.assertIn("sandbox", kinds)
         self.assertIn("todo", kinds)
         self.assertIn("message", kinds)

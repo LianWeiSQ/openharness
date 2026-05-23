@@ -6,6 +6,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from ...execution.runtime import OpenSandboxWorkspaceRuntime, WorkspaceEntry
+from ...file_context import record_virtual_file_read
 from ...session.session import Session
 from ..definition import ToolContext, ToolOutput
 
@@ -37,10 +38,19 @@ def _file_key(ctx: ToolContext, path: str) -> str:
     return path
 
 
-def _remember_read(ctx: ToolContext, path: str) -> None:
+def _remember_read(ctx: ToolContext, path: str, *, content: str | bytes | None = None, source_tool: str = "read") -> None:
     session = _session_from_ctx(ctx)
     if session is not None:
-        session.remember_file_read(_file_key(ctx, path))
+        key = _file_key(ctx, path)
+        session.remember_file_read(key)
+        if content is not None:
+            record_virtual_file_read(
+                session.metadata,
+                absolute_path=key,
+                display_path=path,
+                content=content,
+                source_tool=source_tool,
+            )
 
 
 async def _require_existing_file_was_read(ctx: ToolContext, runtime: OpenSandboxWorkspaceRuntime, path: str, *, action: str) -> None:
@@ -118,7 +128,7 @@ async def read_tool(args: Any, ctx: ToolContext) -> ToolOutput:
     if "\x00" in text:
         raise ValueError(f"Cannot read binary file: {target}")
     output, preview, truncated = _format_read_output_from_text(text, offset=args.offset, limit=args.limit)
-    _remember_read(ctx, target)
+    _remember_read(ctx, target, content=text, source_tool="read")
     return ToolOutput(title=runtime.display_path(target), output=output, metadata={"preview": preview}, truncated=truncated)
 
 
@@ -128,7 +138,7 @@ async def write_tool(args: Any, ctx: ToolContext) -> ToolOutput:
     existed = await runtime.exists(target)
     await _require_existing_file_was_read(ctx, runtime, target, action="writing")
     await runtime.write_text(target, args.content)
-    _remember_read(ctx, target)
+    _remember_read(ctx, target, content=args.content, source_tool="write")
     metadata = {"file_path": target, "exists": existed}
     metadata.update(ctx.execution_metadata or {})
     return ToolOutput(
@@ -149,11 +159,12 @@ async def edit_tool(args: Any, ctx: ToolContext) -> ToolOutput:
 
     if args.old_string == "":
         await runtime.write_text(target, args.new_string)
+        new_text = args.new_string
     else:
         text = await runtime.read_text(target)
         new_text = _replace_text(text, args.old_string, args.new_string, replace_all=args.replace_all)
         await runtime.write_text(target, new_text)
-    _remember_read(ctx, target)
+    _remember_read(ctx, target, content=new_text, source_tool="edit")
     metadata = {"file_path": target, "replace_all": args.replace_all}
     metadata.update(ctx.execution_metadata or {})
     return ToolOutput(

@@ -114,8 +114,12 @@ class FileContextState:
         return record
 
     def change_for(self, path: str | Path) -> FileContextChange | None:
+        raw_path = str(path)
+        record = self.records.get(raw_path)
+        if record is not None and "://" in record.absolute_path:
+            return FileContextChange(record=record, exists=True, changed=False, reason="remote_unchecked")
         absolute = Path(path).expanduser().resolve()
-        record = self.records.get(str(absolute))
+        record = record or self.records.get(str(absolute))
         if record is None:
             return None
         if not absolute.exists():
@@ -198,6 +202,33 @@ def record_file_read(
     return record
 
 
+def record_virtual_file_read(
+    metadata: dict[str, Any],
+    *,
+    absolute_path: str,
+    display_path: str,
+    content: str | bytes,
+    source_tool: str = "read",
+    now_ms: int | None = None,
+    preview_chars: int = DEFAULT_PREVIEW_CHARS,
+) -> FileContextRecord:
+    state = FileContextState.from_metadata(metadata)
+    raw = _content_bytes_from_value(content)
+    record = FileContextRecord(
+        path=display_path,
+        absolute_path=absolute_path,
+        mtime_ns=0,
+        size_bytes=len(raw),
+        content_hash=_sha256(raw),
+        read_at_ms=now_ms if now_ms is not None else int(time.time() * 1000),
+        preview=_preview_text(raw, max_chars=preview_chars),
+        source_tool=source_tool,
+    )
+    state.records[record.absolute_path] = record
+    state.write_to_metadata(metadata)
+    return record
+
+
 def _resolve_path(path: str | Path, *, workspace_root: str | Path | None) -> Path:
     candidate = Path(path).expanduser()
     if candidate.is_absolute() or workspace_root is None:
@@ -229,6 +260,12 @@ def _content_bytes(path: Path, content: str | bytes | None) -> bytes:
     return path.read_bytes()
 
 
+def _content_bytes_from_value(content: str | bytes) -> bytes:
+    if isinstance(content, bytes):
+        return content
+    return content.encode("utf-8")
+
+
 def _preview_text(raw: bytes, *, max_chars: int) -> str:
     text = raw.decode("utf-8", errors="replace")
     if max_chars <= 0:
@@ -248,4 +285,5 @@ __all__ = [
     "FileContextRecord",
     "FileContextState",
     "record_file_read",
+    "record_virtual_file_read",
 ]

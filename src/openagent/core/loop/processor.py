@@ -26,6 +26,7 @@ from ..context_messages import (
 )
 from ..context_state import build_compaction_record
 from ..execution import build_workspace_runtime
+from ..file_context import FileContextState
 from ..instructions import InstructionContextLoader
 from ..observability import ObservationRecorder
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
@@ -387,6 +388,9 @@ class AgentLoop:
         }
         return instruction_context.to_context_items()
 
+    def _file_context_items(self) -> list[ContextItem]:
+        return FileContextState.from_metadata(self.session.metadata).to_context_items()
+
     def _record_context_pack_diagnostics(
         self,
         *,
@@ -406,7 +410,7 @@ class AgentLoop:
             todos=self.session.todos,
             runtime_context=runtime_context,
             sandbox_metadata=self._sandbox_metadata_for_context_pack(),
-            extra_items=self._instruction_context_items(),
+            extra_items=[*self._instruction_context_items(), *self._file_context_items()],
         )
         trace_items = pack.trace_dicts()
         diagnostic = {

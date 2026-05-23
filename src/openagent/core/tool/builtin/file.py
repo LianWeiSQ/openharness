@@ -18,6 +18,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ...file_context import record_file_read
 from ...session.session import Session
 from ..definition import ToolContext, ToolOutput
 from ..registry import ToolRegistry
@@ -153,10 +154,17 @@ def _display_path(root: Path, target: Path) -> str:
 
 
 
-def _remember_read(ctx: ToolContext, target: Path) -> None:
+def _remember_read(ctx: ToolContext, target: Path, *, content: str | bytes | None = None, source_tool: str = "read") -> None:
     session = _session_from_ctx(ctx)
     if session is not None:
         session.remember_file_read(target)
+        record_file_read(
+            session.metadata,
+            target,
+            workspace_root=ctx.session_root,
+            content=content,
+            source_tool=source_tool,
+        )
 
 
 
@@ -202,8 +210,7 @@ def _suggest_paths(target: Path) -> list[str]:
 
 
 
-def _format_read_output(path: Path, *, offset: int, limit: int) -> tuple[str, str, bool]:
-    text = _read_text(path)
+def _format_read_output_from_text(text: str, *, offset: int, limit: int) -> tuple[str, str, bool]:
     lines = text.splitlines() if text else []
     total_lines = len(lines)
     start = max(offset, 0)
@@ -244,6 +251,10 @@ def _format_read_output(path: Path, *, offset: int, limit: int) -> tuple[str, st
     output_lines.append("</file>")
 
     return "\n".join(output_lines), "\n".join(preview_lines), truncated
+
+
+def _format_read_output(path: Path, *, offset: int, limit: int) -> tuple[str, str, bool]:
+    return _format_read_output_from_text(_read_text(path), offset=offset, limit=limit)
 
 
 
@@ -516,8 +527,9 @@ async def read_tool(args: ReadParameters, ctx: ToolContext) -> ToolOutput:
     if target.is_dir():
         raise IsADirectoryError(f"Path is a directory, not a file: {target}")
 
-    output, preview, truncated = _format_read_output(target, offset=args.offset, limit=args.limit)
-    _remember_read(ctx, target)
+    text = _read_text(target)
+    output, preview, truncated = _format_read_output_from_text(text, offset=args.offset, limit=args.limit)
+    _remember_read(ctx, target, content=text, source_tool="read")
     return ToolOutput(title=_display_path(root, target), output=output, metadata={"preview": preview}, truncated=truncated)
 
 
@@ -532,7 +544,7 @@ async def write_tool(args: WriteParameters, ctx: ToolContext) -> ToolOutput:
     existed = target.exists()
     _require_existing_file_was_read(ctx, target, action="writing")
     _write_text(target, args.content)
-    _remember_read(ctx, target)
+    _remember_read(ctx, target, content=args.content, source_tool="write")
     return ToolOutput(
         title=_display_path(root, target),
         output=f"Wrote {len(args.content)} chars to {target}",
@@ -552,7 +564,7 @@ async def edit_tool(args: EditParameters, ctx: ToolContext) -> ToolOutput:
 
     if args.old_string == "":
         _write_text(target, args.new_string)
-        _remember_read(ctx, target)
+        _remember_read(ctx, target, content=args.new_string, source_tool="edit")
         return ToolOutput(
             title=_display_path(root, target),
             output=f"Edited {target}",
@@ -567,7 +579,7 @@ async def edit_tool(args: EditParameters, ctx: ToolContext) -> ToolOutput:
     text = target.read_text(encoding="utf-8")
     new_text = _replace_text(text, args.old_string, args.new_string, replace_all=args.replace_all)
     target.write_text(new_text, encoding="utf-8")
-    _remember_read(ctx, target)
+    _remember_read(ctx, target, content=new_text, source_tool="edit")
     return ToolOutput(
         title=_display_path(root, target),
         output=f"Edited {target}",
