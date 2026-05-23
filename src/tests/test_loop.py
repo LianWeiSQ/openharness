@@ -12,6 +12,7 @@ from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.permission.rule import PermissionAction
 from openagent.core.session.session import Session
+from openagent.core.session.todo import TodoItem
 from openagent.core.tool.definition import ToolContext, ToolOutput
 from openagent.core.tool.toolkit import ToolkitAdapter
 from openagent.core.types import AgentConfig, ChatMessage, Model, SessionStatus, ToolResult
@@ -992,3 +993,43 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.call_index, 1)
         self._assert_runtime_context_present(model.seen_messages_by_call[0])
         self.assertFalse(any(bool((message.metadata or {}).get("runtime_context")) for message in session.messages))
+
+    async def test_loop_records_context_pack_trace_metadata(self) -> None:
+        model = ScriptedLanguageModel(script=_success_script())
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            tools=[],
+            max_steps=5,
+            model=_make_model_metadata(context_window=4096, max_output=64),
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        pm = PermissionManager()
+        session = Session(directory=self._make_temp_dir())
+        session.set_todos([TodoItem(content="wire context trace", status="in_progress", priority="high", id="t1")])
+        session.metadata["execution"] = {
+            "mode": "opensandbox",
+            "sandbox_id": "sbx_trace",
+            "remote_workdir": "/workspace/project",
+            "connection": {"token": "secret"},
+        }
+        loop = AgentLoop(agent=agent, session=session, permission_manager=pm)
+
+        async for _event in loop.run("hello"):
+            pass
+
+        self.assertEqual(model.call_index, 1)
+        trace = session.metadata["context_pack_trace"]
+        self.assertEqual(len(trace), 1)
+        last = session.metadata["last_context_pack"]
+        self.assertEqual(last["fallback_stage"], "initial")
+        self.assertEqual(last["message_count"], len(model.seen_messages_by_call[0]))
+        kinds = {item["kind"] for item in last["items"]}
+        self.assertIn("runtime", kinds)
+        self.assertIn("sandbox", kinds)
+        self.assertIn("todo", kinds)
+        self.assertIn("message", kinds)
+        sandbox_item = next(item for item in last["items"] if item["kind"] == "sandbox")
+        self.assertTrue(sandbox_item["included"])
+        self.assertNotIn("secret", str(last))
+        self.assertIn("context.pack_built", self._observation_event_names(session))

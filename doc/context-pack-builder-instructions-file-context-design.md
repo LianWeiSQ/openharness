@@ -356,13 +356,20 @@ Session.metadata["file_context_state"]
 
 产出：
 
-- `AgentLoop._prepare_messages_for_model()` 使用 builder 生成或记录 context pack trace。
+- `AgentLoop` 在每次模型调用前使用 builder 生成或记录 context pack trace。
 
 验收：
 
 - 不改变现有模型输入语义。
 - `Session.metadata["context_pack_trace"]` 每次模型调用更新。
 - 现有 context budget 测试通过。
+
+实现说明：
+
+- 当前接入点在 budget fallback、follow-up 注入、runtime context 注入、final-step 处理之后。
+- 写入 `Session.metadata["last_context_pack"]` 和最近 20 次 `Session.metadata["context_pack_trace"]`。
+- 额外记录 `context.pack_built` observability event。
+- sandbox context 只记录 `mode`、`sandbox_id`、`remote_workdir`，不记录 connection token。
 
 #### 1.4 文档和示例
 
@@ -465,4 +472,3 @@ codex/context-engineering-hardening
 | file context 泄露敏感内容 | 默认 preview 截断，后续接入脱敏 |
 | metadata 膨胀 | file context 设置数量和字节上限 |
 | 测试依赖不稳定 | 先用 core unit test，不依赖真实模型 |
-

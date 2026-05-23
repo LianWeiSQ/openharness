@@ -11,6 +11,7 @@ from typing import Any
 
 from ..agent.base import BaseAgent
 from ..context_budget import ContextBudgetConfigError, ContextBudgetResult, check_context_budget, format_context_budget_error, load_context_budget_options
+from ..context_pack import ContextPackBuilder
 from ..context_messages import (
     CONTEXT_COMPACTION_METADATA_KEY,
     build_brief_messages_for_model,
@@ -86,6 +87,9 @@ WEB_SEARCH_TOOL_NAME = "web_search"
 WEB_FETCH_TOOL_NAME = "web_fetch"
 WEB_SEARCH_SUCCESS_THRESHOLD = 3
 WEB_FETCH_FAILURE_THRESHOLD = 2
+CONTEXT_PACK_TRACE_METADATA_KEY = "context_pack_trace"
+LAST_CONTEXT_PACK_METADATA_KEY = "last_context_pack"
+CONTEXT_PACK_TRACE_LIMIT = 20
 
 
 def _projection_for_fallback_stage(stage: str) -> str:
@@ -336,6 +340,70 @@ class AgentLoop:
             }
         )
         self.session.metadata["context_projection_trace"] = trace[-20:]
+
+    def _sandbox_metadata_for_context_pack(self) -> dict[str, Any]:
+        execution = dict(getattr(self.workspace_runtime, "execution_metadata", {}) or {})
+        session_execution = self.session.metadata.get("execution")
+        if isinstance(session_execution, dict):
+            execution.update(session_execution)
+        if "mode" not in execution and execution.get("execution_mode") is not None:
+            execution["mode"] = execution.get("execution_mode")
+        return execution
+
+    @staticmethod
+    def _runtime_context_from_messages(messages: list[ChatMessage]) -> str | None:
+        for message in reversed(messages):
+            if bool((message.metadata or {}).get("runtime_context")):
+                return message.content
+        return None
+
+    def _record_context_pack_diagnostics(
+        self,
+        *,
+        messages: list[ChatMessage],
+        fallback_stage: str,
+        step_index: int,
+    ) -> None:
+        runtime_context = self._runtime_context_from_messages(messages)
+        pack_messages = [
+            message
+            for message in messages
+            if not bool((message.metadata or {}).get("runtime_context"))
+        ]
+        pack = ContextPackBuilder().build(
+            messages=pack_messages,
+            metadata=self.session.metadata,
+            todos=self.session.todos,
+            runtime_context=runtime_context,
+            sandbox_metadata=self._sandbox_metadata_for_context_pack(),
+        )
+        trace_items = pack.trace_dicts()
+        diagnostic = {
+            "step_index": step_index,
+            "fallback_stage": fallback_stage,
+            "message_count": len(messages),
+            "item_count": len(pack.items),
+            "included_count": sum(1 for item in trace_items if item.get("included")),
+            "estimated_input_tokens": pack.estimated_input_tokens,
+            "items": trace_items,
+        }
+        trace_raw = self.session.metadata.get(CONTEXT_PACK_TRACE_METADATA_KEY)
+        trace = list(trace_raw) if isinstance(trace_raw, list) else []
+        trace.append(diagnostic)
+        self.session.metadata[CONTEXT_PACK_TRACE_METADATA_KEY] = trace[-CONTEXT_PACK_TRACE_LIMIT:]
+        self.session.metadata[LAST_CONTEXT_PACK_METADATA_KEY] = diagnostic
+        self._record_observation(
+            "context.pack_built",
+            kind="context",
+            attributes={
+                "step_index": step_index,
+                "fallback_stage": fallback_stage,
+                "message_count": len(messages),
+                "item_count": len(pack.items),
+                "included_count": diagnostic["included_count"],
+                "estimated_input_tokens": pack.estimated_input_tokens,
+            },
+        )
 
     def _record_model_usage(self, usage: Usage) -> None:
         self.session.metadata["last_model_usage"] = {
@@ -976,6 +1044,12 @@ class AgentLoop:
                 if is_last_step:
                     messages = self._messages_for_final_step(messages)
                     tools = []
+                fallback_stage = prepared.budget.fallback_stage if prepared.budget is not None else "budget_disabled"
+                self._record_context_pack_diagnostics(
+                    messages=messages,
+                    fallback_stage=fallback_stage,
+                    step_index=steps,
+                )
 
                 attempt = 0
                 assistant_text_chunks: list[str] = []
