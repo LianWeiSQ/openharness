@@ -1,37 +1,37 @@
-# P0 Observability And Eval Design
+# P0 可观测性与评测设计
 
-This document describes the first production-oriented observability and eval loop for OpenAgent.
+本文档描述 OpenAgent 第一版面向生产的可观测性与评测闭环。
 
-## Goals
+## 目标
 
-P0 makes OpenAgent runs traceable, replayable, and measurable without introducing an external telemetry service.
+P0 让 OpenAgent 的每次运行都可追踪、可回放、可度量，同时不引入外部遥测服务。
 
-The first version focuses on:
+第一版重点覆盖：
 
-- structured run / step / model / tool / context events
-- safe metadata storage on `Session.metadata["observability"]`
-- optional JSONL traces
-- deterministic eval cases
-- local eval reports and trace summaries
+- 结构化的 run / step / model / tool / context 事件
+- 安全写入 `Session.metadata["observability"]` 的元数据
+- 可选 JSONL trace
+- 确定性 eval case
+- 本地 eval 报告和 trace 摘要
 
-## Observability Model
+## 可观测性模型
 
-OpenAgent records a trace per `AgentLoop.run()` call.
+OpenAgent 会为每次 `AgentLoop.run()` 调用记录一条 trace。
 
-The trace root is:
+trace 根节点是：
 
 ```text
 Session.metadata["observability"]
 ```
 
-It contains:
+它包含：
 
-- `trace`: trace metadata such as `trace_id`, `run_id`, `session_id`, agent, model, provider, and workspace
-- `events`: recent structured events, kept as a ring buffer
-- `event_count`: total number of emitted events
-- `jsonl_path`: trace file path when JSONL is enabled
+- `trace`：trace 元数据，包括 `trace_id`、`run_id`、`session_id`、agent、model、provider 和 workspace
+- `events`：近期结构化事件，按环形缓冲区保留
+- `event_count`：累计发出的事件数量
+- `jsonl_path`：启用 JSONL 时的 trace 文件路径
 
-The event shape is defined by `ObservationEvent`:
+事件结构由 `ObservationEvent` 定义：
 
 ```text
 event_id
@@ -48,7 +48,7 @@ status
 attributes
 ```
 
-Default configuration:
+默认配置：
 
 ```python
 options={
@@ -64,11 +64,11 @@ options={
 }
 ```
 
-`observability` is a runtime-only option and is not forwarded to model providers.
+`observability` 是仅运行时使用的配置，不会传给模型 provider。
 
-## Recorded Events
+## 记录事件
 
-The first implementation records:
+第一版实现会记录：
 
 - `run.started`
 - `run.finished`
@@ -91,7 +91,7 @@ The first implementation records:
 - `doom_loop.detected`
 - `error`
 
-The events intentionally prefer low-cardinality, aggregate-friendly fields:
+这些事件会优先使用低基数、便于聚合的字段：
 
 - `agent_name`
 - `model_id`
@@ -108,11 +108,11 @@ The events intentionally prefer low-cardinality, aggregate-friendly fields:
 - `cost`
 - `duration_ms`
 
-## Safety
+## 安全
 
-Observability must not become a hidden data leak.
+可观测性不能变成隐藏的数据泄漏通道。
 
-The sanitizer redacts fields whose keys include:
+清洗器会脱敏 key 中包含以下词的字段：
 
 ```text
 token
@@ -123,15 +123,15 @@ authorization
 cookie
 ```
 
-Token usage metric fields such as `input_tokens` and `output_tokens` are preserved because they are operational metrics, not credentials.
+`input_tokens` 和 `output_tokens` 这类 token 用量指标会保留，因为它们是运维指标，不是凭证。
 
-Tool input is stored as a redacted preview. Tool output is not stored in full; events record output size, truncation status, and output path when available.
+工具输入只保存脱敏后的预览。工具输出不会完整保存；事件只记录输出大小、是否截断，以及可用时的输出路径。
 
-## Eval Loop
+## 评测循环
 
-The local eval runner lives under `openagent.core.eval`.
+本地评测运行器位于 `openagent.core.eval`。
 
-Eval cases can be JSON or YAML:
+eval case 可以使用 JSON 或 YAML：
 
 ```yaml
 id: context_compaction_001
@@ -148,27 +148,27 @@ scoring:
     - "上下文"
 ```
 
-The first scorer is deterministic. It supports:
+第一版 scorer 是确定性的，支持：
 
-- final answer contains / not contains
-- file exists
-- file contains
-- changed files allowlist
-- no error event
-- max steps
-- max cost
-- required tool called
-- forbidden tool not called
-- context decision remembered
+- final answer 包含或不包含指定文本
+- 文件存在
+- 文件包含指定内容
+- 变更文件 allowlist
+- 没有 error 事件
+- 最大 step 数
+- 最大 cost
+- 必须调用某个工具
+- 禁止调用某个工具
+- 必须记住某个上下文决策
 
-Eval reports are written to:
+eval 报告会写入：
 
 ```text
 .openagent/eval-runs/<run>/report.json
 .openagent/eval-runs/<run>/summary.md
 ```
 
-Each result includes:
+每条结果包含：
 
 ```text
 case_id
@@ -185,14 +185,14 @@ failure_reasons
 trace_path
 ```
 
-## Replay
+## 回放
 
-P0 replay is offline trace inspection, not deterministic model replay.
+P0 的 replay 是离线 trace 检查，不是确定性模型重放。
 
-`openagent.core.eval.replay` can:
+`openagent.core.eval.replay` 可以：
 
-- load JSONL trace events
-- summarize model calls, tool calls, context events, errors, tokens, and cost
-- render a Markdown trace summary
+- 加载 JSONL trace 事件
+- 汇总模型调用、工具调用、上下文事件、错误、token 和 cost
+- 渲染 Markdown trace 摘要
 
-Future work can add deterministic model replay by storing model stream fixtures and replaying `AgentLoop` without live model calls.
+后续可以通过保存模型流式输出 fixture，在不调用真实模型的情况下重放 `AgentLoop`，从而补齐确定性模型 replay。

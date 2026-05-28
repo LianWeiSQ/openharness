@@ -1,4 +1,4 @@
-# OpenAgent Web Research 收敛设计
+# OpenAgent 网页研究收敛设计
 
 ## 目标
 
@@ -119,7 +119,7 @@ flowchart TD
 
 这套规则只影响当前 user turn 的后续 step，不影响下一次新用户输入。
 
-### synthetic reminder 注入规则
+### synthetic reminder 合成提醒注入规则
 
 首次进入收敛模式时，loop 追加一次 synthetic follow-up，要求模型：
 
@@ -130,7 +130,7 @@ flowchart TD
 
 该 reminder 只注入一次，后续 step 不重复追加。
 
-### follow-up 文案策略调整
+### follow-up 追问文案策略调整
 
 对 `web_fetch` 失败，后续引导不再鼓励：
 

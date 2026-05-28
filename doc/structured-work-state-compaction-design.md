@@ -1,39 +1,39 @@
-# Structured Work State Compaction Design
+# 结构化工作状态压缩设计
 
-> Status: implemented in the OpenAgent core runtime.
-> Scope: `src/openagent/core/context_state.py`, `context_messages.py`, and `loop/processor.py`.
+> 状态：已在 OpenAgent core runtime 中实现。
+> 范围：`src/openagent/core/context_state.py`、`context_messages.py` 和 `loop/processor.py`。
 
-## 1. Goal
+## 1. 目标
 
-OpenAgent previously compacted old conversation history into a single free-form summary. That saved tokens, but it made long-running sessions fragile because the model had to infer the real working state from prose.
+OpenAgent 之前会把旧对话历史压缩成一段自由文本 summary。这能节省 token，但会让长任务会话变脆弱，因为模型必须从自然语言里重新推断真实工作状态。
 
-Structured work state compaction upgrades that summary into a deterministic continuation packet. Every compaction should preserve:
+结构化工作状态压缩会把 summary 升级成确定性的 continuation packet。每次 compaction 都应该保留：
 
-- the current task and user intent
-- completed work and important decisions
-- files and artifacts that matter for the next step
-- tool findings, failures, and evidence
-- active todos, blockers, open questions, and likely next steps
-- explicit risks and verification gaps
+- 当前任务和用户意图
+- 已完成工作和重要决策
+- 对下一步有影响的文件和产物
+- 工具发现、失败和证据
+- 活跃 todo、阻塞点、开放问题和可能的下一步
+- 明确的风险和验证缺口
 
-The model should receive a compact work state that is easy to scan, stable across providers, and safe to resume after context pressure.
+模型应该收到一份紧凑的工作状态：易扫读、跨 provider 稳定，并且能在上下文压力后安全恢复。
 
-## 2. Non-Goals
+## 2. 非目标
 
-- This does not add LSP, embeddings, or semantic code retrieval.
-- This does not replace the full message history stored in the session.
-- This does not introduce a new memory system.
-- This does not require all providers to support JSON mode.
+- 不引入 LSP、embedding 或语义代码检索。
+- 不替代 session 中存储的完整消息历史。
+- 不引入新的 memory 系统。
+- 不要求所有 provider 支持 JSON mode。
 
-## 3. Runtime Contract
+## 3. 运行时契约
 
-The compaction record remains stored under:
+compaction 记录仍然存储在：
 
 ```text
 Session.metadata["context_compaction"]
 ```
 
-The record is backward-compatible with the old format:
+记录与旧格式保持向后兼容：
 
 ```json
 {
@@ -43,7 +43,7 @@ The record is backward-compatible with the old format:
 }
 ```
 
-Structured compaction adds these fields:
+结构化 compaction 增加以下字段：
 
 ```json
 {
@@ -71,11 +71,11 @@ Structured compaction adds these fields:
 }
 ```
 
-`summary` stays as the canonical rendered string used by older callers. `state` is the structured payload for diagnostics, future context pack builders, and product UI.
+`summary` 仍然是旧调用方使用的 canonical rendered string。`state` 是用于诊断、未来 ContextPackBuilder 和产品 UI 的结构化 payload。
 
-## 4. Work State Schema
+## 4. 工作状态 Schema
 
-### Required Fields
+### 必填字段
 
 - `task`: string
 - `progress`: list of strings
@@ -88,7 +88,7 @@ Structured compaction adds these fields:
 - `next_steps`: list of strings
 - `risks`: list of strings
 
-### File Object
+### 文件对象
 
 ```json
 {
@@ -98,29 +98,29 @@ Structured compaction adds these fields:
 }
 ```
 
-The parser normalizes arbitrary provider output into this shape:
+parser 会把任意 provider 输出归一化成这个形状：
 
-- non-string list items are converted to compact JSON strings
-- empty strings are discarded
-- file entries may be objects or strings
-- unknown file statuses are normalized to `unknown`
-- every list has bounded length and every item has bounded length
+- 非字符串列表项会被转成紧凑 JSON 字符串
+- 空字符串会被丢弃
+- 文件条目可以是对象或字符串
+- 未知文件状态会归一化成 `unknown`
+- 每个列表和列表项都有长度上限
 
-## 5. Prompting Strategy
+## 5. Prompt 策略
 
-The compaction model call uses a dedicated system prompt that asks for a JSON object only. It is provider-agnostic and does not rely on JSON mode.
+compaction 模型调用使用专用 system prompt，只要求输出 JSON object。它与 provider 无关，也不依赖 JSON mode。
 
-The user prompt includes the current todo list as JSON when available. The model is instructed to preserve only actionable state, not chat etiquette or stale attempts.
+user prompt 会在可用时把当前 todo list 作为 JSON 放进去。模型会被要求只保留可行动状态，不保留寒暄话术或过期尝试。
 
-## 6. Rendering Strategy
+## 6. 渲染策略
 
-The rendered message injected back into the model starts with:
+注入回模型的 rendered message 以以下内容开头：
 
 ```text
 [Structured work state]
 ```
 
-Then it renders stable sections:
+然后渲染稳定 section：
 
 ```text
 Task:
@@ -133,44 +133,44 @@ Decisions:
 - ...
 ```
 
-Empty sections are omitted except `Task`, which falls back to `(unspecified)`.
+空 section 会被省略，只有 `Task` 例外；它会 fallback 到 `(unspecified)`。
 
-This keeps the compacted context readable even when a downstream model ignores metadata.
+这样即使下游模型忽略 metadata，压缩后的上下文仍然可读。
 
-## 7. Failure Handling
+## 7. 失败处理
 
-Compaction must not fail simply because a provider returns markdown fences, explanatory text, or slightly malformed structure.
+compaction 不应该因为 provider 返回 markdown fence、解释性文字或轻微格式错误就失败。
 
-The parser supports:
+parser 支持：
 
-- raw JSON objects
-- fenced JSON blocks
-- JSON embedded in surrounding prose
-- legacy free-form summaries
+- 原始 JSON object
+- fenced JSON block
+- 嵌在自然语言里的 JSON
+- 旧版自由文本 summary
 
-If no usable content is produced, compaction fails and the existing budget fallback path handles the error. If a non-empty free-form summary is produced, it is wrapped as a structured fallback state with `source = "legacy_text_fallback"` and `parse_error` metadata.
+如果没有任何可用内容，compaction 会失败，并交给现有预算 fallback 路径处理。如果返回了非空自由文本 summary，它会被包装成结构化 fallback state，并写入 `source = "legacy_text_fallback"` 和 `parse_error` metadata。
 
-## 8. Compatibility
+## 8. 兼容性
 
-`get_context_compaction()` accepts both old and new records. It returns a rendered summary either way.
+`get_context_compaction()` 同时接受旧记录和新记录，并都会返回 rendered summary。
 
-Old metadata:
+旧 metadata：
 
 ```json
 {"summary": "Goal: continue", "compacted_until": 2}
 ```
 
-still renders as a compacted context message. New metadata additionally exposes `state`, `format`, `schema_version`, and parser diagnostics.
+仍然会渲染成 compacted context message。新 metadata 额外暴露 `state`、`format`、`schema_version` 和 parser diagnostics。
 
-## 9. Production Invariants
+## 9. 生产不变量
 
-- A compaction record is invalid if `compacted_until` is outside the session message range.
-- Rendered content is deterministic.
-- Structured fields are bounded to avoid moving overflow from history into metadata.
-- Prompt output parsing is best-effort but never silently stores an empty state.
-- The old `summary` field remains present for compatibility.
-- Tests cover JSON parsing, fenced JSON parsing, legacy fallback, message injection, and loop integration.
+- 如果 `compacted_until` 超出 session message 范围，compaction record 无效。
+- rendered content 是确定性的。
+- 结构化字段有边界，避免把 history 的溢出问题转移到 metadata。
+- prompt 输出解析采用 best-effort，但绝不静默保存空状态。
+- 旧 `summary` 字段保留，以维持兼容。
+- 测试覆盖 JSON 解析、fenced JSON 解析、legacy fallback、message injection 和 loop integration。
 
-## 10. Future Extensions
+## 10. 后续扩展
 
-This structure is intentionally close to the future `ContextPackBuilder` shape. Later work can rank `state.files`, `state.tool_findings`, and `state.todos` independently instead of treating the whole compaction as a single message.
+这个结构刻意贴近未来 `ContextPackBuilder` 的形态。后续可以独立排序 `state.files`、`state.tool_findings` 和 `state.todos`，而不是把整个 compaction 当成一条单独消息。
