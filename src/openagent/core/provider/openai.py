@@ -176,11 +176,23 @@ def _post_json(*, url: str, headers: dict[str, str], payload: dict[str, Any], ti
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-            return json.loads(raw)
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError as exc:
+                content_type = str(resp.headers.get("Content-Type") or resp.headers.get("content-type") or "")
+                preview = _truncate_error_text(_compact_error_text(raw))
+                raise RuntimeError(f"OpenAI-compatible response was not JSON: {content_type or 'unknown content type'}: {preview}") from exc
     except urllib.error.HTTPError as exc:
         raise RuntimeError(_http_error_message(exc)) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"OpenAI-compatible request failed: {exc}") from exc
+
+
+def _candidate_api_urls(base_url: str, suffix: str) -> list[str]:
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return [f"{base}/{suffix.lstrip('/')}"]
+    return [f"{base}/{suffix.lstrip('/')}", f"{base}/v1/{suffix.lstrip('/')}"]
 
 
 def _provider_options(options: dict[str, Any] | None) -> dict[str, Any]:
@@ -196,6 +208,62 @@ def _usage_from_openai(usage: dict[str, Any] | None) -> Usage:
         output_tokens=int(usage.get("completion_tokens", 0)),
         cost=0.0,
     )
+
+
+def _extract_responses_text(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+
+    output_text = value.get("output_text")
+    if isinstance(output_text, str) and output_text:
+        return output_text
+
+    texts: list[str] = []
+    output = value.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    extracted = _extract_text_content(part)
+                    if extracted:
+                        texts.append(extracted)
+            else:
+                extracted = _extract_text_content(item)
+                if extracted:
+                    texts.append(extracted)
+    if texts:
+        return "".join(texts)
+
+    choices = value.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        return _extract_choice_text(choices[0])
+
+    return ""
+
+
+def _usage_from_responses(usage: dict[str, Any] | None) -> Usage:
+    usage = usage or {}
+    input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+    output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+    return Usage(input_tokens=int(input_tokens or 0), output_tokens=int(output_tokens or 0), cost=0.0)
+
+
+def _responses_input_from_messages(system: str | None, messages: list[Any]) -> str:
+    parts: list[str] = []
+    if system:
+        parts.append(f"System:\n{system}")
+    for message in messages:
+        role = getattr(message, "role", "")
+        content = getattr(message, "content", "")
+        if not content:
+            continue
+        parts.append(f"{role or 'message'}:\n{content}")
+    return "\n\n".join(parts)
 
 
 def _map_finish_reason(value: Any, *, has_tool_calls: bool) -> str:
@@ -266,6 +334,9 @@ class OpenAILanguageModel(LanguageModel):
     base_url: str = "https://api.openai.com/v1"
     timeout_s: float = 60.0
     host_header: str | None = None
+    wire_api: str = "chat"
+    reasoning_effort: str | None = None
+    disable_response_storage: bool = False
 
     async def stream(
         self,
@@ -277,6 +348,50 @@ class OpenAILanguageModel(LanguageModel):
         max_output_tokens: int | None = None,
         options: dict[str, Any] | None = None,
     ):
+        if self.wire_api == "responses":
+            payload: dict[str, Any] = {
+                "model": self.model_id,
+                "input": _responses_input_from_messages(system, messages),
+                "stream": False,
+            }
+            if self.disable_response_storage:
+                payload["store"] = False
+            if self.reasoning_effort:
+                payload["reasoning"] = {"effort": self.reasoning_effort}
+            if max_output_tokens is not None:
+                payload["max_output_tokens"] = max_output_tokens
+            provider_options = _provider_options(options)
+            if provider_options:
+                provider_options.pop("stream", None)
+                payload.update(provider_options)
+
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            }
+            if self.host_header:
+                headers["Host"] = self.host_header
+            errors: list[RuntimeError] = []
+            data: dict[str, Any] | None = None
+            for url in _candidate_api_urls(self.base_url, "responses"):
+                try:
+                    data = await asyncio.to_thread(_post_json, url=url, headers=headers, payload=payload, timeout_s=self.timeout_s)
+                    break
+                except RuntimeError as exc:
+                    errors.append(exc)
+            if data is None:
+                raise errors[-1] if errors else RuntimeError("OpenAI-compatible Responses request failed.")
+            content = _extract_responses_text(data)
+            if content:
+                yield {"type": "text-delta", "text": content}
+            yield {
+                "type": "finish",
+                "finish_reason": "stop",
+                "usage": _usage_from_responses(data.get("usage")),
+            }
+            return
+
         payload = materialize_openai_compatible_payload(
             system=system,
             messages=messages,
@@ -439,6 +554,9 @@ class OpenAIProvider(ProviderBase):
         api_key: str | None = None,
         base_url: str | None = None,
         host_header: str | None = None,
+        wire_api: str | None = None,
+        reasoning_effort: str | None = None,
+        disable_response_storage: bool = False,
     ) -> None:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or ""
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
@@ -448,6 +566,11 @@ class OpenAIProvider(ProviderBase):
             self.host_header = None
         else:
             self.host_header = os.getenv("OPENAI_HOST_HEADER") or None
+        self.wire_api = (wire_api or os.getenv("OPENAI_WIRE_API") or "chat").strip().lower()
+        if self.wire_api not in {"chat", "responses"}:
+            self.wire_api = "chat"
+        self.reasoning_effort = reasoning_effort or os.getenv("OPENAI_REASONING_EFFORT") or None
+        self.disable_response_storage = disable_response_storage or os.getenv("OPENAI_DISABLE_RESPONSE_STORAGE", "").lower() in {"1", "true", "yes"}
 
     async def get_language_model(self, model: Model) -> LanguageModel:
         if not self.api_key:
@@ -457,6 +580,9 @@ class OpenAIProvider(ProviderBase):
             model_id=model.id,
             base_url=self.base_url,
             host_header=self.host_header,
+            wire_api=self.wire_api,
+            reasoning_effort=self.reasoning_effort,
+            disable_response_storage=self.disable_response_storage,
         )
 
     async def list_models(self) -> list[Model]:
@@ -476,7 +602,7 @@ class OpenAIProvider(ProviderBase):
         ]
 
     def get_model_config(self, model: Model) -> dict[str, Any]:
-        config: dict[str, Any] = {"base_url": self.base_url}
+        config: dict[str, Any] = {"base_url": self.base_url, "wire_api": self.wire_api}
         if self.host_header:
             config["host_header"] = self.host_header
         return config
