@@ -12,7 +12,7 @@ from openagent.core.provider.dashscope import DashScopeProvider
 from openagent.core.provider.openai import OpenAIProvider
 from openagent.core.question import QuestionManager
 from openagent.core.session import Session
-from openagent.core.skill import SkillDocument, SkillInfo, SkillRegistry
+from openagent.core.skill import SkillDiscoveryReport, SkillDocument, SkillInfo, SkillIssue, SkillRegistry
 from openagent.core.tool import ToolkitAdapter
 from openagent.core.types import AgentConfig, Model
 
@@ -32,8 +32,10 @@ __all__ = [
     "QuestionManager",
     "RemoteMcpManager",
     "Session",
+    "SkillDiscoveryReport",
     "SkillDocument",
     "SkillInfo",
+    "SkillIssue",
     "SkillRegistry",
     "ToolkitAdapter",
     "UniversalAgent",

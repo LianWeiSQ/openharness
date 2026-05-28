@@ -10,7 +10,9 @@ from openagent.core.permission.ruleset import PermissionRuleset
 from openagent.core.skill import SkillRegistry
 from openagent.core.tool.toolkit import ToolkitAdapter
 from openagent.sdk import SkillDocument as ExportedSkillDocument
+from openagent.sdk import SkillDiscoveryReport as ExportedSkillDiscoveryReport
 from openagent.sdk import SkillInfo as ExportedSkillInfo
+from openagent.sdk import SkillIssue as ExportedSkillIssue
 from openagent.sdk import SkillRegistry as ExportedSkillRegistry
 
 
@@ -69,6 +71,16 @@ class SkillRegistryTests(unittest.TestCase):
             self.assertNotIn("missing", by_name)
             self.assertNotIn("broken", by_name)
 
+            report = registry.report()
+            self.assertEqual(report.loaded_count, 4)
+            self.assertEqual(report.invalid_count, 2)
+            self.assertEqual(report.duplicate_count, 3)
+            self.assertEqual(report.scanned_files, 9)
+
+            matches = registry.search("inner opencode")
+            self.assertEqual(matches[0].name, "near")
+            self.assertGreater(matches[0].score or 0, 0)
+
     def test_registry_uses_explicit_skill_roots_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -88,6 +100,8 @@ class SkillRegistryTests(unittest.TestCase):
         self.assertIs(ExportedSkillRegistry, SkillRegistry)
         self.assertEqual(ExportedSkillInfo.__name__, "SkillInfo")
         self.assertEqual(ExportedSkillDocument.__name__, "SkillDocument")
+        self.assertEqual(ExportedSkillDiscoveryReport.__name__, "SkillDiscoveryReport")
+        self.assertEqual(ExportedSkillIssue.__name__, "SkillIssue")
 
 
 class SkillToolTests(unittest.IsolatedAsyncioTestCase):
@@ -119,6 +133,55 @@ class SkillToolTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(missing.error)
             self.assertIn('Skill "missing" not found.', missing.error or "")
             self.assertIn("code-review", missing.error or "")
+
+    async def test_skill_tool_filters_lists_content_and_reports_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            workspace.mkdir(parents=True, exist_ok=True)
+            _write_skill(
+                workspace,
+                ".openagent/skills/code-review/SKILL.md",
+                name="code-review",
+                description="Review code carefully",
+                body="Inspect diffs and tests.",
+            )
+            _write_skill(
+                workspace,
+                ".openagent/skills/research/SKILL.md",
+                name="research",
+                description="Research external sources",
+                body="Collect evidence.",
+            )
+            _write_skill(
+                workspace,
+                ".claude/skills/code-review/SKILL.md",
+                name="code-review",
+                description="duplicate",
+                body="Duplicate should not win.",
+            )
+            broken = workspace / ".openagent" / "skills" / "broken" / "SKILL.md"
+            broken.parent.mkdir(parents=True, exist_ok=True)
+            broken.write_text("# no frontmatter\n", encoding="utf-8")
+
+            toolkit = ToolkitAdapter()
+            toolkit.load_builtin()
+
+            listed = await toolkit.execute(
+                name="skill",
+                input={"query": "review", "include_content": True, "include_diagnostics": True},
+                context={"session_root": str(workspace)},
+            )
+
+            self.assertIsNone(listed.error)
+            self.assertIn('Matched skills for "review"', listed.output)
+            self.assertIn("code-review", listed.output)
+            self.assertIn("Inspect diffs and tests.", listed.output)
+            self.assertNotIn("research", listed.output)
+            self.assertIn("Diagnostics:", listed.output)
+            self.assertEqual(listed.metadata["skill_count"], 1)
+            self.assertEqual(listed.metadata["invalid_count"], 1)
+            self.assertEqual(listed.metadata["duplicate_count"], 1)
+            self.assertEqual(listed.metadata["query"], "review")
 
     async def test_skill_tool_respects_explicit_skill_roots_and_is_visible_in_opensandbox(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
