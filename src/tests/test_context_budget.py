@@ -225,6 +225,7 @@ class ContextBudgetTests(unittest.TestCase):
                 "context_budget": {"strategy": "auto"},
                 "compaction": {"auto": True},
                 "observability": {"enabled": True},
+                "logging": {"level": "DEBUG"},
                 "reasoning_effort": "low",
             },
         )

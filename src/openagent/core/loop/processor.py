@@ -32,6 +32,7 @@ from ..observability import ObservationRecorder
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
 from ..question import QuestionManager, QuestionRequest
+from ..runtime_logging import RuntimeLogger
 from ..tool.middleware import logging_middleware, observability_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
 from ..tool_policy import (
@@ -186,6 +187,7 @@ class AgentLoop:
         self.memory = MemoryAdapter()
         self.tool_log: list[dict[str, Any]] = []
         self.observation_recorder: ObservationRecorder | None = None
+        self.runtime_logger: RuntimeLogger | None = None
         self.question_manager = question_manager or QuestionManager()
         self.question_manager.set_hooks(on_requested=self._on_question_requested, on_resolved=self._on_question_resolved)
         self._init_tools()
@@ -557,6 +559,12 @@ class AgentLoop:
         )
         if reclaimed > 0:
             self.session.messages = new_messages
+            self._log_runtime(
+                "INFO",
+                "Old tool output pruned from context",
+                category="context",
+                attributes={"reclaimed_tokens": reclaimed},
+            )
         self.session.metadata["last_tool_output_prune_tokens"] = reclaimed
         return reclaimed
 
@@ -578,6 +586,18 @@ class AgentLoop:
             attributes=attributes,
             duration_ms=duration_ms,
         )
+
+    def _log_runtime(
+        self,
+        level: str,
+        message: str,
+        *,
+        category: str = "runtime",
+        attributes: dict[str, Any] | None = None,
+    ) -> None:
+        if self.runtime_logger is None:
+            return
+        self.runtime_logger.log(level, message, category=category, attributes=attributes)
 
     def _mark_observed_error(
         self,
@@ -617,6 +637,16 @@ class AgentLoop:
                 "attempt_index": attempt_index,
             },
         )
+        self._log_runtime(
+            "ERROR",
+            message,
+            category="error",
+            attributes={
+                "error_kind": error_kind,
+                "step_index": step_index,
+                "attempt_index": attempt_index,
+            },
+        )
 
     def _new_observation_recorder(self) -> ObservationRecorder:
         model = self.agent.config.model
@@ -627,6 +657,14 @@ class AgentLoop:
             model_id=model.id if model is not None else None,
             provider_id=model.provider_id if model is not None else None,
             workspace=str(self.session.directory),
+            options=self.agent.config.options,
+            base_dir=Path(self.session.directory),
+        )
+
+    def _new_runtime_logger(self) -> RuntimeLogger:
+        return RuntimeLogger.for_session(
+            session_id=self.session.id,
+            session_metadata=self.session.metadata,
             options=self.agent.config.options,
             base_dir=Path(self.session.directory),
         )
@@ -681,17 +719,45 @@ class AgentLoop:
     async def _compact_context(self, config: dict[str, Any]) -> bool:
         compacted_until = recent_user_turn_start(self.session.messages, int(config["prune_keep_recent_user_turns"]))
         if compacted_until <= 0:
+            self._log_runtime(
+                "DEBUG",
+                "Context compaction skipped",
+                category="context",
+                attributes={"reason": "not_enough_history", "compacted_until": compacted_until},
+            )
             return False
 
         messages_to_compact = list(self.session.messages[:compacted_until])
         if not messages_to_compact:
+            self._log_runtime(
+                "DEBUG",
+                "Context compaction skipped",
+                category="context",
+                attributes={"reason": "empty_history"},
+            )
             return False
+        self._log_runtime(
+            "INFO",
+            "Context compaction started",
+            category="context",
+            attributes={
+                "message_count": len(messages_to_compact),
+                "compacted_until": compacted_until,
+                "mode": config.get("compaction_mode"),
+            },
+        )
 
         raw_compaction = await self._run_compaction_model(
             messages_to_compact,
             max_output_tokens=int(config["compact_summary_max_output_tokens"]),
         )
         if not raw_compaction:
+            self._log_runtime(
+                "WARNING",
+                "Context compaction produced empty output",
+                category="context",
+                attributes={"compacted_until": compacted_until},
+            )
             self._record_observation(
                 "context.compaction.finished",
                 kind="context",
@@ -710,6 +776,16 @@ class AgentLoop:
             kind="context",
             attributes={
                 "compacted": True,
+                "source": record.get("source"),
+                "format": record.get("format"),
+                "compacted_until": compacted_until,
+            },
+        )
+        self._log_runtime(
+            "INFO",
+            "Context compaction finished",
+            category="context",
+            attributes={
                 "source": record.get("source"),
                 "format": record.get("format"),
                 "compacted_until": compacted_until,
@@ -895,6 +971,7 @@ class AgentLoop:
             "workspace_runtime": self.workspace_runtime,
             "execution_metadata": execution_metadata,
             "observation_recorder": self.observation_recorder,
+            "runtime_logger": self.runtime_logger,
         }
 
     @staticmethod
@@ -1001,12 +1078,30 @@ class AgentLoop:
 
     async def run(self, user_text: str):
         self.observation_recorder = self._new_observation_recorder()
+        self.runtime_logger = self._new_runtime_logger()
+        self.runtime_logger.bind_trace(
+            run_id=self.observation_recorder.trace.run_id,
+            trace_id=self.observation_recorder.trace.trace_id,
+            span_getter=lambda: self.observation_recorder.current_span_id if self.observation_recorder else None,
+        )
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
         self.session.status = SessionStatus.RUNNING
         self.session.add(ChatMessage(role="user", content=user_text))
         self._record_observation(
             "run.started",
             kind="run",
+            attributes={
+                "agent_name": self.agent.config.name,
+                "model_id": self.agent.config.model.id if self.agent.config.model is not None else None,
+                "provider_id": self.agent.config.model.provider_id if self.agent.config.model is not None else None,
+                "permission": self.agent.config.permission,
+                "input_chars": len(user_text),
+            },
+        )
+        self._log_runtime(
+            "INFO",
+            "Agent run started",
+            category="run",
             attributes={
                 "agent_name": self.agent.config.name,
                 "model_id": self.agent.config.model.id if self.agent.config.model is not None else None,
@@ -1032,6 +1127,16 @@ class AgentLoop:
                 self._record_observation(
                     "step.started",
                     kind="step",
+                    attributes={
+                        "step_index": steps,
+                        "snapshot_id": snapshot_id,
+                        "is_last_step": is_last_step,
+                    },
+                )
+                self._log_runtime(
+                    "INFO",
+                    "Agent step started",
+                    category="step",
                     attributes={
                         "step_index": steps,
                         "snapshot_id": snapshot_id,
@@ -1195,6 +1300,16 @@ class AgentLoop:
                             if not policy_retry_used:
                                 policy_retry_used = True
                                 attempt = 0
+                                self._log_runtime(
+                                    "WARNING",
+                                    "Model response missed required tool policy; retrying with reminder",
+                                    category="policy",
+                                    attributes={
+                                        "step_index": steps,
+                                        "attempt_index": attempt + 1,
+                                        "scenario": getattr(tool_policy, "scenario", None),
+                                    },
+                                )
                                 continue
                             error_message = format_tool_policy_retry_error(tool_policy, current_step_missing_capabilities)
                             self._mark_observed_error(
@@ -1219,6 +1334,17 @@ class AgentLoop:
                             )
                             yield {"type": "error", "error": str(error)}  # type: ignore[misc]
                             return
+                        self._log_runtime(
+                            "WARNING",
+                            "Model call failed; retrying",
+                            category="model",
+                            attributes={
+                                "step_index": steps,
+                                "attempt_index": attempt,
+                                "error_kind": type(error).__name__,
+                                "message": str(error),
+                            },
+                        )
                         await asyncio.sleep(self.config.retry_base_delay_s * (2 ** (attempt - 1)))
 
                 info_tool_calls = [] if is_last_step else info.tool_calls
@@ -1246,6 +1372,17 @@ class AgentLoop:
                             "doom_loop.detected",
                             kind="error",
                             status="error",
+                            attributes={
+                                "step_index": steps,
+                                "tool_name": call.name,
+                                "call_id": call.call_id,
+                                "error_kind": "doom_loop",
+                            },
+                        )
+                        self._log_runtime(
+                            "ERROR",
+                            "Doom loop detected",
+                            category="tool",
                             attributes={
                                 "step_index": steps,
                                 "tool_name": call.name,
@@ -1281,6 +1418,17 @@ class AgentLoop:
                                 self._record_observation(
                                     "question.requested",
                                     kind="question",
+                                    attributes={
+                                        "step_index": steps,
+                                        "tool_call_id": request.tool_call_id,
+                                        "request_id": request.request_id,
+                                        "question_count": len(request.questions),
+                                    },
+                                )
+                                self._log_runtime(
+                                    "INFO",
+                                    "Question requested",
+                                    category="question",
                                     attributes={
                                         "step_index": steps,
                                         "tool_call_id": request.tool_call_id,
@@ -1350,6 +1498,17 @@ class AgentLoop:
                             ],
                         },
                     )
+                    self._log_runtime(
+                        "INFO",
+                        "Workspace patch detected",
+                        category="patch",
+                        attributes={
+                            "step_index": steps,
+                            "snapshot_id": snapshot_id,
+                            "hash": patch.get("hash"),
+                            "file_count": len(patch.get("files") or []),
+                        },
+                    )
                     yield {"type": "patch", "snapshot_id": snapshot_id, "hash": patch["hash"], "files": patch["files"]}  # type: ignore[misc]
                 usage: Usage = info.usage
                 self._record_model_usage(usage)
@@ -1369,6 +1528,21 @@ class AgentLoop:
                         "cost": usage.cost,
                     },
                     duration_ms=int((time.time() - step_started_at) * 1000),
+                )
+                self._log_runtime(
+                    "INFO",
+                    "Agent step finished",
+                    category="step",
+                    attributes={
+                        "step_index": steps,
+                        "attempt_index": attempt,
+                        "finish_reason": finish_reason,
+                        "tool_call_count": len(info_tool_calls),
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "cost": usage.cost,
+                        "duration_ms": int((time.time() - step_started_at) * 1000),
+                    },
                 )
                 yield {
                     "type": "step-finish",
@@ -1414,6 +1588,16 @@ class AgentLoop:
                     self._record_observation(
                         "run.finished",
                         kind="run",
+                        attributes={
+                            "status": "completed",
+                            "steps": steps,
+                            "finish_reason": finish_reason,
+                        },
+                    )
+                    self._log_runtime(
+                        "INFO",
+                        "Agent run finished",
+                        category="run",
                         attributes={
                             "status": "completed",
                             "steps": steps,

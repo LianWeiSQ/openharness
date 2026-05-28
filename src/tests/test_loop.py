@@ -84,6 +84,10 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         events = session.metadata.get("observability", {}).get("events", [])
         return [str(event.get("name")) for event in events]
 
+    def _runtime_log_messages(self, session: Session) -> list[str]:
+        records = session.metadata.get("runtime_logging", {}).get("records", [])
+        return [str(record.get("message")) for record in records]
+
     async def test_loop_executes_tool_and_emits_patch(self) -> None:
         model = ScriptedLanguageModel(
             script=[
@@ -132,6 +136,11 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("run.finished", names)
         self.assertIn("model.usage", names)
         self.assertEqual(session.metadata["observability"]["trace"]["agent_name"], "u")
+        log_messages = self._runtime_log_messages(session)
+        self.assertIn("Agent run started", log_messages)
+        self.assertIn("Agent step started", log_messages)
+        self.assertIn("Agent step finished", log_messages)
+        self.assertIn("Agent run finished", log_messages)
 
     async def test_sandbox_session_hides_host_only_tools_from_model(self) -> None:
         model = ScriptedLanguageModel(script=_success_script())
@@ -409,6 +418,12 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0]["attributes"]["tool_name"], "bad")
         self.assertEqual(failed[0]["attributes"]["error_kind"], "bad_tool")
+
+        log_records = session.metadata["runtime_logging"]["records"]
+        failed_logs = [record for record in log_records if record["message"] == "Tool call failed"]
+        self.assertEqual(len(failed_logs), 1)
+        self.assertEqual(failed_logs[0]["attributes"]["tool_name"], "bad")
+        self.assertEqual(failed_logs[0]["attributes"]["error_kind"], "bad_tool")
 
     async def test_loop_does_not_flag_different_tool_inputs_as_repeated_loop(self) -> None:
         model = ScriptedLanguageModel(
