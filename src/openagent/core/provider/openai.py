@@ -246,24 +246,100 @@ def _extract_responses_text(value: Any) -> str:
     return ""
 
 
+def _materialize_responses_input(system: str | None, messages: list[Any]) -> list[dict[str, Any]]:
+    del system
+    normalized: list[dict[str, Any]] = []
+    for message in messages:
+        role = getattr(message, "role", "")
+        content = str(getattr(message, "content", "") or "")
+        metadata = getattr(message, "metadata", None)
+        metadata = metadata if isinstance(metadata, dict) else {}
+
+        if role == "tool":
+            call_id = str(getattr(message, "tool_call_id", "") or "")
+            if call_id:
+                normalized.append({"type": "function_call_output", "call_id": call_id, "output": content})
+            continue
+
+        tool_calls = metadata.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            for call in tool_calls:
+                item = _responses_function_call_item(call)
+                if item is not None:
+                    normalized.append(item)
+            if content:
+                normalized.append({"role": "assistant", "content": content})
+            continue
+
+        if role in {"user", "assistant"} and content:
+            normalized.append({"role": role, "content": content})
+    return normalized
+
+
+def _responses_function_call_item(call: Any) -> dict[str, Any] | None:
+    if not isinstance(call, dict):
+        return None
+    fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+    name = str(fn.get("name") or call.get("name") or "")
+    if not name:
+        return None
+    arguments = fn.get("arguments")
+    if not isinstance(arguments, str):
+        arguments = json.dumps(arguments if arguments is not None else {}, ensure_ascii=False)
+    item: dict[str, Any] = {
+        "type": "function_call",
+        "call_id": str(call.get("id") or call.get("call_id") or ""),
+        "name": name,
+        "arguments": arguments,
+    }
+    if not item["call_id"]:
+        item["call_id"] = str(call.get("tool_call_id") or "")
+    return item if item["call_id"] else None
+
+
+def _materialize_responses_tools(tools: list[ToolSchema]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for tool in tools:
+        normalized.append(
+            {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.schema or {"type": "object", "properties": {}},
+            }
+        )
+    return normalized
+
+
+def _extract_responses_tool_calls(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, dict):
+        return []
+    output = value.get("output")
+    if not isinstance(output, list):
+        return []
+    parsed: list[dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        call_id = str(item.get("call_id") or item.get("id") or f"responses_call_{len(parsed)}")
+        parsed.append(
+            {
+                "call_id": call_id,
+                "name": name,
+                "input": _parse_tool_arguments(item.get("arguments")),
+            }
+        )
+    return parsed
+
+
 def _usage_from_responses(usage: dict[str, Any] | None) -> Usage:
     usage = usage or {}
     input_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
     output_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
     return Usage(input_tokens=int(input_tokens or 0), output_tokens=int(output_tokens or 0), cost=0.0)
-
-
-def _responses_input_from_messages(system: str | None, messages: list[Any]) -> str:
-    parts: list[str] = []
-    if system:
-        parts.append(f"System:\n{system}")
-    for message in messages:
-        role = getattr(message, "role", "")
-        content = getattr(message, "content", "")
-        if not content:
-            continue
-        parts.append(f"{role or 'message'}:\n{content}")
-    return "\n\n".join(parts)
 
 
 def _map_finish_reason(value: Any, *, has_tool_calls: bool) -> str:
@@ -351,9 +427,14 @@ class OpenAILanguageModel(LanguageModel):
         if self.wire_api == "responses":
             payload: dict[str, Any] = {
                 "model": self.model_id,
-                "input": _responses_input_from_messages(system, messages),
+                "input": _materialize_responses_input(system, messages),
                 "stream": False,
             }
+            if system:
+                payload["instructions"] = system
+            if tools:
+                payload["tools"] = _materialize_responses_tools(tools)
+                payload["tool_choice"] = "auto"
             if self.disable_response_storage:
                 payload["store"] = False
             if self.reasoning_effort:
@@ -383,11 +464,14 @@ class OpenAILanguageModel(LanguageModel):
             if data is None:
                 raise errors[-1] if errors else RuntimeError("OpenAI-compatible Responses request failed.")
             content = _extract_responses_text(data)
+            tool_calls = _extract_responses_tool_calls(data)
             if content:
                 yield {"type": "text-delta", "text": content}
+            for tool_call in tool_calls:
+                yield {"type": "tool-call", "call_id": tool_call["call_id"], "name": tool_call["name"], "input": tool_call["input"]}
             yield {
                 "type": "finish",
-                "finish_reason": "stop",
+                "finish_reason": "tool_call" if tool_calls else "stop",
                 "usage": _usage_from_responses(data.get("usage")),
             }
             return
@@ -557,6 +641,7 @@ class OpenAIProvider(ProviderBase):
         wire_api: str | None = None,
         reasoning_effort: str | None = None,
         disable_response_storage: bool = False,
+        timeout_s: float | None = None,
     ) -> None:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or ""
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
@@ -571,6 +656,7 @@ class OpenAIProvider(ProviderBase):
             self.wire_api = "chat"
         self.reasoning_effort = reasoning_effort or os.getenv("OPENAI_REASONING_EFFORT") or None
         self.disable_response_storage = disable_response_storage or os.getenv("OPENAI_DISABLE_RESPONSE_STORAGE", "").lower() in {"1", "true", "yes"}
+        self.timeout_s = timeout_s or _env_float("OPENAI_TIMEOUT_S", 60.0)
 
     async def get_language_model(self, model: Model) -> LanguageModel:
         if not self.api_key:
@@ -579,6 +665,7 @@ class OpenAIProvider(ProviderBase):
             api_key=self.api_key,
             model_id=model.id,
             base_url=self.base_url,
+            timeout_s=self.timeout_s,
             host_header=self.host_header,
             wire_api=self.wire_api,
             reasoning_effort=self.reasoning_effort,
@@ -616,3 +703,14 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default

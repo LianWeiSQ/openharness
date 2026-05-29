@@ -5,13 +5,15 @@ import unittest
 from unittest.mock import patch
 
 from openagent.core.message_materializer import materialize_openai_compatible_messages, materialize_openai_compatible_tools
-from openagent.core.provider.openai import OpenAILanguageModel, _parse_tool_arguments
-from openagent.core.types import ChatMessage, ToolSchema, Usage
+from openagent.core.provider.openai import OpenAILanguageModel, OpenAIProvider, _parse_tool_arguments
+from openagent.core.types import ChatMessage, Model, ToolSchema, Usage
 
 
 class _FakeResponse:
     def __init__(self, lines: list[bytes]) -> None:
         self._lines = lines
+        self.status = 200
+        self.headers: dict[str, str] = {"Content-Type": "application/json"}
 
     def __enter__(self):  # noqa: ANN204
         return self
@@ -22,8 +24,27 @@ class _FakeResponse:
     def __iter__(self):
         return iter(self._lines)
 
+    def read(self) -> bytes:
+        return b"".join(self._lines)
+
 
 class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_provider_uses_timeout_from_environment(self) -> None:
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test", "OPENAI_TIMEOUT_S": "240"}, clear=False):
+            provider = OpenAIProvider(base_url="https://example.invalid")
+            model = await provider.get_language_model(
+                model=Model(
+                    id="gpt-test",
+                    provider_id="openai",
+                    name="gpt-test",
+                    context_window=128000,
+                    max_output=4096,
+                )
+            )
+
+        self.assertIsInstance(model, OpenAILanguageModel)
+        self.assertEqual(model.timeout_s, 240)
+
     def test_parse_tool_arguments_recovers_from_repeated_cumulative_snapshot(self) -> None:
         malformed = (
             '{"query":"climate tipping points Arctic ice sheet Amazon rainforest permafrost feedback cascade",'
@@ -263,3 +284,91 @@ class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(finish["usage"], Usage)
         self.assertEqual(finish["usage"].input_tokens, 2)
         self.assertEqual(finish["usage"].output_tokens, 3)
+
+    async def test_responses_api_parses_text_and_tool_calls(self) -> None:
+        payload = {
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_hello",
+                    "name": "bash",
+                    "arguments": '{"command":"printf hello > hello.txt","timeout":10000}',
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "running"}],
+                },
+            ],
+            "usage": {"input_tokens": 7, "output_tokens": 11},
+        }
+        seen_payload: dict[str, object] = {}
+
+        def _fake_urlopen(req, timeout=None):  # noqa: ANN001,ANN201
+            nonlocal seen_payload
+            del timeout
+            seen_payload = json.loads((getattr(req, "data", None) or b"{}").decode("utf-8"))
+            return _FakeResponse([json.dumps(payload).encode("utf-8")])
+
+        model = OpenAILanguageModel(
+            api_key="test",
+            model_id="gpt-5.4",
+            base_url="https://example.invalid",
+            wire_api="responses",
+            reasoning_effort="xhigh",
+            disable_response_storage=True,
+        )
+        messages = [
+            ChatMessage(role="user", content="create hello"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                metadata={
+                    "tool_calls": [
+                        {
+                            "id": "prior_call",
+                            "type": "function",
+                            "function": {"name": "bash", "arguments": '{"command":"ls"}'},
+                        }
+                    ]
+                },
+            ),
+            ChatMessage(role="tool", name="bash", tool_call_id="prior_call", content="[Tool result] bash"),
+        ]
+        tools = [
+            ToolSchema(
+                name="bash",
+                description="Run a shell command",
+                schema={"type": "object", "properties": {"command": {"type": "string"}}},
+            )
+        ]
+
+        events: list[dict] = []
+        with patch("urllib.request.urlopen", new=_fake_urlopen):
+            async for ev in model.stream(system="Use tools.", messages=messages, tools=tools):
+                events.append(ev)
+
+        self.assertEqual(seen_payload["instructions"], "Use tools.")
+        self.assertEqual(seen_payload["store"], False)
+        self.assertEqual(seen_payload["reasoning"], {"effort": "xhigh"})
+        self.assertEqual(seen_payload["tools"][0]["type"], "function")
+        self.assertEqual(seen_payload["tools"][0]["name"], "bash")
+        self.assertEqual(
+            seen_payload["input"],
+            [
+                {"role": "user", "content": "create hello"},
+                {"type": "function_call", "call_id": "prior_call", "name": "bash", "arguments": '{"command":"ls"}'},
+                {"type": "function_call_output", "call_id": "prior_call", "output": "[Tool result] bash"},
+            ],
+        )
+        self.assertEqual(events[0]["type"], "text-delta")
+        self.assertEqual(events[0]["text"], "running")
+        tool_call = next(e for e in events if e["type"] == "tool-call")
+        self.assertEqual(tool_call["call_id"], "call_hello")
+        self.assertEqual(tool_call["name"], "bash")
+        self.assertEqual(tool_call["input"], {"command": "printf hello > hello.txt", "timeout": 10000})
+        finish = events[-1]
+        self.assertEqual(finish["type"], "finish")
+        self.assertEqual(finish["finish_reason"], "tool_call")
+        self.assertEqual(finish["usage"].input_tokens, 7)
+        self.assertEqual(finish["usage"].output_tokens, 11)

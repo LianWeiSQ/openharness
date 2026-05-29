@@ -38,6 +38,14 @@ def _blocked_command(command: str) -> str | None:
     return None
 
 
+def _allow_destructive_commands(ctx: ToolContext) -> bool:
+    if ctx.execution_mode in {"terminal_bench", "harbor"}:
+        return True
+    session = ctx.extra.get("session")
+    metadata = getattr(session, "metadata", None)
+    return isinstance(metadata, dict) and bool(metadata.get("allow_destructive_commands"))
+
+
 def _workspace_runtime(ctx: ToolContext):
     runtime = ctx.workspace_runtime
     if runtime is not None:
@@ -50,7 +58,7 @@ async def bash_tool(args: BashParameters, ctx: ToolContext) -> ToolOutput:
         raise ValueError(f"Invalid timeout value: {args.timeout}. Timeout must be a positive number.")
 
     blocked = _blocked_command(args.command)
-    if blocked:
+    if blocked and not _allow_destructive_commands(ctx):
         raise ValueError(f"{blocked} command is disabled for security reasons")
 
     runtime = _workspace_runtime(ctx)
@@ -58,7 +66,7 @@ async def bash_tool(args: BashParameters, ctx: ToolContext) -> ToolOutput:
     combined = ((command_result.stdout or "") + (command_result.stderr or "")).strip()
     output = combined or f"Command exited with return code {command_result.returncode}."
 
-    if ctx.execution_mode == "opensandbox":
+    if ctx.execution_mode in {"opensandbox", "terminal_bench", "harbor"} and hasattr(runtime, "display_path"):
         title = runtime.display_path(command_result.cwd)
     else:
         root = ctx.session_root.resolve()
@@ -73,7 +81,7 @@ async def bash_tool(args: BashParameters, ctx: ToolContext) -> ToolOutput:
         "description": args.description or "",
         "workdir": command_result.cwd,
     }
-    if ctx.execution_mode == "opensandbox":
+    if ctx.execution_mode in {"opensandbox", "terminal_bench", "harbor"}:
         metadata.update(ctx.execution_metadata or {})
 
     return ToolOutput(

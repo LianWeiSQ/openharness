@@ -13,6 +13,8 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+runs/
+jobs/
 tests/.tmp/
 tests/workdir/
 openagent/tests/workdir/
