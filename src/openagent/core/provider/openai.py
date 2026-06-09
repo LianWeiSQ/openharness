@@ -140,8 +140,6 @@ def _summarize_http_error_body(raw: str, content_type: str) -> str:
     looks_like_html = "text/html" in lower_type or stripped.lower().startswith(("<!doctype html", "<html"))
     if looks_like_html:
         title = _extract_html_title(text)
-        if "web application firewall" in text.lower() or "waf" in text.lower():
-            title = "Web Application Firewall (WAF)"
         suffix = f": {title}" if title else ""
         return f"upstream returned HTML error page{suffix}"
 
