@@ -121,6 +121,7 @@ src/openagent/
 ├── prompts/         # Default build / plan / explore prompts
 └── sdk/             # Aggregated SDK exports
 
+.openagent/skills/   # Official Codex/OpenAI and Claude skill snapshots
 doc/                 # Short public docs
 src/tests/           # unittest suite
 ```
