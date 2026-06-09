@@ -20,7 +20,7 @@ LS_LIMIT = 100
 def _runtime(ctx: ToolContext) -> OpenSandboxWorkspaceRuntime:
     runtime = ctx.workspace_runtime
     if not isinstance(runtime, OpenSandboxWorkspaceRuntime):
-        raise RuntimeError("Missing OpenSandbox workspace runtime in tool context.")
+        raise RuntimeError("Missing remote sandbox workspace runtime in tool context.")
     return runtime
 
 

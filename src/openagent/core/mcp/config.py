@@ -8,6 +8,7 @@ from typing import Any
 from .types import McpConfig, McpToolFilter, RemoteMcpServerConfig
 
 SUPPORTED_TRANSPORTS = {"auto", "http", "sse"}
+STREAMABLE_HTTP_TYPES = {"streamablehttp", "streamable_http", "http"}
 
 
 def load_mcp_config_from_sources(
@@ -29,9 +30,9 @@ def load_mcp_config(source: str | Path | dict[str, Any]) -> McpConfig:
     if not isinstance(raw, dict):
         raise ValueError("MCP config must be a JSON object.")
 
-    mcp_block = raw.get("mcp", raw)
+    mcp_block = raw.get("mcpServers", raw.get("mcp", raw))
     if not isinstance(mcp_block, dict):
-        raise ValueError("MCP config must contain an object-valued 'mcp' field.")
+        raise ValueError("MCP config must contain an object-valued 'mcp' or 'mcpServers' field.")
 
     refresh_ttl_s = _parse_float(raw.get("refresh_ttl_s", 30.0), default=30.0, minimum=0.0)
     servers: list[RemoteMcpServerConfig] = []
@@ -80,14 +81,21 @@ def _load_raw_config(source: str | Path | dict[str, Any]) -> dict[str, Any]:
 
 def _parse_server_config(name: str, raw: dict[str, Any]) -> RemoteMcpServerConfig:
     type_value = str(raw.get("type", "remote")).strip().lower()
-    if type_value != "remote":
-        raise ValueError(f"MCP server '{name}' only supports type='remote' in v1.")
+    default_transport = "auto"
+    if type_value in STREAMABLE_HTTP_TYPES:
+        default_transport = "http"
+    elif type_value == "sse":
+        default_transport = "sse"
+    elif type_value != "remote":
+        raise ValueError(
+            f"MCP server '{name}' only supports type='remote', 'streamableHttp', or 'sse' in v1."
+        )
 
     url = str(raw.get("url") or "").strip()
     if not url:
         raise ValueError(f"MCP server '{name}' is missing a non-empty url.")
 
-    transport = str(raw.get("transport", "auto") or "auto").strip().lower()
+    transport = str(raw.get("transport", default_transport) or default_transport).strip().lower()
     if transport not in SUPPORTED_TRANSPORTS:
         raise ValueError(
             f"MCP server '{name}' has unsupported transport '{transport}'. "
@@ -159,4 +167,3 @@ def _parse_float(value: Any, *, default: float, minimum: float) -> float:
     except (TypeError, ValueError):
         return default
     return max(parsed, minimum)
-

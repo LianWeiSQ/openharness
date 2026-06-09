@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 核心类型定义。
 
-该文件承载 OpenAgent 内部协议与跨模块共享的数据结构：
+该文件承载 OpenAgent 运行时协议与跨模块共享的数据结构：
 - Model / ChatMessage：对齐 Provider 侧需要的最小对话结构
 - ToolCall / ToolResult：对齐 AgentLoop 与 Toolkit 的工具调用协议
 - StreamEvent：对齐 `Agent.md` 的“流事件类型”表（text/tool/step/error/patch）

@@ -38,15 +38,15 @@
 
 因此，现有 doom loop 无法解决研究型工具链的“扩散式重试”问题。
 
-### 与 opencode 的关键差异
+### 与其他 Agent Runtime 的行为差异
 
-与 OpenAgent 相比，opencode 在 web research 上有三个关键差异：
+与一些成熟 agent runtime 相比，OpenAgent 在 web research 上曾经有三个明显差异：
 
-- 一次 `websearch` 更接近重 search，请求 Exa MCP 后直接返回更高密度的正文上下文
-- loop 对 research failure 的主动干预更少，不会在失败后强推模型继续扩大搜索范围
-- 对某些 provider-native browsing 能力，可以在单个工具家族里完成 `search/open_page/find`
+- 一次 `web_search` 返回的正文上下文密度偏低
+- loop 对 research failure 的收敛控制不足，失败后容易继续扩大搜索范围
+- 搜索、打开页面、查找页面内容分散在不同工具能力里
 
-本方案不直接复制 provider-native `search/open_page/find`，而是先在 OpenAgent 当前架构内做最小靠拢：提升单次 search 信息密度，并增加 turn 级收敛控制。
+本方案不复制特定产品的 provider-native browsing，而是在 OpenAgent 当前架构内做两个通用改进：提升单次 search 信息密度，并增加 turn 级收敛控制。
 
 ---
 
@@ -54,7 +54,7 @@
 
 ### 1. AgentLoop 内增加 turn 级 web research 收敛状态
 
-在单个 user turn 内维护 web research 的内部状态，跟踪：
+在单个 user turn 内维护 web research 的运行时状态，跟踪：
 
 - 成功的 `web_search` 次数
 - 失败的 `web_fetch` 次数
@@ -64,7 +64,7 @@
 
 ### 2. `web_search` 默认返回更高信息密度
 
-在未显式传 `context_max_characters` 时，`web_search` 内部默认使用 `10000`，从 Exa 返回更高密度的上下文文本，尽量让模型在一次 search 后就拿到可回答材料。
+在未显式传 `context_max_characters` 时，`web_search` 默认使用 `10000`，从 Exa 返回更高密度的上下文文本，尽量让模型在一次 search 后就拿到可回答材料。
 
 现有默认行为保持不变：
 
@@ -149,7 +149,7 @@ flowchart TD
 
 `web_search` 在调用 Exa MCP 时采用以下默认策略：
 
-- 未显式传 `context_max_characters` 时，内部默认使用 `10000`
+- 未显式传 `context_max_characters` 时，默认使用 `10000`
 - 保持 `type=auto`
 - 保持 `livecrawl=fallback`
 - 保持 `numResults=8`
@@ -169,7 +169,7 @@ flowchart TD
 - session metadata
 - provider payload
 
-本次行为变化只体现在 core 内部的运行时策略。
+本次行为变化只体现在 core 的运行时策略。
 
 ### 兼容性约束
 

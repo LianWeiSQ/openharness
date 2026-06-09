@@ -3,7 +3,7 @@
 > 归档说明：本文档保留早期架构分析和设计脉络，但部分内容已经不再代表当前代码事实。
 > 当前项目入口请以 `README.md` 为准；当前技术总览请以 `doc/openagent-project-doc.md` 为准；待整改事项请看 `doc/remediation-plan.md`。
 >
-> 已知过期点包括：源码路径仍按旧的 `openagent/src/openagent/` 描述、Provider 状态仍把 OpenAI/Web/MCP 部分能力写成 stub、依赖描述仍称“核心功能仅依赖标准库”。当前代码实际采用 `src/openagent/` 布局，并已实现 OpenAI-compatible、DashScope、Web 工具、MCP runtime、OpenSandbox runtime 等能力。
+> 已知过期点包括：源码路径仍按旧的 `openagent/src/openagent/` 描述、Provider 状态仍把 OpenAI/Web/MCP 部分能力写成 stub、依赖描述仍称“核心功能仅依赖标准库”。当前代码实际采用 `src/openagent/` 布局，并已实现 OpenAI-compatible、DashScope、Web 工具、MCP runtime、remote sandbox runtime 等能力。
 
 ## 1. 项目概述
 

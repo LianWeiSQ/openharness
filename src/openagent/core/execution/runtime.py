@@ -7,7 +7,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 from datetime import timedelta
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -254,14 +253,11 @@ class OpenSandboxWorkspaceRuntime:
 
     @property
     def execution_metadata(self) -> dict[str, Any]:
-        payload = {
+        return {
             "execution_mode": "opensandbox",
             "sandbox_id": self.binding.sandbox_id,
             "remote_workdir": self.binding.remote_workdir,
         }
-        if self.binding.connection:
-            payload["connection"] = dict(self.binding.connection)
-        return payload
 
     async def _sandbox_client(self) -> Any:
         if self._sandbox is not None:
@@ -440,34 +436,11 @@ def _load_opensandbox_sdk():
         from opensandbox.models.filesystem import SearchEntry, WriteEntry
         from opensandbox.sandbox import ConnectionConfig, Sandbox
     except ImportError as error:  # pragma: no cover - exercised via failure branch
-        sdk_src = _find_local_opensandbox_sdk_src()
-        if sdk_src is not None:
-            sys.path.insert(0, str(sdk_src))
-            try:
-                from opensandbox.models.filesystem import SearchEntry, WriteEntry
-                from opensandbox.sandbox import ConnectionConfig, Sandbox
-            except ImportError:
-                pass
-            else:
-                return Sandbox, ConnectionConfig, WriteEntry, SearchEntry
         raise RuntimeError(
-            "OpenSandbox execution requires the 'opensandbox' package. Install it, or keep the OpenSandbox SDK repo at "
-            "'<workspace>/OpenSandbox/sdks/sandbox/python/src' for local development."
+            "Remote sandbox execution requires the optional 'opensandbox' package. "
+            "Install OpenAgent with the sandbox extra before using mode=opensandbox."
         ) from error
     return Sandbox, ConnectionConfig, WriteEntry, SearchEntry
-
-
-def _find_local_opensandbox_sdk_src() -> Path | None:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        candidates = [
-            parent / "OpenSandbox" / "sdks" / "sandbox" / "python" / "src",
-            parent / "sdks" / "sandbox" / "python" / "src",
-        ]
-        for candidate in candidates:
-            if (candidate / "opensandbox" / "__init__.py").exists():
-                return candidate
-    return None
 
 
 async def _maybe_await(value: Any) -> Any:

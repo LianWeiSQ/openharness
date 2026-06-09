@@ -16,8 +16,10 @@ dependencies = [
     "PyYAML>=6,<7",
     "tiktoken>=0.7,<1",
     "mcp>=1,<2",
-    "opensandbox",
 ]
+
+[project.optional-dependencies]
+sandbox = ["opensandbox"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -170,7 +170,7 @@ flowchart TD
 7. 依次执行工具调用：
    - 走 `ToolkitAdapter.execute()`
    - 中间经过权限中间件和日志中间件
-   - 若工具内部发起 `question` 请求，Loop 会发出 `question-request` 事件，并把 `Session.status` 切到 `PAUSED`
+   - 若工具运行过程中发起 `question` 请求，Loop 会发出 `question-request` 事件，并把 `Session.status` 切到 `PAUSED`
 8. 将 `ToolResult` 投影成精简后的 `tool` 消息写回会话；必要时把完整输出落盘到 `.openagent/tool_output/<call_id>.txt`。
 9. 计算快照前后 diff，并发出 `patch` 事件。
 10. 发出 `step-finish` 事件；如果本步产生了工具调用，则继续下一步，否则结束。
@@ -350,7 +350,7 @@ initial check
 ### 5.5 Retry 现状
 
 - `core/loop/retry.py` 中存在 `RetryManager` 工具类。
-- 但当前 `AgentLoop` 实际上没有注入这个对象，而是在 `run()` 内部手写了一段指数退避重试逻辑。
+- 但当前 `AgentLoop` 实际上没有注入这个对象，而是在 `run()` 中手写了一段指数退避重试逻辑。
 
 也就是说：`RetryManager` 目前更像保留的公共组件，而不是 Loop 的真实依赖。
 
@@ -600,7 +600,7 @@ Provider 层的核心抽象非常干净：
 
 ### 10.4 Message Materialization
 
-`message_materializer.py` 会把内部消息和工具 schema 统一物化成 OpenAI-compatible payload。
+`message_materializer.py` 会把运行时消息和工具 schema 统一物化成 OpenAI-compatible payload。
 
 一个值得注意的现状是：
 

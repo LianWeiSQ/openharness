@@ -5,7 +5,7 @@
 1. `ContextPackBuilder MVP`
 2. `InstructionContextLoader + FileContextState`
 
-目标不是一次性复刻 Agent Runtime，而是在 OpenAgent 当前结构上完成一个可测试、可演进、可review表达的上下文工程基础层。
+目标是在 OpenAgent 当前结构上完成一个可测试、可演进、可公开复用的上下文工程基础层。
 
 ## 1. 背景
 
@@ -90,7 +90,7 @@ Instruction files + File read/write state
 目标：
 
 - 把项目规则、用户规则和团队约定作为稳定上下文加载。
-- 支持 Agent Runtime / opencode 兼容入口。
+- 支持常见 agent 项目指令文件入口。
 - 避免每轮用户重复说明项目约定。
 
 首批支持文件：
@@ -477,7 +477,7 @@ Session.metadata["file_context_state"]
 
 - 只 stage 当前步骤相关文件。
 - 跑最近相关测试。
-- 在 `docs/ai-engineering/progress.md` 记录结果。
+- 在公开开发日志或 PR 描述中记录结果。
 - 推送当前分支到 GitHub。
 
 当前分支建议：

@@ -14,7 +14,8 @@
 
 现状：
 
-- `pyproject.toml` 声明了 `beautifulsoup4`、`markdownify`、`PyYAML`、`tiktoken`、`mcp`、`opensandbox`。
+- `pyproject.toml` 声明了 `beautifulsoup4`、`markdownify`、`PyYAML`、`tiktoken`、`mcp`。
+- sandbox SDK 已拆为 optional extra，不再作为公开 core 的默认安装依赖。
 - `core/mcp/runtime.py` 直接导入 `httpx`，但 `httpx` 没有写入依赖。
 - 当前本机未安装依赖时，`PYTHONPATH=src python src/examples/run_mock.py` 因 `yaml` 缺失失败。
 
@@ -22,7 +23,7 @@
 
 - 在 `pyproject.toml` 中补充 `httpx`。
 - 重新安装：`python -m pip install -e .`。
-- 如果 OpenSandbox 不是所有场景都需要，可考虑拆成 extra，例如 `.[sandbox]`，但当前代码路径已默认依赖 `opensandbox` 包名。
+- 如需远端 sandbox runtime，可额外安装 `.[sandbox]`。
 
 验收：
 
@@ -31,23 +32,22 @@ python -m pip install -e .
 PYTHONPATH=src python src/examples/run_query_only.py "你好"
 ```
 
-### 2. 修复或移除缺失的 `legacy_cli.py`
+### 2. 明确 CLI / Web Console 的公开边界
 
 现状：
 
-- `src/tests/test_legacy_cli.py` 导入 `agent_cli`。
-- 仓库内没有 `legacy_cli.py`。
-- 完整测试会在收集阶段失败。
+- 当前公开仓库定位为 `openagent-core`，不包含根目录旧版 CLI / Web Console。
+- 交互式前端如需恢复，应放在独立 package 或 demo 仓库中，并使用占位配置，不携带真实环境信息。
 
-建议二选一：
+建议：
 
-- 恢复 `legacy_cli.py`，包含 CLI、Web Console、MCP demo、问题回复等测试期望的接口。
-- 如果 CLI/Web Console 已不属于 core 范围，则删除或迁移 `src/tests/test_legacy_cli.py`，并把相关能力移到独立项目测试。
+- README 中继续以 core runtime 和 examples 作为入口。
+- 后续如恢复 CLI / Web Console，为其单独补测试、配置模板和脱敏样例。
 
 验收：
 
 ```bash
-PYTHONPATH=src python -m unittest src/tests/test_legacy_cli.py
+PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p "test_*.py"
 ```
 
 ### 3. 修正示例脚本中的仓库根定位与工作目录
@@ -71,23 +71,22 @@ PYTHONPATH=src python src/examples/run_query_only.py "你好"
 PYTHONPATH=src python src/examples/run_mock.py
 ```
 
-### 4. 修正 OpenSandbox runtime 测试与实现不一致
+### 4. 补齐远端 sandbox runtime 测试
 
 现状：
 
-- `OpenSandboxWorkspaceRuntime.glob()` 调用 `sandbox.files.search(SearchEntry(...))`。
-- `src/tests/test_execution_runtime.py` 的 fake `search(self, entries)` 按可迭代 entries 处理，导致 `FakeSearchEntry object is not iterable`。
+- 远端 sandbox runtime 属于 optional 能力。
+- 公开 core 测试覆盖模式绑定、工具过滤和 metadata 安全，但还缺少独立 fake SDK 端到端测试。
 
 建议：
 
-- 如果 SDK 接口真实签名是单个 `SearchEntry`，修测试 fake。
-- 如果 SDK 接口真实签名是 list，则修 runtime 调用。
-- 同步更新 `doc/remote-sandbox-runtime.md` 中的 SDK 调用说明。
+- 增加 fake sandbox SDK 测试，覆盖命令执行、文件读写、glob/grep/ls 和连接信息脱敏。
+- CI 中默认不安装 sandbox extra；optional job 再验证 `.[sandbox]`。
 
 验收：
 
 ```bash
-PYTHONPATH=src python -m unittest src/tests/test_execution_runtime.py
+PYTHONPATH=src python -m unittest discover -s src/tests -p "test_*.py"
 ```
 
 ## P1：让核心能力和文档保持一致
@@ -123,7 +122,7 @@ PYTHONPATH=src python -m unittest src/tests/test_execution_runtime.py
 
 - `CLAUD.md` 仍描述“仅依赖标准库”“OpenAI Provider stub”“Web 工具 stub”“MCP 适配器 stub”等旧状态。
 - `Agent.md` 基本对齐当前代码，旧路径已在本次文档整理中修正。
-- `doc/remote-sandbox-runtime.md` 有旧 Windows 绝对路径链接。
+- 过细的远端 sandbox 专题设计已从公开文档中移除。
 
 建议：
 
@@ -165,7 +164,6 @@ PYTHONPATH=src python -m unittest src/tests/test_execution_runtime.py
 - `doc/openagent-project-doc.md`：当前代码事实和模块说明
 - `doc/remediation-plan.md`：待整改事项
 - `Agent.md`：深架构分析
-- `doc/remote-sandbox-runtime.md`：OpenSandbox 专题
 - `doc/web-research-convergence-design.md`：Web 研究收敛专题
 - `CLAUD.md`：历史归档，不作为当前依据
 

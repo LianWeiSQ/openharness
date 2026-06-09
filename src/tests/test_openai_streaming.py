@@ -115,8 +115,8 @@ class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
         model = OpenAILanguageModel(
             api_key="test",
             model_id="glm47",
-            base_url="http://127.0.0.1:31877/v1",
-            host_header="s-20260316111037-tx4v6.sandbox-agent.sandbox.example.test",
+            base_url="https://gateway.example.test/v1",
+            host_header="model-gateway.example.test",
         )
         messages = [
             ChatMessage(role="user", content="show files"),
@@ -145,7 +145,7 @@ class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen_payload.get("stream"), True)
         self.assertEqual(seen_payload["messages"], materialize_openai_compatible_messages("You are helpful.", messages))
         self.assertEqual(seen_payload["tools"], materialize_openai_compatible_tools(tools))
-        self.assertEqual(seen_headers.get("host"), "s-20260316111037-tx4v6.sandbox-agent.sandbox.example.test")
+        self.assertEqual(seen_headers.get("host"), "model-gateway.example.test")
 
         self.assertEqual([e["type"] for e in events[:2]], ["text-delta", "text-delta"])
         self.assertEqual(events[0]["text"], "Hello ")

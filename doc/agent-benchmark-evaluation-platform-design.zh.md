@@ -28,7 +28,7 @@ Agent Harness + LLM + Tool/Terminal Execution + Recovery Strategy
 
 | 场景 | 目标 |
 | --- | --- |
-| 内部研发评测 | 对 OpenAgent 或其他 agent 版本做回归、对比和失败分析 |
+| 团队研发评测 | 对 OpenAgent 或其他 agent 版本做回归、对比和失败分析 |
 | 外部用户接入 | 让企业或开发者接入自有 agent，获得非公开报告或可选榜单分数 |
 
 ## 2. 设计原则
@@ -45,7 +45,7 @@ Agent Harness + LLM + Tool/Terminal Execution + Recovery Strategy
 
 ### 2.2 默认使用 Sandbox
 
-正式评测默认每个任务一个独立沙箱。沙箱可以是 Docker 容器，也可以后续扩展为 E2B、Runloop、Kubernetes Job 或内部执行平台。
+正式评测默认每个任务一个独立沙箱。沙箱可以是 Docker 容器，也可以后续扩展为 E2B、Runloop、Kubernetes Job 或自托管执行平台。
 
 沙箱是可信评测的基础：
 
@@ -479,7 +479,7 @@ Candidate Task
 | 运行方式 | 适用 | 风险 |
 | --- | --- | --- |
 | 本机终端 | 快速调试 | 不安全、不可复现、污染本地环境 |
-| 固定 VM | 内部灰度 | 状态清理和并发隔离较弱 |
+| 固定 VM | 自托管灰度 | 状态清理和并发隔离较弱 |
 | Docker / Sandbox | 正式评测 | 推荐 |
 
 沙箱带来的能力：
@@ -646,7 +646,7 @@ OpenAgent 当前已有：
 
 短期：
 
-- OpenAgent 在任务容器内部本地执行 bash。
+- OpenAgent 在任务容器内本地执行 bash。
 - 用 Docker 隔离环境。
 
 长期：
@@ -732,7 +732,7 @@ Terminal 是主轴，其他维度作为辅助。
 | Long-horizon Work | 辅 | MM-ClawBench、ClawBench、WildClawBench | 多轮、多约束真实工作流 |
 | Memory / Evolution | 辅 | EverMemBench、EvoAgentBench、MEME | 长期记忆和经验复用 |
 
-对外展示时不需要暴露每道任务，但需要保留 benchmark lineage。也就是说，用户看到的是能力维度分，平台内部知道这些分数来自哪些任务族、哪些参考 benchmark、哪些 verifier。
+对外展示时不需要暴露每道任务，但需要保留 benchmark lineage。也就是说，用户看到的是能力维度分，平台服务端记录这些分数来自哪些任务族、哪些参考 benchmark、哪些 verifier。
 
 ### 11.3 失败画像
 
