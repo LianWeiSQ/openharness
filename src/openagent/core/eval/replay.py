@@ -19,15 +19,26 @@ def load_trace_events(path: str | Path) -> list[dict[str, Any]]:
 def summarize_trace(path: str | Path) -> dict[str, Any]:
     events = load_trace_events(path)
     errors = [event for event in events if event.get("status") == "error"]
-    model_events = [event for event in events if event.get("name") == "model.call.finished"]
-    tool_events = [event for event in events if event.get("name") == "tool.call.finished"]
-    context_events = [event for event in events if str(event.get("name") or "").startswith("context.")]
+    model_events = [event for event in events if _event_name(event) == "model.call.finished"]
+    tool_events = [event for event in events if _event_name(event) == "tool.call.finished"]
+    context_events = [event for event in events if _event_name(event).startswith("context.")]
     input_tokens = 0
     output_tokens = 0
     cost = 0.0
-    for event in events:
-        if event.get("name") != "model.usage":
-            continue
+    usage_events = [
+        event
+        for event in events
+        if _event_name(event) == "model.call.finished"
+        and isinstance(event.get("attributes"), dict)
+        and (
+            event["attributes"].get("input_tokens") is not None
+            or event["attributes"].get("output_tokens") is not None
+            or event["attributes"].get("cost") is not None
+        )
+    ]
+    if not usage_events:
+        usage_events = [event for event in events if _event_name(event) == "model.usage"]
+    for event in usage_events:
         attrs = event.get("attributes")
         if not isinstance(attrs, dict):
             continue
@@ -69,12 +80,16 @@ def render_trace_summary(path: str | Path) -> str:
                 "",
                 "## First Error",
                 "",
-                f"- Event: {error.get('name')}",
+                f"- Event: {_event_name(error)}",
                 f"- Kind: {attrs.get('error_kind') if isinstance(attrs, dict) else ''}",
                 f"- Message: {attrs.get('message') if isinstance(attrs, dict) else ''}",
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _event_name(event: dict[str, Any]) -> str:
+    return str(event.get("event") or event.get("name") or "")
 
 
 __all__ = ["load_trace_events", "render_trace_summary", "summarize_trace"]

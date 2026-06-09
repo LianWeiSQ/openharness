@@ -39,14 +39,48 @@ Remote sandbox connection data is used to initialize the runtime, but is not emi
 The repository includes local eval/replay utilities plus benchmark adapters:
 
 - local eval runner for deterministic regression cases;
+- P0 trace-backed scoring for run integrity, required/forbidden trace events, model/tool call budgets, latency, tokens, and cost;
 - trace/replay output for failure analysis;
+- baseline regression reports for prompt/model/tool changes;
 - Terminal-Bench adapter via `perform_task(instruction, session, logging_dir)`;
 - Harbor adapter for benchmark environment execution.
+
+An eval case can define deterministic expectations:
+
+```yaml
+id: smoke_case
+input: continue
+expected:
+  files_changed: []
+scoring:
+  require_no_error: true
+  require_final_answer_contains:
+    - done
+  require_trace_check: true
+  required_trace_events:
+    - run.started
+    - model.call.finished
+  forbidden_trace_events:
+    - tool.call.finished
+  max_model_calls: 1
+  max_tool_calls: 0
+  max_cost: 0.05
+```
+
+`run_eval_files(...)` writes:
+
+- `report.json`: per-case result plus aggregate pass rate, token/cost, latency, trace check, and tool-source metrics;
+- `summary.md`: human-readable summary for review;
+- `runs/{run_id}/trace.jsonl` and `runs/{run_id}/summary.json`: P0 trace artifacts for every case;
+- `regression.json` and `regression.md` when `baseline_report=...` is provided.
+
+Baseline comparison tracks case additions/removals plus status, score, cost, duration, tool-call, and model-call deltas.
 
 Smoke command:
 
 ```bash
 PYTHONPATH=src:src/tests python -m unittest \
+  src/tests/test_eval_runner.py \
   src/tests/test_terminal_bench_adapter.py \
   src/tests/test_harbor_adapter.py \
   src/tests/test_loop.py
