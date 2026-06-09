@@ -21,21 +21,19 @@ import os
 import sys
 from pathlib import Path
 
-# 允许直接运行本文件：把仓库根目录加入 sys.path
-# 说明：sys.path 里应当放“包目录的父目录”，而不是包目录本身。
-# 我们通过向上查找 `Agent.md` 来定位仓库根目录。
+# 允许直接运行本文件：把仓库根目录加入 sys.path。
 def _find_repo_root() -> Path:
     here = Path(__file__).resolve()
     for p in here.parents:
-        if (p / "Agent.md").exists() and (p / "openagent").exists():
+        if (p / "pyproject.toml").exists() and (p / "src" / "openagent").is_dir():
             return p
-    # 兜底：按当前文件路径层级猜测（openagent/src/examples/ -> repo root）
     return here.parents[3]
 
 
 REPO_ROOT = _find_repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from openagent.core.agent.universal import UniversalAgent  # noqa: E402
 from openagent.core.loop.processor import AgentLoop  # noqa: E402
@@ -102,7 +100,7 @@ async def main() -> int:
     )
 
     # 创建会话工作目录（用于快照/patch；纯问答一般不会产生文件变更）
-    workdir = Path("openagent/examples/workdir_dashscope")
+    workdir = Path("examples/workdir_dashscope")
     workdir.mkdir(parents=True, exist_ok=True)
     session = Session(directory=workdir)
 

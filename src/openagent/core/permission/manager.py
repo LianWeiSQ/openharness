@@ -3,13 +3,12 @@ from __future__ import annotations
 """
 PermissionManager：权限决策器（allow / deny / ask）。
 
-对应 `Agent.md` 的 Permission 模块，核心目标：
+核心目标：
 - 在工具执行前，根据规则集对工具调用进行“可用性判定”
 - 支持三态：ALLOW（直接允许）、DENY（直接拒绝）、ASK（需要用户确认）
 
 实现要点：
 - 规则匹配使用 fnmatch（支持通配符），并采用“最后匹配优先（last match wins）”
-  这与 OpenCode 的 PermissionNext.evaluate(findLast) 行为一致
 - ask_user_func 由上层注入，用于 UI/交互式确认；如果未注入则抛出 PermissionAskRequiredError
 """
 

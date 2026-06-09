@@ -8,14 +8,15 @@ import sys
 def _find_repo_root() -> Path:
     here = Path(__file__).resolve()
     for p in here.parents:
-        if (p / "Agent.md").exists() and (p / "openagent").exists():
+        if (p / "pyproject.toml").exists() and (p / "src" / "openagent").is_dir():
             return p
     return here.parents[3]
 
 
 REPO_ROOT = _find_repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.loop.processor import AgentLoop
@@ -44,7 +45,7 @@ class ScriptedModel:
 
 
 async def main() -> None:
-    workdir = Path("openagent/examples/workdir")
+    workdir = Path("examples/workdir_mock")
     workdir.mkdir(parents=True, exist_ok=True)
 
     agent = UniversalAgent(

@@ -21,14 +21,15 @@ from pathlib import Path
 def _find_repo_root() -> Path:
     here = Path(__file__).resolve()
     for p in here.parents:
-        if (p / "Agent.md").exists() and (p / "openagent").exists():
+        if (p / "pyproject.toml").exists() and (p / "src" / "openagent").is_dir():
             return p
     return here.parents[3]
 
 
 REPO_ROOT = _find_repo_root()
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from openagent.core.agent.universal import UniversalAgent  # noqa: E402
 from openagent.core.loop.processor import AgentLoop  # noqa: E402
@@ -152,7 +153,7 @@ async def main() -> int:
         return 2
 
     agent, mode = await _build_agent(question)
-    workdir = Path("openagent/examples/workdir_query_only")
+    workdir = Path("examples/workdir_query_only")
     workdir.mkdir(parents=True, exist_ok=True)
 
     loop = AgentLoop(
