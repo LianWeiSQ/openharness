@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..id import new_id
+from .exporter import TraceExporter, build_trace_exporters
 from .schema import (
     ArtifactRecord,
     ErrorRecord,
@@ -49,14 +50,25 @@ class AgentTraceRecorder:
         config: TraceConfig | None = None,
         base_dir: str | Path | None = None,
         session_metadata: dict[str, Any] | None = None,
+        exporters: list[TraceExporter] | None = None,
     ) -> None:
         self.run = run
         self.config = config or TraceConfig()
         self.base_dir = Path(base_dir) if base_dir is not None else Path.cwd()
         self.session_metadata = session_metadata
+        self.exporter_diagnostics: list[dict[str, Any]] = []
+        if not self.config.enabled:
+            self.exporters: list[TraceExporter] = []
+        else:
+            self.exporters = (
+                list(exporters)
+                if exporters is not None
+                else build_trace_exporters(run=run, config=self.config, diagnostics=self.exporter_diagnostics)
+            )
         self._seq = 0
         self._events: list[dict[str, Any]] = []
         self._summary: dict[str, Any] = self._empty_summary()
+        self._closed = False
         if self.config.enabled:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -201,13 +213,33 @@ class AgentTraceRecorder:
         self._update_summary(event_dict)
         if self.config.write_summary:
             self._write_summary()
+        self._export_event(event_dict)
         if event in {"run.finished", "run.failed"}:
             status_label = "failed" if trace_event.status == "error" or event == "run.failed" else "completed"
             self._write_process_note(f"Run {status_label} after {self._summary.get('event_count', 0)} trace events.")
+            self.close()
         return trace_event
 
     def summary(self) -> dict[str, Any]:
         return dict(self._summary)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        for exporter in self.exporters:
+            try:
+                exporter.close()
+            except Exception as error:  # noqa: BLE001
+                self.exporter_diagnostics.append(
+                    {
+                        "exporter": getattr(exporter, "name", type(exporter).__name__),
+                        "status": "error",
+                        "error_kind": type(error).__name__,
+                        "message": str(error),
+                    }
+                )
+        self._closed = True
+        self._sync_exporter_metadata()
 
     def _bind_metadata(self) -> None:
         if self.session_metadata is None:
@@ -219,6 +251,21 @@ class AgentTraceRecorder:
             "trace_path": str(self.trace_path),
             "summary_path": str(self.summary_path),
             "process_path": str(self.process_path),
+            "exporters": {
+                "enabled": [getattr(exporter, "name", type(exporter).__name__) for exporter in self.exporters],
+                "diagnostics": list(self.exporter_diagnostics),
+            },
+        }
+
+    def _sync_exporter_metadata(self) -> None:
+        if self.session_metadata is None:
+            return
+        root = self.session_metadata.get(TRACE_METADATA_KEY)
+        if not isinstance(root, dict):
+            return
+        root["exporters"] = {
+            "enabled": [getattr(exporter, "name", type(exporter).__name__) for exporter in self.exporters],
+            "diagnostics": list(self.exporter_diagnostics),
         }
 
     def _empty_summary(self) -> dict[str, Any]:
@@ -329,6 +376,22 @@ class AgentTraceRecorder:
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S %z")
         self.process_path.write_text(existing.rstrip() + f"\n- {timestamp}: {message}\n", encoding="utf-8")
 
+    def _export_event(self, event: dict[str, Any]) -> None:
+        for exporter in self.exporters:
+            try:
+                exporter.record_event(event)
+            except Exception as error:  # noqa: BLE001
+                self.exporter_diagnostics.append(
+                    {
+                        "exporter": getattr(exporter, "name", type(exporter).__name__),
+                        "status": "error",
+                        "error_kind": type(error).__name__,
+                        "message": str(error),
+                        "event": event.get("event"),
+                    }
+                )
+        self._sync_exporter_metadata()
+
 
 def load_trace_config(options: dict[str, Any] | None) -> TraceConfig:
     raw_options = options or {}
@@ -343,6 +406,7 @@ def load_trace_config(options: dict[str, Any] | None) -> TraceConfig:
         keep_events=_bool_option(raw.get("keep_events", True)),
         max_events=_positive_int(raw.get("max_events"), 2000),
         write_summary=_bool_option(raw.get("write_summary", True)),
+        exporters=dict(raw.get("exporters") or {}) if isinstance(raw.get("exporters"), dict) else {},
     )
 
 

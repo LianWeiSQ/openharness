@@ -13,6 +13,7 @@ class TraceConfig:
     keep_events: bool = True
     max_events: int = 2000
     write_summary: bool = True
+    exporters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

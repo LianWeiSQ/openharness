@@ -34,6 +34,46 @@ Logs and traces should not include secrets. OpenAgent redacts common secret-bear
 
 Remote sandbox connection data is used to initialize the runtime, but is not emitted as tool metadata.
 
+## LangSmith Export
+
+OpenAgent can export P0 trace spans to LangSmith through OpenTelemetry. Local `trace.jsonl` and `summary.json` remain the source of truth; LangSmith is an optional external sink for run visualization and experiment review.
+
+Install optional dependencies:
+
+```bash
+pip install "openagent-core[langsmith]"
+```
+
+Configure an agent run:
+
+```python
+config = AgentConfig(
+    name="eval",
+    permission="FULL",
+    options={
+        "trace": {
+            "enabled": True,
+            "exporters": {
+                "langsmith": {
+                    "enabled": True,
+                    "project": "openagent-dev",
+                }
+            },
+        }
+    },
+)
+```
+
+Required environment:
+
+```bash
+export LANGSMITH_API_KEY=...
+```
+
+The minimal exporter sends run, step, model, and tool spans. By default it exports identifiers and metrics only: `run_id`, `trace_id`, `session_id`, span kind, status, latency, model/tool names, tool source, MCP/Skill metadata, token counts, and cost. It does not export prompts, full model output, tool output, or workspace paths unless explicitly enabled with `include_content` or `include_workspace`.
+
+Exporter failures are non-fatal by default and are recorded under `Session.metadata["agent_trace"]["exporters"]["diagnostics"]`. Set `strict: true` for configuration errors to fail fast during setup.
+
 ## Evaluation
 
 The repository includes local eval/replay utilities plus benchmark adapters:

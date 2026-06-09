@@ -7,6 +7,7 @@ import shutil
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from openagent.core.agent.universal import UniversalAgent
@@ -14,7 +15,7 @@ from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.session.session import Session
 from openagent.core.tool.definition import ToolContext, ToolDefinition, ToolOutput
-from openagent.core.trace import AgentTraceRecorder, RunRecord, check_trace_run, load_trace_events, load_trace_summary
+from openagent.core.trace import AgentTraceRecorder, RunRecord, check_trace_run, load_trace_config, load_trace_events, load_trace_summary
 from openagent.core.trace.cli import main as trace_cli_main
 from openagent.core.types import AgentConfig
 
@@ -24,6 +25,31 @@ from _mock_model import ScriptedLanguageModel
 @dataclass
 class EmptyArgs:
     pass
+
+
+class FakeTraceExporter:
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.closed = False
+
+    def record_event(self, event: dict[str, Any]) -> None:
+        self.events.append(dict(event))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FailingTraceExporter:
+    name = "failing"
+
+    def record_event(self, event: dict[str, Any]) -> None:
+        del event
+        raise RuntimeError("export failed")
+
+    def close(self) -> None:
+        raise RuntimeError("close failed")
 
 
 class TraceTests(unittest.IsolatedAsyncioTestCase):
@@ -70,6 +96,64 @@ class TraceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["total_output_tokens"], 4)
         self.assertAlmostEqual(summary["total_cost"], 0.01)
         self.assertTrue(Path(metadata["agent_trace"]["trace_path"]).exists())  # type: ignore[index]
+
+    def test_trace_config_parses_langsmith_exporter_options(self) -> None:
+        config = load_trace_config(
+            {
+                "trace": {
+                    "root_dir": "runs",
+                    "exporters": {
+                        "langsmith": {
+                            "enabled": True,
+                            "project": "openagent-dev",
+                            "include_content": False,
+                        }
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(config.root_dir, "runs")
+        self.assertTrue(config.exporters["langsmith"]["enabled"])
+        self.assertEqual(config.exporters["langsmith"]["project"], "openagent-dev")
+
+    def test_trace_recorder_exports_events_and_closes_on_terminal_event(self) -> None:
+        temp = self._make_temp_dir()
+        run = RunRecord(run_id="run_export", trace_id="trace_export", session_id="session_export", agent_name="agent")
+        metadata: dict[str, object] = {}
+        exporter = FakeTraceExporter()
+        recorder = AgentTraceRecorder(run=run, base_dir=temp, session_metadata=metadata, exporters=[exporter])
+
+        recorder.record_event("run.started", kind="run")
+        recorder.record_event("model.call.started", kind="model", span_id="span_model")
+        recorder.record_event(
+            "model.call.finished",
+            kind="model",
+            span_id="span_model",
+            attributes={"model": "mock", "input_tokens": 1, "output_tokens": 2},
+        )
+        recorder.finish_run(attributes={"status": "completed"})
+
+        self.assertTrue(exporter.closed)
+        self.assertEqual([event["event"] for event in exporter.events], ["run.started", "model.call.started", "model.call.finished", "run.finished"])
+        exporters = metadata["agent_trace"]["exporters"]  # type: ignore[index]
+        self.assertEqual(exporters["enabled"], ["fake"])
+        self.assertEqual(exporters["diagnostics"], [])
+
+    def test_trace_exporter_errors_are_recorded_as_diagnostics(self) -> None:
+        temp = self._make_temp_dir()
+        run = RunRecord(run_id="run_fail_export", trace_id="trace_fail_export", session_id="session_fail_export", agent_name="agent")
+        metadata: dict[str, object] = {}
+        recorder = AgentTraceRecorder(run=run, base_dir=temp, session_metadata=metadata, exporters=[FailingTraceExporter()])
+
+        recorder.record_event("run.started", kind="run")
+        recorder.finish_run(attributes={"status": "completed"})
+
+        summary = load_trace_summary(recorder.summary_path)
+        exporters = metadata["agent_trace"]["exporters"]  # type: ignore[index]
+        self.assertEqual(summary["status"], "completed")
+        self.assertGreaterEqual(len(exporters["diagnostics"]), 2)
+        self.assertEqual(exporters["diagnostics"][0]["exporter"], "failing")
 
     async def test_agent_loop_writes_standard_trace_for_model_and_mcp_tool_calls(self) -> None:
         temp = self._make_temp_dir()
