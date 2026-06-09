@@ -190,6 +190,7 @@ class AgentLoop:
         self.runtime_logger: RuntimeLogger | None = None
         self.question_manager = question_manager or QuestionManager()
         self.question_manager.set_hooks(on_requested=self._on_question_requested, on_resolved=self._on_question_resolved)
+        self._text_trace_lengths: dict[str, int] = {}
         self._init_tools()
 
     def _tools_for_agent(self) -> list[ToolSchema]:
@@ -586,6 +587,54 @@ class AgentLoop:
             attributes=attributes,
             duration_ms=duration_ms,
         )
+
+    def _record_stream_event_observation(self, event: StreamEvent, *, step_index: int, attempt_index: int) -> None:
+        event_type = event.get("type")
+        if event_type == "text-start":
+            text_id = str(event.get("id") or "")
+            if text_id:
+                self._text_trace_lengths[text_id] = 0
+            self._record_observation(
+                "text.started",
+                kind="text",
+                attributes={
+                    "step_index": step_index,
+                    "attempt_index": attempt_index,
+                    "text_id": text_id or None,
+                    "metadata": event.get("metadata"),
+                },
+            )
+            return
+        if event_type == "text-delta":
+            text_id = str(event.get("id") or "")
+            delta = str(event.get("text") or "")
+            current = self._text_trace_lengths.get(text_id, 0) + len(delta)
+            if text_id:
+                self._text_trace_lengths[text_id] = current
+            self._record_observation(
+                "text.delta",
+                kind="text",
+                attributes={
+                    "step_index": step_index,
+                    "attempt_index": attempt_index,
+                    "text_id": text_id or None,
+                    "delta_chars": len(delta),
+                    "accumulated_chars": current,
+                },
+            )
+            return
+        if event_type == "text-end":
+            text_id = str(event.get("id") or "")
+            self._record_observation(
+                "text.finished",
+                kind="text",
+                attributes={
+                    "step_index": step_index,
+                    "attempt_index": attempt_index,
+                    "text_id": text_id or None,
+                    "total_chars": self._text_trace_lengths.get(text_id, 0),
+                },
+            )
 
     def _log_runtime(
         self,
@@ -1079,6 +1128,7 @@ class AgentLoop:
     async def run(self, user_text: str):
         self.observation_recorder = self._new_observation_recorder()
         self.runtime_logger = self._new_runtime_logger()
+        self._text_trace_lengths = {}
         self.runtime_logger.bind_trace(
             run_id=self.observation_recorder.trace.run_id,
             trace_id=self.observation_recorder.trace.trace_id,
@@ -1249,6 +1299,7 @@ class AgentLoop:
                             assistant_text_chunks = []
                             async for event in stream:
                                 yielded = True
+                                self._record_stream_event_observation(event, step_index=steps, attempt_index=attempt)
                                 if event["type"] == "text-delta":
                                     assistant_text_chunks.append(event["text"])
                                 if buffered_events is not None:
@@ -1267,6 +1318,7 @@ class AgentLoop:
                                 assistant_text_chunks = []
                                 async for event in stream:
                                     yielded = True
+                                    self._record_stream_event_observation(event, step_index=steps, attempt_index=attempt)
                                     if event["type"] == "text-delta":
                                         assistant_text_chunks.append(event["text"])
                                     if buffered_events is not None:

@@ -53,6 +53,7 @@ def observability_middleware() -> Middleware:
             return await nxt(call)
 
         preview = input_preview(call.input, max_chars=recorder.config.input_preview_chars)
+        tool_definition = _tool_definition(ctx)
         with recorder.span(
             "tool.call",
             kind="tool",
@@ -61,6 +62,10 @@ def observability_middleware() -> Middleware:
                 "call_id": call.call_id,
                 "input_preview": preview,
                 "execution_mode": ctx.get("execution_mode"),
+                "tool_group": tool_definition.get("group"),
+                "dangerous": tool_definition.get("dangerous"),
+                "execution_scope": tool_definition.get("execution_scope"),
+                "tool_source": _tool_source(call.name, tool_definition=tool_definition),
             },
         ) as span:
             try:
@@ -70,10 +75,19 @@ def observability_middleware() -> Middleware:
                 raise
 
             metadata = result.metadata or {}
+            source = _tool_source(call.name, tool_definition=tool_definition, metadata=metadata)
             span.set_attributes(
                 {
                     "tool_name": call.name,
                     "call_id": result.call_id,
+                    "tool_source": source,
+                    "tool_group": tool_definition.get("group"),
+                    "backend": metadata.get("backend"),
+                    "mcp_server": metadata.get("mcp_server"),
+                    "mcp_original_tool_name": metadata.get("mcp_original_tool_name"),
+                    "mcp_tool_name": metadata.get("mcp_tool_name"),
+                    "skill_name": metadata.get("skill_name"),
+                    "skill_location": metadata.get("skill_location"),
                     "error": bool(result.error),
                     "error_kind": metadata.get("error_kind"),
                     "title": metadata.get("title"),
@@ -92,6 +106,32 @@ def observability_middleware() -> Middleware:
             return result
 
     return _mw
+
+
+def _tool_definition(ctx: dict[str, Any]) -> dict[str, Any]:
+    value = ctx.get("tool_definition")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _tool_source(
+    tool_name: str,
+    *,
+    tool_definition: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    metadata = metadata or {}
+    backend = str(metadata.get("backend") or "").strip()
+    if backend == "mcp":
+        return "mcp"
+    group = str(tool_definition.get("group") or "").strip()
+    if group == "skill" or tool_name == "skill" or metadata.get("skill_name"):
+        return "skill"
+    if group == "mcp" or metadata.get("mcp_server"):
+        return "mcp"
+    execution_mode = str(metadata.get("execution_mode") or "").strip()
+    if execution_mode == "opensandbox":
+        return "sandbox"
+    return "local_tool"
 
 
 def logging_middleware(logger: list[dict[str, Any]]) -> Middleware:

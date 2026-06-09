@@ -138,6 +138,12 @@ class ToolkitAdapter:
 
         call = ToolCall(name=name, input=input, call_id=call_id or new_id("toolcall"))
         ctx = dict(context or {})
+        ctx["tool_definition"] = {
+            "id": tool.id,
+            "group": tool.group,
+            "dangerous": tool.dangerous,
+            "execution_scope": tool.execution_scope,
+        }
 
         async def _invoke(tool_call: ToolCall) -> ToolResult:
             session_root_value = ctx.get("session_root") or ctx.get("cwd")

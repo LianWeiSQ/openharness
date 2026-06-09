@@ -30,10 +30,12 @@ class SnapshotManager:
         *,
         max_file_bytes: int = 1_000_000,
         max_text_bytes: int = 200_000,
+        ignored_dirs: tuple[str, ...] = (".git", ".openagent", "__pycache__"),
     ) -> None:
         self._snapshots: dict[str, Snapshot] = {}
         self.max_file_bytes = max_file_bytes
         self.max_text_bytes = max_text_bytes
+        self.ignored_dirs = set(ignored_dirs)
 
     def track(self, root: Path) -> str:
         snap_id = new_id("snapshot")
@@ -70,7 +72,8 @@ class SnapshotManager:
     def _scan(self, root: Path) -> dict[str, SnapshotFile]:
         root = root.resolve()
         out: dict[str, SnapshotFile] = {}
-        for dirpath, _dirnames, filenames in os.walk(root):
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [name for name in dirnames if name not in self.ignored_dirs]
             for fn in filenames:
                 path = Path(dirpath) / fn
                 try:
@@ -108,4 +111,3 @@ class SnapshotManager:
             lineterm="",
         )
         return "\n".join(diff)
-

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .id import new_id
+from .trace import AgentTraceRecorder
 
 OBSERVABILITY_METADATA_KEY = "observability"
 DEFAULT_JSONL_DIR = ".openagent/observability"
@@ -108,11 +109,13 @@ class ObservationRecorder:
         session_metadata: dict[str, Any],
         config: ObservationConfig | None = None,
         base_dir: Path | str | None = None,
+        trace_recorder: AgentTraceRecorder | None = None,
     ) -> None:
         self.trace = trace
         self.session_metadata = session_metadata
         self.config = config or ObservationConfig()
         self.base_dir = Path(base_dir) if base_dir is not None else Path.cwd()
+        self.trace_recorder = trace_recorder
         self._span_stack: ContextVar[tuple[str, ...]] = ContextVar(
             f"openagent_observation_span_stack_{trace.trace_id}",
             default=(),
@@ -145,7 +148,23 @@ class ObservationRecorder:
             workspace=workspace,
             started_at_ms=_now_ms(),
         )
-        return cls(trace=trace, session_metadata=session_metadata, config=config, base_dir=base_dir)
+        trace_recorder = (
+            AgentTraceRecorder.for_observation_trace(
+                trace=trace,
+                options=options,
+                base_dir=base_dir,
+                session_metadata=session_metadata,
+            )
+            if config.enabled
+            else None
+        )
+        return cls(
+            trace=trace,
+            session_metadata=session_metadata,
+            config=config,
+            base_dir=base_dir,
+            trace_recorder=trace_recorder,
+        )
 
     @property
     def current_span_id(self) -> str | None:
@@ -269,6 +288,8 @@ class ObservationRecorder:
             root["events"] = events[-max(1, self.config.max_events):]
         if self.config.jsonl:
             self._append_jsonl(event_dict)
+        if self.trace_recorder is not None:
+            self.trace_recorder.record_observation(event_dict)
 
     def _append_jsonl(self, event: dict[str, Any]) -> None:
         path = self._jsonl_path()
