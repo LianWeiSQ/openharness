@@ -8,7 +8,6 @@ from openagent.core.loop.processor import AgentLoop
 from openagent.core.mcp import RemoteMcpManager, load_mcp_config_from_sources
 from openagent.core.permission import PermissionAction, PermissionManager, PermissionRule, PermissionRuleset
 from openagent.core.provider.base import LanguageModel
-from openagent.core.provider.dashscope import DashScopeProvider
 from openagent.core.provider.openai import OpenAIProvider
 from openagent.core.question import QuestionManager
 from openagent.core.session import Session
@@ -19,7 +18,6 @@ from openagent.core.types import AgentConfig, Model
 __all__ = [
     "AgentConfig",
     "AgentLoop",
-    "DashScopeProvider",
     "ExploreAgent",
     "LanguageModel",
     "Model",

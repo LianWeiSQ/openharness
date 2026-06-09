@@ -208,7 +208,7 @@ def _summarize_error_body(body: str | None) -> str:
         if title_match:
             title = re.sub(r"\s+", " ", title_match.group(1)).strip()
         if "web application firewall" in compact.lower() or "waf" in compact.lower():
-            return "upstream returned HTML error page: Alibaba Cloud Web Application Firewall (WAF)"
+            return "upstream returned HTML error page: Web Application Firewall (WAF)"
         if title:
             return f"upstream returned HTML error page: {title[:160]}"
         return "upstream returned HTML error page"

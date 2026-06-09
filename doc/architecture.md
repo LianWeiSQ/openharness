@@ -21,7 +21,7 @@ User task
 | Agent loop | `src/openagent/core/loop/` | Multi-step run loop, model calls, tool execution, patch events |
 | Agents | `src/openagent/core/agent/` | `UniversalAgent`, `PlanAgent`, `ExploreAgent` and prompt resolution |
 | Session | `src/openagent/core/session/` | Messages, todos, metadata, pause/resume state |
-| Providers | `src/openagent/core/provider/` | OpenAI-compatible and DashScope streaming adapters |
+| Providers | `src/openagent/core/provider/` | OpenAI-compatible streaming adapter |
 | Tools | `src/openagent/core/tool/` | Built-in tools, plugin registration, middleware |
 | MCP | `src/openagent/core/mcp/` | Remote MCP config, discovery, bridge, runtime calls |
 | Execution | `src/openagent/core/execution/` | Local and optional remote sandbox workspace runtime |

@@ -1,7 +1,6 @@
 from .http_runtime import (
     AgentConfig,
     AgentLoop,
-    DashScopeProvider,
     ExploreAgent,
     LanguageModel,
     Model,
@@ -28,7 +27,6 @@ from .http_runtime import (
 __all__ = [
     "AgentConfig",
     "AgentLoop",
-    "DashScopeProvider",
     "ExploreAgent",
     "LanguageModel",
     "Model",

@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Status](https://img.shields.io/badge/status-engineering%20preview-orange)
-![Tests](https://img.shields.io/badge/tests-198%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-196%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-UNLICENSED-lightgrey)
 
 OpenAgent 是一个 Python Agent Core Runtime。它不尝试做一个完整聊天产品，而是聚焦模型外面的 Harness 工程：**工具 schema、权限、上下文、执行环境、日志、trace、eval 和 benchmark adapter**。
@@ -25,7 +25,7 @@ OpenAgent is a hackable Python runtime for building tool-using, observable agent
 | Permissions | `FULL`, `READONLY`, `PLAN_ONLY`, `NONE` rulesets |
 | Context | Budgeting, structured compaction, instruction files, file-read state, context traces |
 | Execution | Local workspace, optional remote sandbox runtime, Terminal-Bench, Harbor |
-| Providers | OpenAI-compatible and DashScope; Anthropic/Gemini/Ollama are stubs |
+| Providers | OpenAI-compatible provider for Chat Completions and Responses-style gateways |
 | Operations | Stream events, JSONL-friendly traces, runtime logs, eval/replay |
 
 ## Quick Start
@@ -46,13 +46,6 @@ export OPENAI_API_KEY="your-api-key"
 export OPENAI_BASE_URL="http://localhost:8080"
 export OPENAI_MODEL="your-model"
 export OPENAI_WIRE_API="responses"
-```
-
-DashScope:
-
-```bash
-export DASHSCOPE_API_KEY="your-api-key"
-export DASHSCOPE_MODEL="qwen3.5-plus"
 ```
 
 ## Runtime Shape
@@ -138,7 +131,7 @@ src/tests/           # unittest suite
 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p "test_*.py"
 ```
 
-Latest local verification: `198 tests OK`.
+Latest local verification: `196 tests OK`.
 
 ## Documentation
 
@@ -151,7 +144,6 @@ Latest local verification: `198 tests OK`.
 
 - Persistent session storage is not wired into the main loop.
 - Memory tools are process-local, not long-term cross-session memory.
-- Anthropic, Gemini, and Ollama providers are stubs.
 - CLI/Web Console are outside the public core.
 - `ContextPackBuilder` is trace-first, not yet the only message assembly path.
 

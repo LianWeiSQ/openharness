@@ -4,7 +4,7 @@ from __future__ import annotations
 Run a pure question-answer query through the current OpenAgent stack.
 
 Behavior:
-- If `DASHSCOPE_API_KEY` is present, use the real DashScope provider.
+- If `OPENAI_API_KEY` is present, use the OpenAI-compatible provider.
 - Otherwise fall back to a local scripted model so the end-to-end query path
   can still be exercised without network credentials.
 
@@ -34,7 +34,7 @@ if str(SRC_ROOT) not in sys.path:
 from openagent.core.agent.universal import UniversalAgent  # noqa: E402
 from openagent.core.loop.processor import AgentLoop  # noqa: E402
 from openagent.core.permission.manager import PermissionManager  # noqa: E402
-from openagent.core.provider.dashscope import DashScopeProvider  # noqa: E402
+from openagent.core.provider.openai import OpenAIProvider  # noqa: E402
 from openagent.core.session.session import Session  # noqa: E402
 from openagent.core.types import AgentConfig, Model  # noqa: E402
 
@@ -81,42 +81,40 @@ class ScriptedAnswerModel:
 
 
 async def _build_agent(question: str) -> tuple[UniversalAgent, str]:
-    if os.getenv("DASHSCOPE_API_KEY"):
-        model_id = os.getenv("DASHSCOPE_MODEL", "qwen3.5-plus")
+    if os.getenv("OPENAI_API_KEY"):
+        model_id = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         model = Model(
             id=model_id,
-            provider_id="dashscope",
-            name=f"DashScope/{model_id}",
-            context_window=32768,
-            max_output=2048,
+            provider_id="openai",
+            name=f"OpenAI Compatible/{model_id}",
+            context_window=_env_int("OPENAI_CONTEXT_WINDOW", 32768),
+            max_output=_env_int("OPENAI_MAX_OUTPUT", 2048),
         )
-        provider = DashScopeProvider()
+        provider = OpenAIProvider()
         language_model = await provider.get_language_model(model)
         return (
             UniversalAgent(
                 config=AgentConfig(
-                    name="query-only-dashscope",
+                    name="query-only-openai",
                     mode="primary",
                     prompt=None,
                     model=model,
                     tools=[],
                     permission="NONE",
                     max_steps=3,
-                    temperature=float(os.getenv("DASHSCOPE_TEMPERATURE", "0.2")),
-                    options={
-                        "stream": os.getenv("DASHSCOPE_STREAM", "1").lower() not in ("0", "false", "no"),
-                    },
+                    temperature=_env_float("OPENAI_TEMPERATURE", 0.2),
+                    options={"stream": os.getenv("OPENAI_STREAM", "1").lower() not in ("0", "false", "no")},
                 ),
                 model=language_model,
                 system_prompt="你是一个专业助手，请直接回答用户问题。当前任务是纯问答，不要调用工具。",
             ),
-            "dashscope",
+            "openai-compatible",
         )
 
     fallback_text = FALLBACK_ANSWER if question.strip() == FALLBACK_QUERY else (
-        "当前未检测到 DASHSCOPE_API_KEY，所以本次运行使用本地 scripted model 做链路演示。\n"
+        "当前未检测到 OPENAI_API_KEY，所以本次运行使用本地 scripted model 做链路演示。\n"
         "这说明 OpenAgent 当前架构可以成功跑通纯 query 的执行链；"
-        "若你想得到真实模型回答，请先设置 DASHSCOPE_API_KEY 后重跑同一命令。"
+        "若你想得到真实模型回答，请先设置 OPENAI_API_KEY 后重跑同一命令。"
     )
     model = Model(
         id="scripted-answer",
@@ -144,6 +142,26 @@ async def _build_agent(question: str) -> tuple[UniversalAgent, str]:
     )
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 async def main() -> int:
     question = " ".join(sys.argv[1:]).strip()
     if not question:
@@ -164,7 +182,7 @@ async def main() -> int:
 
     print(f"mode={mode}")
     if mode == "local-scripted":
-        print("note=未检测到 DASHSCOPE_API_KEY，当前为本地 smoke demo。")
+        print("note=未检测到 OPENAI_API_KEY，当前为本地 smoke demo。")
     print("answer:")
 
     async for ev in loop.run(question):
