@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import shutil
 import unittest
 from unittest.mock import patch
@@ -141,6 +142,66 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Agent step started", log_messages)
         self.assertIn("Agent step finished", log_messages)
         self.assertIn("Agent run finished", log_messages)
+
+    async def test_loop_emits_runtime_warning_for_step_token_budget(self) -> None:
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "text-delta", "id": "t1", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 7, "output_tokens": 6, "cost": 0.0}},
+                ]
+            ]
+        )
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            tools=[],
+            options={"runtime_warnings": {"enabled": True, "max_step_total_tokens": 10}},
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=PermissionManager())
+
+        events = []
+        async for event in loop.run("hello"):
+            events.append(event)
+
+        warnings = [event for event in events if event["type"] == "runtime-warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "step_total_tokens_exceeded")
+        self.assertEqual(warnings[0]["metrics"]["total_tokens"], 13)
+        self.assertIn("runtime.warning", self._observation_event_names(session))
+        self.assertEqual(session.metadata["runtime_warnings"][0]["code"], "step_total_tokens_exceeded")
+        summary_path = Path(session.metadata["agent_trace"]["summary_path"])
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(summary["runtime_warning_count"], 1)
+
+    async def test_loop_emits_runtime_warning_for_context_budget_usage(self) -> None:
+        model = ScriptedLanguageModel(script=_success_script())
+        cfg = AgentConfig(
+            name="u",
+            permission="FULL",
+            max_steps=5,
+            model=_make_model_metadata(context_window=10000, max_output=64),
+            tools=[],
+            options={"runtime_warnings": {"enabled": True, "context_usage_ratio": 0.001}},
+        )
+        agent = UniversalAgent(config=cfg, model=model, system_prompt="Test prompt.")
+        session = Session(directory=self._make_temp_dir())
+        loop = AgentLoop(agent=agent, session=session, permission_manager=PermissionManager())
+
+        events = []
+        async for event in loop.run("hello"):
+            events.append(event)
+
+        warnings = [event for event in events if event["type"] == "runtime-warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["code"], "context_usage_high")
+        self.assertGreater(warnings[0]["metrics"]["estimated_input_tokens"], 0)
+        event_types = [event["type"] for event in events]
+        self.assertLess(event_types.index("runtime-warning"), event_types.index("text-start"))
+        self.assertIn("runtime.warning", self._observation_event_names(session))
 
     async def test_sandbox_session_hides_host_only_tools_from_model(self) -> None:
         model = ScriptedLanguageModel(script=_success_script())

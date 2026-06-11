@@ -32,6 +32,7 @@ from ..observability import ObservationRecorder
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
 from ..question import QuestionManager, QuestionRequest
+from ..runtime_warnings import RuntimeWarningRecord, context_budget_warning, load_runtime_warning_config, step_usage_warnings
 from ..runtime_logging import RuntimeLogger
 from ..tool.middleware import logging_middleware, observability_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
@@ -636,6 +637,32 @@ class AgentLoop:
                 },
             )
 
+    def _record_runtime_warning(self, warning: RuntimeWarningRecord) -> StreamEvent:
+        event = warning.to_event()
+        attributes = {
+            "code": warning.code,
+            "severity": warning.severity,
+            "message": warning.message,
+            "metrics": dict(warning.metrics),
+        }
+        warnings = self.session.metadata.get("runtime_warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        warnings.append(dict(attributes))
+        self.session.metadata["runtime_warnings"] = warnings[-200:]
+        self._record_observation(
+            "runtime.warning",
+            kind="warning",
+            attributes=attributes,
+        )
+        self._log_runtime(
+            "ERROR" if warning.severity == "critical" else "WARNING",
+            warning.message,
+            category="warning",
+            attributes=attributes,
+        )
+        return event  # type: ignore[return-value]
+
     def _log_runtime(
         self,
         level: str,
@@ -1166,6 +1193,7 @@ class AgentLoop:
         policy_failed_tools: set[str] = recent_failed_required_tools(self.session.messages, tool_policy) if tool_policy is not None else set()
         policy_soft_followup_used = False
         web_research_state = WebResearchState()
+        runtime_warning_config = load_runtime_warning_config(self.agent.config.options)
 
         steps = 0
         try:
@@ -1240,6 +1268,9 @@ class AgentLoop:
                     fallback_stage=fallback_stage,
                     step_index=steps,
                 )
+                warning = context_budget_warning(runtime_warning_config, prepared.budget, step_index=steps)
+                if warning is not None:
+                    yield self._record_runtime_warning(warning)
 
                 attempt = 0
                 assistant_text_chunks: list[str] = []
@@ -1567,6 +1598,9 @@ class AgentLoop:
                 finish_reason: FinishReason = info.finish_reason
                 if info_tool_calls and finish_reason == "unknown":
                     finish_reason = "tool_call"
+                for warning in step_usage_warnings(runtime_warning_config, usage, step_index=steps):
+                    yield self._record_runtime_warning(warning)
+                step_duration_ms = int((time.time() - step_started_at) * 1000)
                 self._record_observation(
                     "step.finished",
                     kind="step",
@@ -1579,7 +1613,7 @@ class AgentLoop:
                         "output_tokens": usage.output_tokens,
                         "cost": usage.cost,
                     },
-                    duration_ms=int((time.time() - step_started_at) * 1000),
+                    duration_ms=step_duration_ms,
                 )
                 self._log_runtime(
                     "INFO",
@@ -1593,7 +1627,7 @@ class AgentLoop:
                         "input_tokens": usage.input_tokens,
                         "output_tokens": usage.output_tokens,
                         "cost": usage.cost,
-                        "duration_ms": int((time.time() - step_started_at) * 1000),
+                        "duration_ms": step_duration_ms,
                     },
                 )
                 yield {

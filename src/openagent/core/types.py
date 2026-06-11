@@ -167,6 +167,14 @@ class StepFinishEvent(TypedDict):
     finish_reason: FinishReason
 
 
+class RuntimeWarningEvent(TypedDict):
+    type: Literal["runtime-warning"]
+    severity: Literal["info", "warning", "critical"]
+    code: str
+    message: str
+    metrics: dict[str, Any]
+
+
 class ErrorEvent(TypedDict):
     type: Literal["error"]
     error: str
@@ -189,6 +197,7 @@ StreamEvent = (
     | QuestionRequestEvent
     | StepStartEvent
     | StepFinishEvent
+    | RuntimeWarningEvent
     | PatchEvent
     | ErrorEvent
 )

@@ -224,6 +224,41 @@ class EvalRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.model_calls, 1)
         self.assertEqual(result.tool_calls, 0)
 
+    async def test_eval_case_scores_runtime_warnings(self) -> None:
+        temp = self._make_temp_dir()
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "text-delta", "id": "t1", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 25, "output_tokens": 8, "cost": 0.05}},
+                ]
+            ]
+        )
+        case = EvalCase(
+            id="runtime_warning_case",
+            input="continue",
+            scoring={
+                "require_final_answer_contains": ["done"],
+                "forbidden_runtime_warnings": ["step_total_tokens_exceeded"],
+                "max_runtime_warnings": 0,
+            },
+        )
+        cfg = AgentConfig(
+            name="eval",
+            permission="FULL",
+            max_steps=3,
+            tools=[],
+            options={"runtime_warnings": {"enabled": True, "max_step_total_tokens": 20}},
+        )
+
+        result = await run_eval_case(case, model=model, base_dir=temp, output_dir=temp / "out", agent_config=cfg)
+
+        self.assertEqual(result.status, "fail")
+        self.assertEqual(result.runtime_warning_count, 1)
+        self.assertEqual(result.runtime_warning_codes, ["step_total_tokens_exceeded"])
+        self.assertIn("forbidden runtime warning was recorded: step_total_tokens_exceeded", result.failure_reasons)
+        self.assertIn("runtime warning count exceeded max_runtime_warnings: 1 > 0", result.failure_reasons)
+
     async def test_eval_case_exports_langfuse_scores(self) -> None:
         temp = self._make_temp_dir()
         client = FakeLangfuseClient()

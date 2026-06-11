@@ -305,6 +305,7 @@ class AgentTraceRecorder:
             "local_tool_call_count": 0,
             "artifact_count": 0,
             "error_count": 0,
+            "runtime_warning_count": 0,
             "total_latency_ms": 0,
             "total_input_tokens": 0,
             "total_output_tokens": 0,
@@ -363,6 +364,8 @@ class AgentTraceRecorder:
                 self._summary["artifact_count"] = int(self._summary.get("artifact_count") or 0) + 1
         elif name == "artifact.created" or kind == "artifact":
             self._summary["artifact_count"] = int(self._summary.get("artifact_count") or 0) + 1
+        elif name == "runtime.warning":
+            self._summary["runtime_warning_count"] = int(self._summary.get("runtime_warning_count") or 0) + 1
 
         ended_at = _optional_int(self._summary.get("ended_at_ms")) or _now_ms()
         started_at = _optional_int(self._summary.get("started_at_ms")) or ended_at

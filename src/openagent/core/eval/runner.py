@@ -53,6 +53,8 @@ class EvalResult:
     local_tool_calls: int = 0
     artifact_count: int = 0
     error_count: int = 0
+    runtime_warning_count: int = 0
+    runtime_warning_codes: list[str] = field(default_factory=list)
     total_latency_ms: int = 0
     langfuse_trace_id: str | None = None
     langfuse_scores_sent: bool = False
@@ -277,6 +279,8 @@ def _score_case(
     trace_check_ok = bool(trace_check.get("ok"))
     trace_check_errors = [str(item) for item in trace_check.get("errors") or []]
     trace_event_names = _event_names(trace_events)
+    runtime_warning_codes = _runtime_warning_codes(obs_events=obs_events, trace_events=trace_events)
+    runtime_warning_count = len(runtime_warning_codes)
     changed_files = sorted(path for path in set(before_files) | set(after_files) if before_files.get(path) != after_files.get(path))
 
     if bool(scoring.get("require_no_error", False)):
@@ -357,6 +361,18 @@ def _score_case(
     max_model_calls = scoring.get("max_model_calls")
     if max_model_calls is not None and model_call_count > int(max_model_calls):
         failures.append(f"model call count exceeded max_model_calls: {model_call_count} > {max_model_calls}")
+    max_runtime_warnings = scoring.get("max_runtime_warnings")
+    if max_runtime_warnings is not None and runtime_warning_count > int(max_runtime_warnings):
+        failures.append(f"runtime warning count exceeded max_runtime_warnings: {runtime_warning_count} > {max_runtime_warnings}")
+    required_runtime_warnings = {str(item) for item in scoring.get("required_runtime_warnings") or []}
+    forbidden_runtime_warnings = {str(item) for item in scoring.get("forbidden_runtime_warnings") or []}
+    runtime_warning_code_set = set(runtime_warning_codes)
+    for code in sorted(required_runtime_warnings):
+        if code not in runtime_warning_code_set:
+            failures.append(f"required runtime warning was not recorded: {code}")
+    for code in sorted(forbidden_runtime_warnings):
+        if code in runtime_warning_code_set:
+            failures.append(f"forbidden runtime warning was recorded: {code}")
     max_duration_ms = scoring.get("max_duration_ms")
     if max_duration_ms is not None and duration_ms > int(max_duration_ms):
         failures.append(f"duration exceeded max_duration_ms: {duration_ms} > {max_duration_ms}")
@@ -395,6 +411,8 @@ def _score_case(
         local_tool_calls=_summary_int(trace_summary, "local_tool_call_count", default=_trace_source_count(trace_events, "local_tool")),
         artifact_count=_summary_int(trace_summary, "artifact_count", default=0),
         error_count=_summary_int(trace_summary, "error_count", default=sum(1 for event in trace_events if event.get("status") == "error")),
+        runtime_warning_count=_summary_int(trace_summary, "runtime_warning_count", default=runtime_warning_count),
+        runtime_warning_codes=runtime_warning_codes,
         total_latency_ms=total_latency_ms,
     )
 
@@ -604,6 +622,21 @@ def _event_name(event: dict[str, Any]) -> str:
     return str(event.get("event") or event.get("name") or "")
 
 
+def _runtime_warning_codes(*, obs_events: list[dict[str, Any]], trace_events: list[dict[str, Any]]) -> list[str]:
+    events = trace_events if trace_events else obs_events
+    codes: list[str] = []
+    for event in events:
+        if _event_name(event) != "runtime.warning":
+            continue
+        attrs = event.get("attributes")
+        if not isinstance(attrs, dict):
+            continue
+        code = str(attrs.get("code") or "").strip()
+        if code:
+            codes.append(code)
+    return codes
+
+
 def _trace_tool_sources(events: list[dict[str, Any]]) -> set[str]:
     sources: set[str] = set()
     for event in events:
@@ -724,6 +757,7 @@ def _aggregate_results(results: list[EvalResult]) -> dict[str, Any]:
         "local_tool_calls": sum(result.local_tool_calls for result in results),
         "artifact_count": sum(result.artifact_count for result in results),
         "error_count": sum(result.error_count for result in results),
+        "runtime_warning_count": sum(result.runtime_warning_count for result in results),
     }
 
 
@@ -877,6 +911,7 @@ def _case_regression_fields(item: dict[str, Any] | None) -> dict[str, Any]:
         "output_tokens",
         "cost",
         "trace_check_ok",
+        "runtime_warning_count",
     ]
     return {field: item.get(field) for field in fields if field in item}
 
@@ -982,6 +1017,7 @@ def _render_summary(results: list[EvalResult]) -> str:
         f"- Average duration: {float(aggregate['average_duration_ms']):.2f} ms",
         f"- Trace checks passed: {aggregate['trace_check_passed']}",
         f"- Trace checks failed: {aggregate['trace_check_failed']}",
+        f"- Runtime warnings: {aggregate['runtime_warning_count']}",
         f"- Tool sources: local={aggregate['local_tool_calls']} skill={aggregate['skill_calls']} mcp={aggregate['mcp_calls']}",
     ]
     if slowest is not None:
