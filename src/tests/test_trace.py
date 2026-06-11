@@ -133,26 +133,6 @@ class TraceTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(summary["total_cost"], 0.01)
         self.assertTrue(Path(metadata["agent_trace"]["trace_path"]).exists())  # type: ignore[index]
 
-    def test_trace_config_parses_langsmith_exporter_options(self) -> None:
-        config = load_trace_config(
-            {
-                "trace": {
-                    "root_dir": "runs",
-                    "exporters": {
-                        "langsmith": {
-                            "enabled": True,
-                            "project": "openagent-dev",
-                            "include_content": False,
-                        }
-                    },
-                }
-            }
-        )
-
-        self.assertEqual(config.root_dir, "runs")
-        self.assertTrue(config.exporters["langsmith"]["enabled"])
-        self.assertEqual(config.exporters["langsmith"]["project"], "openagent-dev")
-
     def test_trace_config_parses_langfuse_exporter_options(self) -> None:
         config = load_trace_config(
             {

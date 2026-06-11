@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .exporter import LANGSMITH_OTEL_TRACE_ENDPOINT, LangfuseTraceExporter, LangSmithOtelExporter, TraceExporter, build_trace_exporters
+from .exporter import LangfuseTraceExporter, TraceExporter, build_trace_exporters
 from .recorder import (
     DEFAULT_TRACE_ROOT,
     TRACE_METADATA_KEY,
@@ -29,9 +29,7 @@ __all__ = [
     "ArtifactRecord",
     "DEFAULT_TRACE_ROOT",
     "ErrorRecord",
-    "LANGSMITH_OTEL_TRACE_ENDPOINT",
     "LangfuseTraceExporter",
-    "LangSmithOtelExporter",
     "ModelCallRecord",
     "RunRecord",
     "StepRecord",

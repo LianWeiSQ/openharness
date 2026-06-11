@@ -26,9 +26,3 @@ Build a generic eval regression layer on top of the P0 Agent Run Trace. P1 stays
 - Add a CLI wrapper for eval suites if repeated local runs need a stable command-line interface.
 - Add HTTP record/replay cassettes only when model/tool integration tests need deterministic external traffic.
 - Add database-backed eval history when cross-run querying becomes necessary.
-
-## P1.5 LangSmith Export Receipt
-
-- 2026-06-09: Added a minimal optional LangSmith OpenTelemetry exporter. It exports OpenAgent run, step, model, and tool spans from the P0 trace event stream while keeping local trace artifacts as the source of truth.
-- 2026-06-09: Added exporter diagnostics under `Session.metadata["agent_trace"]["exporters"]` so upload failures do not break Agent execution by default.
-- 2026-06-09: Kept content export disabled by default. The exporter sends identifiers, span kind, status, latency, model/tool metadata, MCP/Skill metadata, token counts, and cost unless `include_content` or `include_workspace` is explicitly enabled.
