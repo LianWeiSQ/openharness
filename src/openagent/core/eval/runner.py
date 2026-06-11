@@ -4,7 +4,7 @@ import copy
 import json
 import shutil
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from ..agent.universal import UniversalAgent
 from ..permission.manager import PermissionManager
 from ..session.session import Session
 from ..trace import TRACE_METADATA_KEY, check_trace_run, load_trace_events, load_trace_summary
+from ..trace.exporter import load_langfuse_client
 from ..types import AgentConfig, ChatMessage
 from ..provider.base import LanguageModel
 
@@ -53,6 +54,9 @@ class EvalResult:
     artifact_count: int = 0
     error_count: int = 0
     total_latency_ms: int = 0
+    langfuse_trace_id: str | None = None
+    langfuse_scores_sent: bool = False
+    langfuse_error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +122,7 @@ async def run_eval_case(
     duration_ms = int((time.time() - started) * 1000)
     after_files = _snapshot_files(workdir)
     trace_metrics = _trace_metrics(session)
-    return _score_case(
+    result = _score_case(
         case,
         session=session,
         events=events,
@@ -126,6 +130,12 @@ async def run_eval_case(
         after_files=after_files,
         duration_ms=duration_ms,
         trace_metrics=trace_metrics,
+    )
+    return _export_langfuse_eval_scores(
+        result,
+        case=case,
+        session=session,
+        trace_options=_langfuse_trace_options(cfg.options),
     )
 
 
@@ -460,6 +470,102 @@ def _trace_metrics(session: Session) -> _TraceMetrics:
 def _agent_trace_metadata(session: Session) -> dict[str, Any]:
     value = session.metadata.get(TRACE_METADATA_KEY)
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _langfuse_exporter_metadata(session: Session) -> dict[str, Any]:
+    exporters = _agent_trace_metadata(session).get("exporters")
+    if not isinstance(exporters, dict):
+        return {}
+    langfuse = exporters.get("langfuse")
+    return dict(langfuse) if isinstance(langfuse, dict) else {}
+
+
+def _langfuse_trace_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    raw_options = options or {}
+    trace = raw_options.get("trace")
+    if not isinstance(trace, dict):
+        return {}
+    exporters = trace.get("exporters")
+    if not isinstance(exporters, dict):
+        return {}
+    langfuse = exporters.get("langfuse")
+    return dict(langfuse) if isinstance(langfuse, dict) else {}
+
+
+def _export_langfuse_eval_scores(
+    result: EvalResult,
+    *,
+    case: EvalCase,
+    session: Session,
+    trace_options: dict[str, Any],
+) -> EvalResult:
+    metadata = _langfuse_exporter_metadata(session)
+    trace_id = str(metadata.get("trace_id") or "").strip()
+    if not trace_id:
+        return result
+    result = replace(result, langfuse_trace_id=trace_id)
+    if not _bool_scoring(metadata.get("scores_enabled", True)):
+        return result
+    try:
+        client = load_langfuse_client(trace_options)
+        run_id = str(_agent_trace_metadata(session).get("run_id") or "run")
+        _create_langfuse_score(
+            client,
+            trace_id=trace_id,
+            score_id=f"openagent:{run_id}:{case.id}:score",
+            name="openagent.eval.score",
+            value=float(result.score),
+            data_type="NUMERIC",
+            comment=f"OpenAgent eval score for case {case.id}.",
+        )
+        status_comment = "; ".join(result.failure_reasons[:5]) if result.failure_reasons else f"OpenAgent eval status for case {case.id}."
+        _create_langfuse_score(
+            client,
+            trace_id=trace_id,
+            score_id=f"openagent:{run_id}:{case.id}:status",
+            name="openagent.eval.status",
+            value=result.status,
+            data_type="CATEGORICAL",
+            comment=status_comment,
+        )
+        _create_langfuse_score(
+            client,
+            trace_id=trace_id,
+            score_id=f"openagent:{run_id}:{case.id}:trace_check",
+            name="openagent.trace_check",
+            value=bool(result.trace_check_ok),
+            data_type="BOOLEAN",
+            comment="OpenAgent trace integrity check result.",
+        )
+        flush = getattr(client, "flush", None)
+        if callable(flush):
+            flush()
+        return replace(result, langfuse_scores_sent=True, langfuse_error=None)
+    except Exception as error:  # noqa: BLE001
+        return replace(result, langfuse_scores_sent=False, langfuse_error=str(error))
+
+
+def _create_langfuse_score(
+    client: Any,
+    *,
+    trace_id: str,
+    score_id: str,
+    name: str,
+    value: Any,
+    data_type: str,
+    comment: str,
+) -> None:
+    create_score = getattr(client, "create_score", None)
+    if not callable(create_score):
+        raise RuntimeError("Langfuse client does not support create_score().")
+    create_score(
+        trace_id=trace_id,
+        score_id=score_id,
+        name=name,
+        value=value,
+        data_type=data_type,
+        comment=comment,
+    )
 
 
 def _count_observation(events: list[dict[str, Any]], name: str) -> int:

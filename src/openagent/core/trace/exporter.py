@@ -623,6 +623,10 @@ class LangSmithOtelExporter:
         return not any(marker in lowered for marker in CONTENT_KEY_MARKERS)
 
 
+def load_langfuse_client(options: dict[str, Any] | None) -> Any:
+    return LangfuseTraceExporter._load_client(dict(options or {}))
+
+
 def _langsmith_span_kind(event: dict[str, Any]) -> str:
     kind = str(event.get("kind") or "")
     name = str(event.get("event") or "")
@@ -811,4 +815,5 @@ __all__ = [
     "LangSmithOtelExporter",
     "TraceExporter",
     "build_trace_exporters",
+    "load_langfuse_client",
 ]
