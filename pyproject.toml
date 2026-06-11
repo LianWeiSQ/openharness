@@ -24,6 +24,9 @@ langsmith = [
     "opentelemetry-sdk>=1.25,<2",
     "opentelemetry-exporter-otlp>=1.25,<2",
 ]
+langfuse = [
+    "langfuse>=4,<5",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

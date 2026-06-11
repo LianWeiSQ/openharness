@@ -74,6 +74,48 @@ The minimal exporter sends run, step, model, and tool spans. By default it expor
 
 Exporter failures are non-fatal by default and are recorded under `Session.metadata["agent_trace"]["exporters"]["diagnostics"]`. Set `strict: true` for configuration errors to fail fast during setup.
 
+## Langfuse Export
+
+OpenAgent can export P0 trace spans and eval scores to Langfuse. Local `trace.jsonl`, `summary.json`, and eval `report.json` remain the source of truth; Langfuse is an optional analysis view for traces, scores, latency, token usage, and regression review.
+
+Install optional dependencies:
+
+```bash
+pip install "openagent-core[langfuse]"
+```
+
+Configure an agent or eval run:
+
+```python
+config = AgentConfig(
+    name="eval",
+    permission="FULL",
+    options={
+        "trace": {
+            "enabled": True,
+            "exporters": {
+                "langfuse": {
+                    "enabled": True,
+                    "environment": "local",
+                    "tags": ["openagent", "eval"],
+                    "scores_enabled": True,
+                }
+            },
+        }
+    },
+)
+```
+
+Required environment:
+
+```bash
+export LANGFUSE_PUBLIC_KEY=...
+export LANGFUSE_SECRET_KEY=...
+export LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+The Langfuse exporter defaults to metadata-only export. It sends identifiers, span type, status, latency, model/tool names, tool source, token counts, cost, eval score, eval status, and trace-check status. It does not send prompts, model output, tool input/output, or workspace paths unless explicitly enabled with `include_content` or `include_workspace`.
+
 ## Evaluation
 
 The repository includes local eval/replay utilities plus benchmark adapters:
