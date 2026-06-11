@@ -251,10 +251,7 @@ class AgentTraceRecorder:
             "trace_path": str(self.trace_path),
             "summary_path": str(self.summary_path),
             "process_path": str(self.process_path),
-            "exporters": {
-                "enabled": [getattr(exporter, "name", type(exporter).__name__) for exporter in self.exporters],
-                "diagnostics": list(self.exporter_diagnostics),
-            },
+            "exporters": self._exporter_metadata(),
         }
 
     def _sync_exporter_metadata(self) -> None:
@@ -263,10 +260,34 @@ class AgentTraceRecorder:
         root = self.session_metadata.get(TRACE_METADATA_KEY)
         if not isinstance(root, dict):
             return
-        root["exporters"] = {
+        root["exporters"] = self._exporter_metadata()
+
+    def _exporter_metadata(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "enabled": [getattr(exporter, "name", type(exporter).__name__) for exporter in self.exporters],
             "diagnostics": list(self.exporter_diagnostics),
         }
+        for exporter in self.exporters:
+            metadata = getattr(exporter, "metadata", None)
+            if not callable(metadata):
+                continue
+            name = str(getattr(exporter, "name", type(exporter).__name__))
+            try:
+                value = metadata()
+            except Exception as error:  # noqa: BLE001
+                payload["diagnostics"].append(
+                    {
+                        "exporter": name,
+                        "status": "error",
+                        "error_kind": type(error).__name__,
+                        "message": str(error),
+                        "source": "metadata",
+                    }
+                )
+                continue
+            if isinstance(value, dict):
+                payload[name] = sanitize_trace_value(value)
+        return payload
 
     def _empty_summary(self) -> dict[str, Any]:
         return {

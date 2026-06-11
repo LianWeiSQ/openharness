@@ -8,6 +8,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from uuid import uuid4
 
 from openagent.core.agent.universal import UniversalAgent
@@ -15,8 +16,9 @@ from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.session.session import Session
 from openagent.core.tool.definition import ToolContext, ToolDefinition, ToolOutput
-from openagent.core.trace import AgentTraceRecorder, RunRecord, check_trace_run, load_trace_config, load_trace_events, load_trace_summary
+from openagent.core.trace import AgentTraceRecorder, LangfuseTraceExporter, RunRecord, TraceConfig, check_trace_run, load_trace_config, load_trace_events, load_trace_summary
 from openagent.core.trace.cli import main as trace_cli_main
+from openagent.core.trace.exporter import build_trace_exporters
 from openagent.core.types import AgentConfig
 
 from _mock_model import ScriptedLanguageModel
@@ -50,6 +52,40 @@ class FailingTraceExporter:
 
     def close(self) -> None:
         raise RuntimeError("close failed")
+
+
+class FakeLangfuseObservation:
+    def __init__(self, observation_id: str, *, name: str, as_type: str, trace_context: dict[str, str] | None) -> None:
+        self.id = observation_id
+        self.name = name
+        self.as_type = as_type
+        self.trace_context = dict(trace_context or {})
+        self.updates: list[dict[str, Any]] = []
+        self.ended = False
+
+    def update(self, **payload: Any) -> None:
+        self.updates.append(dict(payload))
+
+    def end(self) -> None:
+        self.ended = True
+
+
+class FakeLangfuseClient:
+    def __init__(self) -> None:
+        self.started: list[FakeLangfuseObservation] = []
+        self.flushed = False
+
+    def create_trace_id(self, *, seed: str) -> str:
+        del seed
+        return "1" * 32
+
+    def start_observation(self, *, name: str, as_type: str = "span", trace_context: dict[str, str] | None = None) -> FakeLangfuseObservation:
+        observation = FakeLangfuseObservation(f"{len(self.started) + 1:016x}", name=name, as_type=as_type, trace_context=trace_context)
+        self.started.append(observation)
+        return observation
+
+    def flush(self) -> None:
+        self.flushed = True
 
 
 class TraceTests(unittest.IsolatedAsyncioTestCase):
@@ -117,6 +153,27 @@ class TraceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config.exporters["langsmith"]["enabled"])
         self.assertEqual(config.exporters["langsmith"]["project"], "openagent-dev")
 
+    def test_trace_config_parses_langfuse_exporter_options(self) -> None:
+        config = load_trace_config(
+            {
+                "trace": {
+                    "root_dir": "runs",
+                    "exporters": {
+                        "langfuse": {
+                            "enabled": True,
+                            "scores_enabled": True,
+                            "include_content": False,
+                        }
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(config.root_dir, "runs")
+        self.assertTrue(config.exporters["langfuse"]["enabled"])
+        self.assertTrue(config.exporters["langfuse"]["scores_enabled"])
+        self.assertFalse(config.exporters["langfuse"]["include_content"])
+
     def test_trace_recorder_exports_events_and_closes_on_terminal_event(self) -> None:
         temp = self._make_temp_dir()
         run = RunRecord(run_id="run_export", trace_id="trace_export", session_id="session_export", agent_name="agent")
@@ -154,6 +211,152 @@ class TraceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["status"], "completed")
         self.assertGreaterEqual(len(exporters["diagnostics"]), 2)
         self.assertEqual(exporters["diagnostics"][0]["exporter"], "failing")
+
+    def test_langfuse_exporter_maps_trace_events_without_content_by_default(self) -> None:
+        run = RunRecord(run_id="run_lf", trace_id="trace_lf", session_id="session_lf", agent_name="agent", model_id="mock-model")
+        client = FakeLangfuseClient()
+        exporter = LangfuseTraceExporter(
+            run=run,
+            client=client,
+            langfuse_trace_id="1" * 32,
+            include_content=False,
+            scores_enabled=True,
+        )
+
+        exporter.record_event({"seq": 1, "event": "run.started", "kind": "run", "attributes": {"input_preview": "secret prompt"}})
+        exporter.record_event({"seq": 2, "event": "step.started", "kind": "step", "attributes": {"step_index": 1}})
+        exporter.record_event(
+            {
+                "seq": 3,
+                "event": "model.call.started",
+                "kind": "model",
+                "span_id": "model_1",
+                "attributes": {"model": "mock-model", "provider": "mock", "prompt": "secret prompt"},
+            }
+        )
+        exporter.record_event(
+            {
+                "seq": 4,
+                "event": "model.call.finished",
+                "kind": "model",
+                "span_id": "model_1",
+                "status": "ok",
+                "duration_ms": 42,
+                "attributes": {"model": "mock-model", "completion": "secret output", "input_tokens": 3, "output_tokens": 4, "cost": 0.01},
+            }
+        )
+        exporter.record_event(
+            {
+                "seq": 5,
+                "event": "tool.call.started",
+                "kind": "tool",
+                "span_id": "tool_1",
+                "attributes": {"tool_name": "bash", "tool_source": "local_tool", "arguments_preview": "cat secret.txt"},
+            }
+        )
+        exporter.record_event(
+            {
+                "seq": 6,
+                "event": "tool.call.finished",
+                "kind": "tool",
+                "span_id": "tool_1",
+                "status": "ok",
+                "attributes": {"tool_name": "bash", "result_summary": "secret result"},
+            }
+        )
+        exporter.record_event({"seq": 7, "event": "step.finished", "kind": "step", "attributes": {"step_index": 1}})
+        exporter.record_event({"seq": 8, "event": "run.finished", "kind": "run", "status": "ok", "attributes": {"status": "completed"}})
+        exporter.close()
+
+        self.assertEqual([item.as_type for item in client.started], ["agent", "span", "generation", "tool"])
+        self.assertTrue(all(item.trace_context.get("trace_id") == "1" * 32 for item in client.started))
+        generation = next(item for item in client.started if item.as_type == "generation")
+        flattened_updates = json.dumps(generation.updates, ensure_ascii=False)
+        self.assertNotIn("secret prompt", flattened_updates)
+        self.assertNotIn("secret output", flattened_updates)
+        self.assertTrue(all("input" not in update and "output" not in update for update in generation.updates))
+        self.assertIn(
+            {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+            [update.get("usage_details") for update in generation.updates if update.get("usage_details")],
+        )
+        self.assertTrue(all(item.ended for item in client.started))
+        self.assertTrue(client.flushed)
+
+    def test_langfuse_exporter_can_include_content_when_enabled(self) -> None:
+        run = RunRecord(run_id="run_lf_content", trace_id="trace_lf_content", session_id="session_lf_content", agent_name="agent")
+        client = FakeLangfuseClient()
+        exporter = LangfuseTraceExporter(
+            run=run,
+            client=client,
+            langfuse_trace_id="2" * 32,
+            include_content=True,
+        )
+
+        exporter.record_event(
+            {
+                "seq": 1,
+                "event": "model.call.started",
+                "kind": "model",
+                "span_id": "model_1",
+                "attributes": {"prompt": "visible prompt"},
+            }
+        )
+        exporter.record_event(
+            {
+                "seq": 2,
+                "event": "model.call.finished",
+                "kind": "model",
+                "span_id": "model_1",
+                "attributes": {"completion": "visible output"},
+            }
+        )
+
+        generation = client.started[0]
+        merged = {key: value for update in generation.updates for key, value in update.items()}
+        self.assertEqual(merged["input"], "visible prompt")
+        self.assertEqual(merged["output"], "visible output")
+
+    def test_langfuse_exporter_metadata_is_recorded_on_session(self) -> None:
+        temp = self._make_temp_dir()
+        run = RunRecord(run_id="run_lf_meta", trace_id="trace_lf_meta", session_id="session_lf_meta", agent_name="agent")
+        metadata: dict[str, object] = {}
+        exporter = LangfuseTraceExporter(
+            run=run,
+            client=FakeLangfuseClient(),
+            langfuse_trace_id="3" * 32,
+            scores_enabled=True,
+        )
+        recorder = AgentTraceRecorder(run=run, base_dir=temp, session_metadata=metadata, exporters=[exporter])
+
+        recorder.record_event("run.started", kind="run")
+        recorder.finish_run(attributes={"status": "completed"})
+
+        exporters = metadata["agent_trace"]["exporters"]  # type: ignore[index]
+        self.assertEqual(exporters["enabled"], ["langfuse"])
+        self.assertEqual(exporters["langfuse"]["trace_id"], "3" * 32)
+        self.assertTrue(exporters["langfuse"]["scores_enabled"])
+
+    def test_build_trace_exporters_records_langfuse_diagnostics(self) -> None:
+        run = RunRecord(run_id="run_lf_diag", trace_id="trace_lf_diag", session_id="session_lf_diag", agent_name="agent")
+        diagnostics: list[dict[str, Any]] = []
+        with patch.object(LangfuseTraceExporter, "from_config", side_effect=RuntimeError("missing langfuse")):
+            exporters = build_trace_exporters(
+                run=run,
+                config=TraceConfig(exporters={"langfuse": {"enabled": True}}),
+                diagnostics=diagnostics,
+            )
+
+        self.assertEqual(exporters, [])
+        self.assertEqual(diagnostics[0]["exporter"], "langfuse")
+        self.assertEqual(diagnostics[0]["error_kind"], "RuntimeError")
+
+        with patch.object(LangfuseTraceExporter, "from_config", side_effect=RuntimeError("missing langfuse")):
+            with self.assertRaises(RuntimeError):
+                build_trace_exporters(
+                    run=run,
+                    config=TraceConfig(exporters={"langfuse": {"enabled": True, "strict": True}}),
+                    diagnostics=[],
+                )
 
     async def test_agent_loop_writes_standard_trace_for_model_and_mcp_tool_calls(self) -> None:
         temp = self._make_temp_dir()
