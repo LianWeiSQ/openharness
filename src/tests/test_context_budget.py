@@ -226,6 +226,8 @@ class ContextBudgetTests(unittest.TestCase):
                 "compaction": {"auto": True},
                 "observability": {"enabled": True},
                 "logging": {"level": "DEBUG"},
+                "trace": {"exporters": {"langfuse": {"enabled": True}}},
+                "runtime_warnings": {"enabled": True},
                 "reasoning_effort": "low",
             },
         )
