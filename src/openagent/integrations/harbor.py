@@ -16,6 +16,7 @@ from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.provider.base import LanguageModel
 from openagent.core.provider.openai import OpenAIProvider
+from openagent.core.runtime_warnings import format_runtime_warning_event, runtime_warning_options_from_env
 from openagent.core.session.session import Session
 from openagent.core.types import AgentConfig, Model
 
@@ -75,6 +76,7 @@ DEFAULT_WORKDIR = "/app"
 EVENTS_FILENAME = "openagent-events.jsonl"
 FINAL_ANSWER_FILENAME = "final-answer.txt"
 ERROR_FILENAME = "openagent-error.txt"
+RUNTIME_WARNINGS_FILENAME = "runtime-warnings.txt"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -183,6 +185,7 @@ class OpenAgentHarborAgent(HarborBaseAgent):
         events_path = run_root / EVENTS_FILENAME
         final_answer_path = run_root / FINAL_ANSWER_FILENAME
         error_path = run_root / ERROR_FILENAME
+        runtime_warnings_path = run_root / RUNTIME_WARNINGS_FILENAME
         session_root = run_root / "openagent-session"
         session_root.mkdir(parents=True, exist_ok=True)
 
@@ -218,7 +221,8 @@ class OpenAgentHarborAgent(HarborBaseAgent):
                             "keep_events": True,
                             "jsonl": True,
                             "jsonl_dir": str(run_root / "traces"),
-                        }
+                        },
+                        "runtime_warnings": runtime_warning_options_from_env(prefixes=("OPENAGENT_HARBOR", "OPENAGENT")),
                     },
                 ),
                 model=language_model,
@@ -237,6 +241,17 @@ class OpenAgentHarborAgent(HarborBaseAgent):
 
             async for event in loop.run(instruction):
                 self._append_event(events_path, event)
+                warning_line = format_runtime_warning_event(event)
+                if warning_line:
+                    self._append_line(runtime_warnings_path, warning_line)
+                    metadata.setdefault("runtime_warnings", []).append(
+                        {
+                            "code": event.get("code"),
+                            "severity": event.get("severity"),
+                            "message": event.get("message"),
+                            "display": event.get("display"),
+                        }
+                    )
                 if event.get("type") == "text-delta":
                     final_chunks.append(str(event.get("text") or ""))
                 elif event.get("type") == "step-finish":
@@ -296,8 +311,13 @@ class OpenAgentHarborAgent(HarborBaseAgent):
     def _write_text(self, path: Path, content: str) -> None:
         path.write_text(content, encoding="utf-8")
 
+    def _append_line(self, path: Path, line: str) -> None:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line.rstrip() + "\n")
+
 
 __all__ = [
     "HarborWorkspaceRuntime",
     "OpenAgentHarborAgent",
+    "RUNTIME_WARNINGS_FILENAME",
 ]

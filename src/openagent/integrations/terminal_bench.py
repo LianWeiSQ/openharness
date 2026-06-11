@@ -20,6 +20,7 @@ from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.provider.base import LanguageModel
 from openagent.core.provider.openai import OpenAIProvider
+from openagent.core.runtime_warnings import format_runtime_warning_event, runtime_warning_options_from_env
 from openagent.core.session.session import Session
 from openagent.core.types import AgentConfig, Model
 
@@ -68,6 +69,7 @@ DEFAULT_WORKDIR = "/app"
 EVENTS_FILENAME = "openagent-events.jsonl"
 FINAL_ANSWER_FILENAME = "final-answer.txt"
 ERROR_FILENAME = "openagent-error.txt"
+RUNTIME_WARNINGS_FILENAME = "runtime-warnings.txt"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -279,6 +281,7 @@ class OpenAgentTerminalBenchAgent(BaseAgent):
         events_path = run_root / EVENTS_FILENAME if logging_dir is not None else None
         final_answer_path = run_root / FINAL_ANSWER_FILENAME if logging_dir is not None else None
         error_path = run_root / ERROR_FILENAME if logging_dir is not None else None
+        runtime_warnings_path = run_root / RUNTIME_WARNINGS_FILENAME if logging_dir is not None else None
         session_root = run_root / "openagent-session"
         session_root.mkdir(parents=True, exist_ok=True)
 
@@ -307,7 +310,8 @@ class OpenAgentTerminalBenchAgent(BaseAgent):
                             "keep_events": True,
                             "jsonl": logging_dir is not None,
                             "jsonl_dir": str(run_root / "traces"),
-                        }
+                        },
+                        "runtime_warnings": runtime_warning_options_from_env(prefixes=("OPENAGENT_TBENCH", "OPENAGENT")),
                     },
                 ),
                 model=language_model,
@@ -326,6 +330,9 @@ class OpenAgentTerminalBenchAgent(BaseAgent):
 
             async for event in loop.run(instruction):
                 self._append_event(events_path, event)
+                warning_line = format_runtime_warning_event(event)
+                if warning_line:
+                    self._append_line(runtime_warnings_path, warning_line)
                 if event.get("type") == "text-delta":
                     final_chunks.append(str(event.get("text") or ""))
                 elif event.get("type") == "step-finish":
@@ -383,6 +390,12 @@ class OpenAgentTerminalBenchAgent(BaseAgent):
             return
         path.write_text(content, encoding="utf-8")
 
+    def _append_line(self, path: Path | None, line: str) -> None:
+        if path is None:
+            return
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line.rstrip() + "\n")
+
     def _failure_mode_for_error(self, message: str):
         lowered = message.lower()
         if "timeout" in lowered:
@@ -396,5 +409,6 @@ class OpenAgentTerminalBenchAgent(BaseAgent):
 
 __all__ = [
     "OpenAgentTerminalBenchAgent",
+    "RUNTIME_WARNINGS_FILENAME",
     "TerminalBenchWorkspaceRuntime",
 ]

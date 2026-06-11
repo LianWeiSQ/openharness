@@ -5,12 +5,14 @@ import re
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from openagent.integrations.terminal_bench import (
     EVENTS_FILENAME,
     FINAL_ANSWER_FILENAME,
     OpenAgentTerminalBenchAgent,
+    RUNTIME_WARNINGS_FILENAME,
     TerminalBenchWorkspaceRuntime,
 )
 
@@ -83,7 +85,8 @@ class TerminalBenchAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         agent = OpenAgentTerminalBenchAgent(language_model=model, max_steps=4)
 
-        result = agent.perform_task("Create a hello file.", tmux, logging_dir=temp)
+        with patch.dict("os.environ", {"OPENAGENT_MAX_STEP_TOTAL_TOKENS": "4"}, clear=True):
+            result = agent.perform_task("Create a hello file.", tmux, logging_dir=temp)
 
         self.assertEqual(result.total_input_tokens, 6)
         self.assertEqual(result.total_output_tokens, 8)
@@ -95,6 +98,11 @@ class TerminalBenchAdapterTests(unittest.IsolatedAsyncioTestCase):
             if line.strip()
         ]
         self.assertTrue(any(event.get("type") == "tool-result" for event in events))
+        warnings = [event for event in events if event.get("type") == "runtime-warning"]
+        self.assertEqual(len(warnings), 2)
+        self.assertEqual(warnings[0]["display"]["title"], "Step token budget exceeded")
+        warning_text = (temp / RUNTIME_WARNINGS_FILENAME).read_text(encoding="utf-8")
+        self.assertIn("[WARNING] Step token budget exceeded", warning_text)
         self.assertEqual(len(tmux.commands), 1)
 
     def test_agent_allows_destructive_commands_in_terminal_bench_mode(self) -> None:

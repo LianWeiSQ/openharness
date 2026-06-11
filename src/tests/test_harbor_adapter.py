@@ -5,6 +5,7 @@ import shutil
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
 from openagent.integrations.harbor import (
@@ -12,6 +13,7 @@ from openagent.integrations.harbor import (
     FINAL_ANSWER_FILENAME,
     HarborWorkspaceRuntime,
     OpenAgentHarborAgent,
+    RUNTIME_WARNINGS_FILENAME,
 )
 
 from _mock_model import ScriptedLanguageModel
@@ -95,7 +97,8 @@ class HarborAdapterTests(unittest.IsolatedAsyncioTestCase):
         )
         agent = OpenAgentHarborAgent(logs_dir=temp, model_name="OpenAI/gpt-test", language_model=model, max_steps=4)
 
-        await agent.run("Create a hello file.", environment, context)
+        with patch.dict("os.environ", {"OPENAGENT_MAX_STEP_TOTAL_TOKENS": "4"}, clear=True):
+            await agent.run("Create a hello file.", environment, context)
 
         self.assertEqual(context.n_input_tokens, 6)
         self.assertEqual(context.n_output_tokens, 8)
@@ -109,6 +112,12 @@ class HarborAdapterTests(unittest.IsolatedAsyncioTestCase):
             if line.strip()
         ]
         self.assertTrue(any(event.get("type") == "tool-result" for event in events))
+        warnings = [event for event in events if event.get("type") == "runtime-warning"]
+        self.assertEqual(len(warnings), 2)
+        self.assertEqual(warnings[0]["display"]["title"], "Step token budget exceeded")
+        self.assertEqual(len(context.metadata["runtime_warnings"]), 2)
+        warning_text = (temp / RUNTIME_WARNINGS_FILENAME).read_text(encoding="utf-8")
+        self.assertIn("[WARNING] Step token budget exceeded", warning_text)
         self.assertEqual(environment.commands[0]["command"], "echo hello")
 
     async def test_agent_allows_destructive_commands_in_harbor_mode(self) -> None:

@@ -173,6 +173,7 @@ class RuntimeWarningEvent(TypedDict):
     code: str
     message: str
     metrics: dict[str, Any]
+    display: dict[str, Any]
 
 
 class ErrorEvent(TypedDict):

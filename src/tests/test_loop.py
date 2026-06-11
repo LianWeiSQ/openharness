@@ -171,6 +171,8 @@ class LoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(warnings), 1)
         self.assertEqual(warnings[0]["code"], "step_total_tokens_exceeded")
         self.assertEqual(warnings[0]["metrics"]["total_tokens"], 13)
+        self.assertEqual(warnings[0]["display"]["title"], "Step token budget exceeded")
+        self.assertEqual(warnings[0]["display"]["metrics"]["total_tokens"], 13)
         self.assertIn("runtime.warning", self._observation_event_names(session))
         self.assertEqual(session.metadata["runtime_warnings"][0]["code"], "step_total_tokens_exceeded")
         summary_path = Path(session.metadata["agent_trace"]["summary_path"])
