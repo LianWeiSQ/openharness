@@ -118,6 +118,30 @@ PYTHONPATH=src:src/tests python -m unittest \
 
 Optional real smoke requires Langfuse env vars, then run a small eval case with the `langfuse` exporter enabled and confirm the trace plus four scores appear in the Langfuse UI.
 
+## Step Budget Guidance
+
+`max_steps` limits model-loop turns, not individual tool calls. One step can contain multiple tool calls, but the final step is text-only because `AgentLoop` sends `tools=[]` when `step_index >= max_steps`. In practice, usable tool rounds are `max_steps - 1`.
+
+Observed on 2026-06-11 with a real `gpt-5.5` Langfuse smoke task:
+
+| Run | Config | Outcome |
+| --- | --- | --- |
+| Complex investigation | `max_steps=10` | Reproduced failures and located likely fixes, but reached the final text-only step before editing. |
+| Follow-up fix | `max_steps=12` | Edited code and passed tests, but reached the final text-only step before writing the report. |
+| Closeout | `max_steps=5` | Wrote the report, verified tests, and completed in 3 steps. |
+
+Recommended defaults:
+
+| Task type | Suggested `max_steps` |
+| --- | --- |
+| Text-only answer or single quick command | 3-4 |
+| Small file inspection or one bounded shell action | 6-8 |
+| Small engineering fix with tests and a short report | 20-24 |
+| Multi-file feature, benchmark adapter, or cross-module debugging | 30-40 |
+| Terminal-Bench or long benchmark tasks | 80+ |
+
+For ordinary engineering work, prefer `max_steps=24` as the default. It gives roughly 20 useful tool-enabled rounds plus closeout space, while still making runaway loops visible in traces. Treat a final answer that says a required artifact could not be written as a step-budget miss, not as a successful completion.
+
 ## Evaluation
 
 The repository includes local eval/replay utilities plus benchmark adapters:
