@@ -31,3 +31,9 @@ Build a generic eval regression layer on top of the P0 Agent Run Trace. P1 stays
 
 - 2026-06-11: Added optional baseline regression thresholds for cost, duration, input tokens, output tokens, total tokens, model calls, and tool calls.
 - Regression reports now include token deltas and `budget_regressions`, making cost/token drift visible before it becomes a Langfuse dashboard or production issue.
+
+## P3-P5 Runtime Warning / Dashboard / CI Slice
+
+- 2026-06-11: Added configurable `runtime-warning` stream events and `runtime.warning` trace observations for context usage, step token budgets, and step cost budgets.
+- 2026-06-11: Added real-time display payloads for warning events, plus Terminal-Bench and Harbor `runtime-warnings.txt` outputs.
+- 2026-06-11: Added runtime warning scoring in eval reports, Langfuse `runtime_warning_count` scores, Langfuse warning spans, and a local `openagent.core.eval.ci_gate` command for CI budget gates.

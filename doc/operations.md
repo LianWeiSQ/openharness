@@ -74,7 +74,7 @@ export LANGFUSE_SECRET_KEY=...
 export LANGFUSE_BASE_URL=https://cloud.langfuse.com
 ```
 
-The Langfuse exporter defaults to metadata-only export. It sends identifiers, span type, status, latency, model/tool names, tool source, token counts, cost, eval score, eval status, and trace-check status. It does not send prompts, model output, tool input/output, or workspace paths unless explicitly enabled with `include_content` or `include_workspace`.
+The Langfuse exporter defaults to metadata-only export. It sends identifiers, span type, status, latency, model/tool names, tool source, token counts, cost, runtime warning metadata, eval score, eval status, runtime warning count, and trace-check status. It does not send prompts, model output, tool input/output, or workspace paths unless explicitly enabled with `include_content` or `include_workspace`.
 
 Trace mapping:
 
@@ -84,16 +84,18 @@ Trace mapping:
 | `step.started` / `step.finished` | `span` |
 | `model.call.started` / `model.call.finished` | `generation` |
 | `tool.call.started` / `tool.call.finished` | `tool` |
+| `runtime.warning` | `span` |
 
 The Langfuse trace id is deterministic: OpenAgent uses the local trace id as the seed for `create_trace_id(...)`, then stores the exported id in `Session.metadata["agent_trace"]["exporters"]["langfuse"]["trace_id"]`.
 
-When `scores_enabled` is true, each eval case sends three trace-level scores after local scoring completes:
+When `scores_enabled` is true, each eval case sends four trace-level scores after local scoring completes:
 
 | Score name | Data type | Value |
 | --- | --- | --- |
 | `openagent.eval.score` | `NUMERIC` | `EvalResult.score` |
 | `openagent.eval.status` | `CATEGORICAL` | `pass` or `fail` |
 | `openagent.trace_check` | `BOOLEAN` | local trace integrity result |
+| `openagent.runtime_warning_count` | `NUMERIC` | `EvalResult.runtime_warning_count` |
 
 Score ids are stable idempotency keys:
 
@@ -101,6 +103,7 @@ Score ids are stable idempotency keys:
 openagent:{run_id}:{case_id}:score
 openagent:{run_id}:{case_id}:status
 openagent:{run_id}:{case_id}:trace_check
+openagent:{run_id}:{case_id}:runtime_warning_count
 ```
 
 Score export is non-fatal. `EvalResult.langfuse_trace_id`, `EvalResult.langfuse_scores_sent`, and `EvalResult.langfuse_error` record the external export state while local `report.json` remains authoritative.
@@ -113,7 +116,7 @@ PYTHONPATH=src:src/tests python -m unittest \
   src/tests/test_eval_runner.py
 ```
 
-Optional real smoke requires Langfuse env vars, then run a small eval case with the `langfuse` exporter enabled and confirm the trace plus three scores appear in the Langfuse UI.
+Optional real smoke requires Langfuse env vars, then run a small eval case with the `langfuse` exporter enabled and confirm the trace plus four scores appear in the Langfuse UI.
 
 ## Evaluation
 
@@ -143,6 +146,7 @@ scoring:
     - model.call.finished
   forbidden_trace_events:
     - tool.call.finished
+  max_runtime_warnings: 0
   max_model_calls: 1
   max_tool_calls: 0
   max_cost: 0.05
@@ -156,6 +160,39 @@ scoring:
 - `regression.json` and `regression.md` when `baseline_report=...` is provided.
 
 Baseline comparison tracks case additions/removals plus status, score, cost, duration, tool-call, and model-call deltas.
+
+Runtime warnings are designed for budget gates and live review. Enable them through `AgentConfig.options["runtime_warnings"]`:
+
+```python
+options={
+    "runtime_warnings": {
+        "enabled": True,
+        "context_usage_ratio": 0.75,
+        "context_critical_ratio": 0.9,
+        "max_step_total_tokens": 20000,
+        "max_step_cost": 0.25,
+    }
+}
+```
+
+Benchmark adapters also read environment variables:
+
+```bash
+export OPENAGENT_CONTEXT_WARNING_RATIO=0.75
+export OPENAGENT_MAX_STEP_TOTAL_TOKENS=20000
+```
+
+CI gate command:
+
+```bash
+PYTHONPATH=src python -m openagent.core.eval.ci_gate \
+  --report path/to/report.json \
+  --regression path/to/regression.json \
+  --min-success-rate 1.0 \
+  --max-runtime-warnings 0
+```
+
+The gate exits with `1` when success rate, trace integrity, runtime warning budget, status regressions, or budget regressions violate the configured policy.
 
 Smoke command:
 

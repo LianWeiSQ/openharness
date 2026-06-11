@@ -290,7 +290,10 @@ class EvalRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.langfuse_trace_id, "a" * 32)
         self.assertTrue(result.langfuse_scores_sent)
         self.assertIsNone(result.langfuse_error)
-        self.assertEqual({score["name"] for score in client.scores}, {"openagent.eval.score", "openagent.eval.status", "openagent.trace_check"})
+        self.assertEqual(
+            {score["name"] for score in client.scores},
+            {"openagent.eval.score", "openagent.eval.status", "openagent.trace_check", "openagent.runtime_warning_count"},
+        )
         by_name = {score["name"]: score for score in client.scores}
         self.assertEqual(by_name["openagent.eval.score"]["value"], 1.0)
         self.assertEqual(by_name["openagent.eval.score"]["data_type"], "NUMERIC")
@@ -298,6 +301,8 @@ class EvalRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_name["openagent.eval.status"]["data_type"], "CATEGORICAL")
         self.assertTrue(by_name["openagent.trace_check"]["value"])
         self.assertEqual(by_name["openagent.trace_check"]["data_type"], "BOOLEAN")
+        self.assertEqual(by_name["openagent.runtime_warning_count"]["value"], 0)
+        self.assertEqual(by_name["openagent.runtime_warning_count"]["data_type"], "NUMERIC")
         self.assertTrue(by_name["openagent.eval.score"]["score_id"].startswith("openagent:run_"))
         self.assertTrue(by_name["openagent.eval.score"]["score_id"].endswith(":langfuse_case:score"))
         self.assertGreaterEqual(client.flush_count, 1)

@@ -146,6 +146,9 @@ class LangfuseTraceExporter:
         if self._closed:
             return
         name = str(event.get("event") or "")
+        if name == "runtime.warning":
+            self._record_instant_observation(event)
+            return
         if name in {"run.started", "step.started", "model.call.started", "tool.call.started"}:
             self._start_observation(event)
             return
@@ -219,6 +222,19 @@ class LangfuseTraceExporter:
         if self._active_step_key == key:
             self._active_step_key = None
 
+    def _record_instant_observation(self, event: dict[str, Any]) -> None:
+        trace_context = {"trace_id": self.langfuse_trace_id}
+        parent_id = self._observation_ids.get(self._active_step_key or "") or self._observation_ids.get("run")
+        if parent_id:
+            trace_context["parent_span_id"] = parent_id
+        observation = self._start_client_observation(
+            name=self._observation_name(event),
+            as_type=self._observation_type(event),
+            trace_context=trace_context,
+        )
+        self._update_observation(observation, event, terminal=True)
+        _safe_end(observation)
+
     def _start_missing_observation(self, event: dict[str, Any], key: str) -> None:
         synthetic = dict(event)
         synthetic["event"] = _started_event_name(str(event.get("event") or ""))
@@ -254,7 +270,11 @@ class LangfuseTraceExporter:
             cost = _float_value(attrs.get("cost"))
             if cost is not None:
                 payload["cost_details"] = {"total": cost}
-        if terminal:
+        if str(event.get("event") or "") == "runtime.warning":
+            severity = str(attrs.get("severity") or "warning").lower()
+            payload["level"] = "ERROR" if severity == "critical" else "WARNING"
+            payload["status_message"] = str(attrs.get("message") or attrs.get("code") or "runtime warning")
+        elif terminal:
             payload["level"] = "ERROR" if event.get("status") == "error" else "DEFAULT"
             if event.get("status") == "error":
                 payload["status_message"] = _error_message(attrs)
@@ -336,6 +356,8 @@ class LangfuseTraceExporter:
             return f"model.call {attrs.get('model') or self.run.model_id or 'model'}"
         if name.startswith("tool.call"):
             return f"tool.call {attrs.get('tool_name') or 'tool'}"
+        if name == "runtime.warning":
+            return f"runtime.warning {attrs.get('code') or 'warning'}"
         return name
 
     def _observation_type(self, event: dict[str, Any]) -> str:

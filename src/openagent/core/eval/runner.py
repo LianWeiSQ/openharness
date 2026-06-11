@@ -557,6 +557,15 @@ def _export_langfuse_eval_scores(
             data_type="BOOLEAN",
             comment="OpenAgent trace integrity check result.",
         )
+        _create_langfuse_score(
+            client,
+            trace_id=trace_id,
+            score_id=f"openagent:{run_id}:{case.id}:runtime_warning_count",
+            name="openagent.runtime_warning_count",
+            value=int(result.runtime_warning_count),
+            data_type="NUMERIC",
+            comment="OpenAgent runtime warning count for this eval case.",
+        )
         flush = getattr(client, "flush", None)
         if callable(flush):
             flush()

@@ -296,6 +296,46 @@ class TraceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(merged["input"], "visible prompt")
         self.assertEqual(merged["output"], "visible output")
 
+    def test_langfuse_exporter_records_runtime_warning_span(self) -> None:
+        run = RunRecord(run_id="run_lf_warning", trace_id="trace_lf_warning", session_id="session_lf_warning", agent_name="agent")
+        client = FakeLangfuseClient()
+        exporter = LangfuseTraceExporter(
+            run=run,
+            client=client,
+            langfuse_trace_id="4" * 32,
+            include_content=False,
+        )
+
+        exporter.record_event({"seq": 1, "event": "run.started", "kind": "run", "attributes": {}})
+        exporter.record_event({"seq": 2, "event": "step.started", "kind": "step", "attributes": {"step_index": 1}})
+        exporter.record_event(
+            {
+                "seq": 3,
+                "event": "runtime.warning",
+                "kind": "warning",
+                "attributes": {
+                    "code": "context_usage_high",
+                    "severity": "warning",
+                    "message": "Context usage reached 80.0% of input budget.",
+                    "metrics": {"usage_ratio": 0.8, "threshold": 0.75},
+                },
+            }
+        )
+        exporter.close()
+
+        warning = next(item for item in client.started if item.name == "runtime.warning context_usage_high")
+        step = next(item for item in client.started if item.name == "openagent.step 1")
+        self.assertEqual(warning.as_type, "span")
+        self.assertEqual(warning.trace_context["parent_span_id"], step.id)
+        self.assertTrue(warning.ended)
+        merged = {key: value for update in warning.updates for key, value in update.items()}
+        self.assertEqual(merged["level"], "WARNING")
+        self.assertIn("Context usage reached", merged["status_message"])
+        metadata = merged["metadata"]
+        self.assertEqual(metadata["attr_code"], "context_usage_high")
+        self.assertEqual(metadata["attr_severity"], "warning")
+        self.assertNotIn("attr_message", metadata)
+
     def test_langfuse_exporter_metadata_is_recorded_on_session(self) -> None:
         temp = self._make_temp_dir()
         run = RunRecord(run_id="run_lf_meta", trace_id="trace_lf_meta", session_id="session_lf_meta", agent_name="agent")
