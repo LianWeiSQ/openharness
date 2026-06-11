@@ -4,7 +4,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Status](https://img.shields.io/badge/status-engineering%20preview-orange)
-![Tests](https://img.shields.io/badge/tests-196%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-213%20passing-brightgreen)
 ![License](https://img.shields.io/badge/license-UNLICENSED-lightgrey)
 
 OpenAgent 是一个 Python Agent Core Runtime。它不尝试做一个完整聊天产品，而是聚焦模型外面的 Harness 工程：**工具 schema、权限、上下文、执行环境、日志、trace、eval 和 benchmark adapter**。
@@ -26,7 +26,7 @@ OpenAgent is a hackable Python runtime for building tool-using, observable agent
 | Context | Budgeting, structured compaction, instruction files, file-read state, context traces |
 | Execution | Local workspace, optional remote sandbox runtime, Terminal-Bench, Harbor |
 | Providers | OpenAI-compatible provider for Chat Completions and Responses-style gateways |
-| Operations | Stream events, JSONL-friendly traces, runtime logs, eval/replay |
+| Operations | Stream events, JSONL-friendly traces, runtime logs, eval/replay, optional Langfuse/LangSmith export |
 
 ## Quick Start
 
@@ -132,7 +132,7 @@ src/tests/           # unittest suite
 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p "test_*.py"
 ```
 
-Latest local verification: `196 tests OK`.
+Latest local verification: `213 tests OK`.
 
 ## Documentation
 

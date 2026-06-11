@@ -13,7 +13,8 @@ Implemented:
 - MCP discovery and remote tool bridge;
 - context budget, structured compaction, file context, and context pack trace;
 - local, optional remote sandbox, Terminal-Bench, and Harbor runtime paths;
-- JSONL-friendly observability and eval/replay support.
+- JSONL-friendly observability and eval/replay support;
+- optional Langfuse trace export and eval score export.
 
 Not complete:
 
@@ -26,9 +27,10 @@ Not complete:
 
 1. Make `ContextPackBuilder` the single model-message assembly path.
 2. Wire persistent session storage into run start, step finish, pause, resume, and compaction.
-3. Split optional dependencies for MCP, sandbox, and benchmark integrations.
-4. Publish reproducible benchmark reports for Terminal-Bench and Harbor.
-5. Rebuild CLI/Web Console as a separate demo package with sanitized config templates.
+3. Add Langfuse-backed eval iteration: dataset sync, experiment grouping, and dashboard runbooks.
+4. Split optional dependencies for MCP, sandbox, and benchmark integrations.
+5. Publish reproducible benchmark reports for Terminal-Bench and Harbor.
+6. Rebuild CLI/Web Console as a separate demo package with sanitized config templates.
 
 ## Documentation Policy
 

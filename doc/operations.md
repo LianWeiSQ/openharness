@@ -116,6 +116,45 @@ export LANGFUSE_BASE_URL=https://cloud.langfuse.com
 
 The Langfuse exporter defaults to metadata-only export. It sends identifiers, span type, status, latency, model/tool names, tool source, token counts, cost, eval score, eval status, and trace-check status. It does not send prompts, model output, tool input/output, or workspace paths unless explicitly enabled with `include_content` or `include_workspace`.
 
+Trace mapping:
+
+| OpenAgent event | Langfuse observation |
+| --- | --- |
+| `run.started` / `run.finished` | `agent` |
+| `step.started` / `step.finished` | `span` |
+| `model.call.started` / `model.call.finished` | `generation` |
+| `tool.call.started` / `tool.call.finished` | `tool` |
+
+The Langfuse trace id is deterministic: OpenAgent uses the local trace id as the seed for `create_trace_id(...)`, then stores the exported id in `Session.metadata["agent_trace"]["exporters"]["langfuse"]["trace_id"]`.
+
+When `scores_enabled` is true, each eval case sends three trace-level scores after local scoring completes:
+
+| Score name | Data type | Value |
+| --- | --- | --- |
+| `openagent.eval.score` | `NUMERIC` | `EvalResult.score` |
+| `openagent.eval.status` | `CATEGORICAL` | `pass` or `fail` |
+| `openagent.trace_check` | `BOOLEAN` | local trace integrity result |
+
+Score ids are stable idempotency keys:
+
+```text
+openagent:{run_id}:{case_id}:score
+openagent:{run_id}:{case_id}:status
+openagent:{run_id}:{case_id}:trace_check
+```
+
+Score export is non-fatal. `EvalResult.langfuse_trace_id`, `EvalResult.langfuse_scores_sent`, and `EvalResult.langfuse_error` record the external export state while local `report.json` remains authoritative.
+
+Local mock verification:
+
+```bash
+PYTHONPATH=src:src/tests python -m unittest \
+  src/tests/test_trace.py \
+  src/tests/test_eval_runner.py
+```
+
+Optional real smoke requires Langfuse env vars, then run a small eval case with the `langfuse` exporter enabled and confirm the trace plus three scores appear in the Langfuse UI.
+
 ## Evaluation
 
 The repository includes local eval/replay utilities plus benchmark adapters:
