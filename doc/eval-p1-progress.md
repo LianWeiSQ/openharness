@@ -26,3 +26,8 @@ Build a generic eval regression layer on top of the P0 Agent Run Trace. P1 stays
 - Add a CLI wrapper for eval suites if repeated local runs need a stable command-line interface.
 - Add HTTP record/replay cassettes only when model/tool integration tests need deterministic external traffic.
 - Add database-backed eval history when cross-run querying becomes necessary.
+
+## P2 Cost / Budget Governance Slice
+
+- 2026-06-11: Added optional baseline regression thresholds for cost, duration, input tokens, output tokens, total tokens, model calls, and tool calls.
+- Regression reports now include token deltas and `budget_regressions`, making cost/token drift visible before it becomes a Langfuse dashboard or production issue.

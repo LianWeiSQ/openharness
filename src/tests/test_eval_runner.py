@@ -361,6 +361,78 @@ class EvalRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(regression["cases"][0]["case_id"], "regression_case")
         self.assertIn("Status regressions", Path(report.regression_summary_path or "").read_text(encoding="utf-8"))
 
+    async def test_run_eval_files_flags_budget_regressions(self) -> None:
+        temp = self._make_temp_dir()
+        case_path = temp / "case.yaml"
+        case_path.write_text(
+            "\n".join(
+                [
+                    "id: budget_case",
+                    "input: hello",
+                    "scoring:",
+                    "  require_final_answer_contains:",
+                    "    - expected",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        baseline_path = temp / "baseline.json"
+        baseline_path.write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "case_id": "budget_case",
+                            "status": "pass",
+                            "score": 1.0,
+                            "duration_ms": 1,
+                            "steps": 1,
+                            "model_calls": 1,
+                            "tool_calls": 0,
+                            "input_tokens": 10,
+                            "output_tokens": 5,
+                            "cost": 0.01,
+                            "trace_check_ok": True,
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "text-delta", "id": "t1", "text": "expected"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 25, "output_tokens": 8, "cost": 0.05}},
+                ]
+            ]
+        )
+
+        report = await run_eval_files(
+            [case_path],
+            model=model,
+            base_dir=temp,
+            output_dir=temp / "out",
+            baseline_report=baseline_path,
+            regression_thresholds={
+                "max_total_tokens_delta": 10,
+                "max_cost_delta": 0.02,
+                "max_duration_delta_ms": 10_000,
+            },
+        )
+
+        regression = json.loads(Path(report.regression_path or "").read_text(encoding="utf-8"))
+        case = regression["cases"][0]
+        self.assertEqual(case["total_tokens_delta"], 18)
+        self.assertEqual(regression["summary"]["total_tokens_increased_cases"], 1)
+        self.assertEqual(regression["summary"]["budget_regressions"], 1)
+        budget_reasons = " ".join(case["budget_regressions"])
+        self.assertIn("total_tokens_delta exceeded max_total_tokens_delta", budget_reasons)
+        self.assertIn("cost_delta exceeded max_cost_delta", budget_reasons)
+        summary = Path(report.regression_summary_path or "").read_text(encoding="utf-8")
+        self.assertIn("Budget regressions: 1", summary)
+        self.assertIn("max_total_tokens_delta: 10", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -148,6 +148,7 @@ async def run_eval_files(
     agent_config: AgentConfig | None = None,
     system_prompt: str = "Test prompt.",
     baseline_report: Path | str | None = None,
+    regression_thresholds: dict[str, Any] | None = None,
 ) -> EvalRunReport:
     out_dir = Path(output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +174,7 @@ async def run_eval_files(
             baseline_report=Path(baseline_report),
             current_results=results,
             current_report_path=report_path,
+            thresholds=regression_thresholds,
         )
         regression_path = out_dir / "regression.json"
         regression_summary_path = out_dir / "regression.md"
@@ -730,11 +732,16 @@ def _compare_with_baseline(
     baseline_report: Path,
     current_results: list[EvalResult],
     current_report_path: Path,
+    thresholds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     baseline_payload = json.loads(baseline_report.read_text(encoding="utf-8"))
     baseline_results = baseline_payload.get("results", []) if isinstance(baseline_payload, dict) else []
     if not isinstance(baseline_results, list):
         baseline_results = []
+    raw_thresholds = thresholds
+    if raw_thresholds is None and isinstance(baseline_payload, dict):
+        raw_thresholds = baseline_payload.get("regression_thresholds")
+    threshold_config = _normalize_regression_thresholds(raw_thresholds)
     baseline_by_id = {str(item.get("case_id")): item for item in baseline_results if isinstance(item, dict) and item.get("case_id")}
     current_by_id = {result.case_id: asdict(result) for result in current_results}
     cases: list[dict[str, Any]] = []
@@ -750,10 +757,27 @@ def _compare_with_baseline(
         score_delta = _float_field(current, "score") - _float_field(baseline, "score")
         cost_delta = _float_field(current, "cost") - _float_field(baseline, "cost")
         duration_delta_ms = _int_field(current, "duration_ms") - _int_field(baseline, "duration_ms")
+        input_tokens_delta = _int_field(current, "input_tokens") - _int_field(baseline, "input_tokens")
+        output_tokens_delta = _int_field(current, "output_tokens") - _int_field(baseline, "output_tokens")
+        total_tokens_delta = (_int_field(current, "input_tokens") + _int_field(current, "output_tokens")) - (
+            _int_field(baseline, "input_tokens") + _int_field(baseline, "output_tokens")
+        )
         tool_calls_delta = _int_field(current, "tool_calls") - _int_field(baseline, "tool_calls")
         model_calls_delta = _int_field(current, "model_calls") - _int_field(baseline, "model_calls")
         baseline_status = str(baseline.get("status") or "")
         current_status = str(current.get("status") or "")
+        budget_regressions = _budget_regressions(
+            {
+                "cost_delta": cost_delta,
+                "duration_delta_ms": duration_delta_ms,
+                "input_tokens_delta": input_tokens_delta,
+                "output_tokens_delta": output_tokens_delta,
+                "total_tokens_delta": total_tokens_delta,
+                "tool_calls_delta": tool_calls_delta,
+                "model_calls_delta": model_calls_delta,
+            },
+            threshold_config,
+        )
         cases.append(
             {
                 "case_id": case_id,
@@ -766,13 +790,18 @@ def _compare_with_baseline(
                 "score_delta": score_delta,
                 "cost_delta": cost_delta,
                 "duration_delta_ms": duration_delta_ms,
+                "input_tokens_delta": input_tokens_delta,
+                "output_tokens_delta": output_tokens_delta,
+                "total_tokens_delta": total_tokens_delta,
                 "tool_calls_delta": tool_calls_delta,
                 "model_calls_delta": model_calls_delta,
+                "budget_regressions": budget_regressions,
             }
         )
     summary = {
         "baseline_report": str(baseline_report),
         "current_report": str(current_report_path),
+        "regression_thresholds": threshold_config,
         "baseline_total": len(baseline_by_id),
         "current_total": len(current_by_id),
         "new_cases": sum(1 for item in cases if item.get("change") == "new_case"),
@@ -781,9 +810,57 @@ def _compare_with_baseline(
         "status_improvements": sum(1 for item in cases if item.get("status_improvement")),
         "score_regressions": sum(1 for item in cases if float(item.get("score_delta") or 0.0) < 0),
         "cost_increased_cases": sum(1 for item in cases if float(item.get("cost_delta") or 0.0) > 0),
+        "input_tokens_increased_cases": sum(1 for item in cases if int(item.get("input_tokens_delta") or 0) > 0),
+        "output_tokens_increased_cases": sum(1 for item in cases if int(item.get("output_tokens_delta") or 0) > 0),
+        "total_tokens_increased_cases": sum(1 for item in cases if int(item.get("total_tokens_delta") or 0) > 0),
         "duration_increased_cases": sum(1 for item in cases if int(item.get("duration_delta_ms") or 0) > 0),
+        "budget_regressions": sum(1 for item in cases if item.get("budget_regressions")),
     }
     return {"summary": summary, "cases": cases}
+
+
+def _normalize_regression_thresholds(raw: Any) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return {}
+    allowed = {
+        "max_cost_delta",
+        "max_duration_delta_ms",
+        "max_input_tokens_delta",
+        "max_output_tokens_delta",
+        "max_total_tokens_delta",
+        "max_tool_calls_delta",
+        "max_model_calls_delta",
+    }
+    normalized: dict[str, float] = {}
+    for key in allowed:
+        if key not in raw:
+            continue
+        try:
+            normalized[key] = float(raw[key])
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
+def _budget_regressions(deltas: dict[str, float | int], thresholds: dict[str, float]) -> list[str]:
+    checks = {
+        "max_cost_delta": "cost_delta",
+        "max_duration_delta_ms": "duration_delta_ms",
+        "max_input_tokens_delta": "input_tokens_delta",
+        "max_output_tokens_delta": "output_tokens_delta",
+        "max_total_tokens_delta": "total_tokens_delta",
+        "max_tool_calls_delta": "tool_calls_delta",
+        "max_model_calls_delta": "model_calls_delta",
+    }
+    failures: list[str] = []
+    for threshold_key, delta_key in checks.items():
+        if threshold_key not in thresholds:
+            continue
+        delta = float(deltas.get(delta_key) or 0.0)
+        threshold = float(thresholds[threshold_key])
+        if delta > threshold:
+            failures.append(f"{delta_key} exceeded {threshold_key}: {delta:g} > {threshold:g}")
+    return failures
 
 
 def _case_regression_fields(item: dict[str, Any] | None) -> dict[str, Any]:
@@ -817,8 +894,15 @@ def _render_regression_summary(regression: dict[str, Any]) -> str:
         f"- Status improvements: {summary.get('status_improvements', 0)}",
         f"- Score regressions: {summary.get('score_regressions', 0)}",
         f"- Cost increased cases: {summary.get('cost_increased_cases', 0)}",
+        f"- Token increased cases: {summary.get('total_tokens_increased_cases', 0)}",
         f"- Duration increased cases: {summary.get('duration_increased_cases', 0)}",
+        f"- Budget regressions: {summary.get('budget_regressions', 0)}",
     ]
+    thresholds = summary.get("regression_thresholds")
+    if isinstance(thresholds, dict) and thresholds:
+        lines.extend(["", "## Regression Thresholds"])
+        for key in sorted(thresholds):
+            lines.append(f"- {key}: {thresholds[key]:g}")
     interesting = [
         item
         for item in regression.get("cases", [])
@@ -828,6 +912,9 @@ def _render_regression_summary(regression: dict[str, Any]) -> str:
             or item.get("status_changed")
             or float(item.get("score_delta") or 0.0) != 0.0
             or float(item.get("cost_delta") or 0.0) != 0.0
+            or int(item.get("total_tokens_delta") or 0) != 0
+            or int(item.get("duration_delta_ms") or 0) != 0
+            or bool(item.get("budget_regressions"))
         )
     ]
     if interesting:
@@ -843,8 +930,14 @@ def _render_regression_summary(regression: dict[str, Any]) -> str:
             lines.append(
                 f"- {case_id}: {baseline_status} -> {current_status}, "
                 f"score_delta={float(item.get('score_delta') or 0.0):.3f}, "
-                f"cost_delta={float(item.get('cost_delta') or 0.0):.6f}"
+                f"cost_delta={float(item.get('cost_delta') or 0.0):.6f}, "
+                f"tokens_delta={int(item.get('total_tokens_delta') or 0)}, "
+                f"duration_delta_ms={int(item.get('duration_delta_ms') or 0)}"
             )
+            budget_regressions = item.get("budget_regressions")
+            if isinstance(budget_regressions, list):
+                for reason in budget_regressions:
+                    lines.append(f"  - budget: {reason}")
     return "\n".join(lines) + "\n"
 
 
