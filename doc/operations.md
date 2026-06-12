@@ -28,6 +28,47 @@ Runtime metadata is stored under `Session.metadata["observability"]`:
 
 Runtime logs are separate from trace events. Logs are for operators; trace events are for replay, metrics, and regression analysis.
 
+## Session Store
+
+OpenAgent writes a local session ledger by default under `.openagent/sessions`. The store is meant for crash recovery, eval evidence, and trace debugging; `.openagent/` is ignored by git.
+
+```python
+config = AgentConfig(
+    name="demo",
+    options={
+        "session_store": {
+            "enabled": True,
+            "root_dir": ".openagent/sessions",
+        }
+    },
+)
+```
+
+Set `options={"session_store": {"enabled": False}}` to disable local persistence for a run.
+
+File layout:
+
+| Path | Purpose |
+| --- | --- |
+| `{root}/{session_id}/session.json` | Session metadata and latest run pointer |
+| `{root}/{session_id}/transcript.jsonl` | Append-only message transcript |
+| `{root}/{session_id}/state.latest.json` | Restorable `messages`, `todos`, and `metadata` snapshot |
+| `{root}/{session_id}/runs/{run_id}/events.jsonl` | Append-only run ledger |
+| `{root}/{session_id}/runs/{run_id}/summary.json` | Run status, counters, token usage, cost, and paths |
+
+The ledger records `run.started`, `message.appended`, `step.started`, `step.finished`, `tool.call.requested`, `tool.call.started`, `tool.call.finished`, `tool.call.failed`, `model.usage`, `patch.detected`, `runtime.warning`, `run.finished`, and `run.failed`.
+
+Restore a session from disk:
+
+```python
+from openagent.core.session import FileSessionStore
+
+store = FileSessionStore(".openagent/sessions")
+session = store.load_session(session_id)
+```
+
+`load_session(...)` restores `Session.messages`, `Session.todos`, and `Session.metadata` from `state.latest.json`. If the latest state file is missing, it falls back to the append-only transcript.
+
 ## Safety
 
 Logs and traces should not include secrets. OpenAgent redacts common secret-bearing keys such as `api_key`, `authorization`, `cookie`, `password`, `secret`, and `token`.
@@ -178,7 +219,7 @@ scoring:
 
 `run_eval_files(...)` writes:
 
-- `report.json`: per-case result plus aggregate pass rate, token/cost, latency, trace check, and tool-source metrics;
+- `report.json`: per-case result plus aggregate pass rate, token/cost, latency, trace check, tool-source metrics, `session_id`, `run_id`, session ledger path, and latest session state path;
 - `summary.md`: human-readable summary for review;
 - `runs/{run_id}/trace.jsonl` and `runs/{run_id}/summary.json`: P0 trace artifacts for every case;
 - `regression.json` and `regression.md` when `baseline_report=...` is provided.

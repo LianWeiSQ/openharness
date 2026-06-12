@@ -13,6 +13,7 @@ import yaml
 from ..agent.universal import UniversalAgent
 from ..permission.manager import PermissionManager
 from ..session.session import Session
+from ..session.store import SESSION_STORE_METADATA_KEY
 from ..trace import TRACE_METADATA_KEY, check_trace_run, load_trace_events, load_trace_summary
 from ..trace.exporter import load_langfuse_client
 from ..types import AgentConfig, ChatMessage
@@ -43,6 +44,10 @@ class EvalResult:
     error_kind: str | None
     failure_reasons: list[str]
     trace_path: str | None
+    session_id: str | None = None
+    run_id: str | None = None
+    ledger_path: str | None = None
+    session_state_path: str | None = None
     trace_summary_path: str | None = None
     trace_check_ok: bool = False
     trace_check_errors: list[str] = field(default_factory=list)
@@ -401,6 +406,10 @@ def _score_case(
         error_kind=error_kind,
         failure_reasons=failures,
         trace_path=trace_metrics.trace_path,
+        session_id=session.id,
+        run_id=_session_run_id(session),
+        ledger_path=_session_ledger_path(session),
+        session_state_path=_session_state_path(session),
         trace_summary_path=trace_metrics.summary_path,
         trace_check_ok=trace_check_ok,
         trace_check_errors=trace_check_errors,
@@ -490,6 +499,26 @@ def _trace_metrics(session: Session) -> _TraceMetrics:
 def _agent_trace_metadata(session: Session) -> dict[str, Any]:
     value = session.metadata.get(TRACE_METADATA_KEY)
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _session_store_metadata(session: Session) -> dict[str, Any]:
+    value = session.metadata.get(SESSION_STORE_METADATA_KEY)
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _session_run_id(session: Session) -> str | None:
+    value = _session_store_metadata(session).get("run_id") or _agent_trace_metadata(session).get("run_id")
+    return str(value) if value else None
+
+
+def _session_ledger_path(session: Session) -> str | None:
+    value = _session_store_metadata(session).get("ledger_path")
+    return str(value) if value else None
+
+
+def _session_state_path(session: Session) -> str | None:
+    value = _session_store_metadata(session).get("state_path")
+    return str(value) if value else None
 
 
 def _langfuse_exporter_metadata(session: Session) -> dict[str, Any]:

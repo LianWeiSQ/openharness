@@ -34,6 +34,7 @@ from ..permission.ruleset import PermissionRuleset
 from ..question import QuestionManager, QuestionRequest
 from ..runtime_warnings import RuntimeWarningRecord, context_budget_warning, load_runtime_warning_config, step_usage_warnings
 from ..runtime_logging import RuntimeLogger
+from ..session.store import SESSION_STORE_METADATA_KEY, SessionStore, load_session_store
 from ..tool.middleware import logging_middleware, observability_middleware, permission_middleware
 from ..tool.toolkit import ToolkitAdapter
 from ..tool_policy import (
@@ -189,6 +190,8 @@ class AgentLoop:
         self.tool_log: list[dict[str, Any]] = []
         self.observation_recorder: ObservationRecorder | None = None
         self.runtime_logger: RuntimeLogger | None = None
+        self.session_store: SessionStore | None = None
+        self._session_store_run_id: str | None = None
         self.question_manager = question_manager or QuestionManager()
         self.question_manager.set_hooks(on_requested=self._on_question_requested, on_resolved=self._on_question_resolved)
         self._text_trace_lengths: dict[str, int] = {}
@@ -655,6 +658,7 @@ class AgentLoop:
             kind="warning",
             attributes=attributes,
         )
+        self._record_session_store_event("runtime.warning", kind="warning", attributes=attributes)
         self._log_runtime(
             "ERROR" if warning.severity == "critical" else "WARNING",
             warning.message,
@@ -744,6 +748,91 @@ class AgentLoop:
             options=self.agent.config.options,
             base_dir=Path(self.session.directory),
         )
+
+    def _start_session_store(self) -> None:
+        if self.observation_recorder is None:
+            return
+        self.session_store = load_session_store(self.agent.config.options, base_dir=Path(self.session.directory))
+        if self.session_store is None:
+            return
+        trace = self.observation_recorder.trace
+        model = self.agent.config.model
+        metadata = self.session_store.start_run(
+            self.session,
+            run_id=trace.run_id,
+            trace_id=trace.trace_id,
+            agent_name=self.agent.config.name,
+            model_id=model.id if model is not None else None,
+            provider_id=model.provider_id if model is not None else None,
+            permission=self.agent.config.permission,
+            max_steps=self.config.max_steps,
+            started_at_ms=trace.started_at_ms,
+        )
+        self.session.metadata[SESSION_STORE_METADATA_KEY] = metadata
+        self._session_store_run_id = trace.run_id
+        self.session.bind_store(self.session_store, run_id=trace.run_id)
+
+    def _record_session_store_event(
+        self,
+        event: str,
+        *,
+        kind: str = "event",
+        status: str = "ok",
+        attributes: dict[str, Any] | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        if self.session_store is None or self._session_store_run_id is None:
+            return
+        self.session_store.record_event(
+            session_id=self.session.id,
+            run_id=self._session_store_run_id,
+            event=event,
+            kind=kind,
+            status=status,
+            attributes=attributes,
+            duration_ms=duration_ms,
+        )
+
+    def _finish_session_store_run(
+        self,
+        *,
+        status: str,
+        steps: int,
+        finish_reason: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        if self.session_store is None or self._session_store_run_id is None:
+            return
+        self.session_store.finish_run(
+            self.session,
+            run_id=self._session_store_run_id,
+            status=status,
+            steps=steps,
+            finish_reason=finish_reason,
+            error=error,
+        )
+        self.session.unbind_store()
+
+    @staticmethod
+    def _tool_input_preview(payload: dict[str, Any], *, max_chars: int = 2048) -> str:
+        try:
+            rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except TypeError:
+            rendered = str(payload)
+        if len(rendered) <= max_chars:
+            return rendered
+        return rendered[: max_chars - 3] + "..."
+
+    @staticmethod
+    def _tool_source_for_store(tool_name: str, metadata: dict[str, Any] | None) -> str:
+        metadata = metadata or {}
+        if metadata.get("backend") == "mcp" or metadata.get("mcp_server"):
+            return "mcp"
+        if tool_name == "skill" or metadata.get("skill_name"):
+            return "skill"
+        if metadata.get("execution_mode") == "opensandbox":
+            return "sandbox"
+        return "local_tool"
 
     async def _run_compaction_model(self, messages_to_compact: list[ChatMessage], *, max_output_tokens: int) -> str:
         todo_payload = [todo.to_dict() for todo in self.session.todos]
@@ -1163,18 +1252,17 @@ class AgentLoop:
         )
         self.permission_manager.set_ruleset(PermissionRuleset[self.agent.config.permission])
         self.session.status = SessionStatus.RUNNING
+        self._start_session_store()
         self.session.add(ChatMessage(role="user", content=user_text))
-        self._record_observation(
-            "run.started",
-            kind="run",
-            attributes={
-                "agent_name": self.agent.config.name,
-                "model_id": self.agent.config.model.id if self.agent.config.model is not None else None,
-                "provider_id": self.agent.config.model.provider_id if self.agent.config.model is not None else None,
-                "permission": self.agent.config.permission,
-                "input_chars": len(user_text),
-            },
-        )
+        run_started_attributes = {
+            "agent_name": self.agent.config.name,
+            "model_id": self.agent.config.model.id if self.agent.config.model is not None else None,
+            "provider_id": self.agent.config.model.provider_id if self.agent.config.model is not None else None,
+            "permission": self.agent.config.permission,
+            "input_chars": len(user_text),
+        }
+        self._record_observation("run.started", kind="run", attributes=run_started_attributes)
+        self._record_session_store_event("run.input", kind="run", attributes=run_started_attributes)
         self._log_runtime(
             "INFO",
             "Agent run started",
@@ -1196,21 +1284,22 @@ class AgentLoop:
         runtime_warning_config = load_runtime_warning_config(self.agent.config.options)
 
         steps = 0
+        run_status = "failed"
+        run_finish_reason: str | None = None
+        run_error: str | None = None
         try:
             while steps < self.config.max_steps:
                 steps += 1
                 is_last_step = steps >= self.config.max_steps
                 snapshot_id = self.snapshot_manager.track(Path(self.session.directory))
                 step_started_at = time.time()
-                self._record_observation(
-                    "step.started",
-                    kind="step",
-                    attributes={
-                        "step_index": steps,
-                        "snapshot_id": snapshot_id,
-                        "is_last_step": is_last_step,
-                    },
-                )
+                step_started_attributes = {
+                    "step_index": steps,
+                    "snapshot_id": snapshot_id,
+                    "is_last_step": is_last_step,
+                }
+                self._record_observation("step.started", kind="step", attributes=step_started_attributes)
+                self._record_session_store_event("step.started", kind="step", attributes=step_started_attributes)
                 self._log_runtime(
                     "INFO",
                     "Agent step started",
@@ -1449,8 +1538,30 @@ class AgentLoop:
 
                 step_failures: list[ToolFailureHint] = []
                 for call in info_tool_calls:
+                    self._record_session_store_event(
+                        "tool.call.requested",
+                        kind="tool",
+                        attributes={
+                            "step_index": steps,
+                            "tool_name": call.name,
+                            "call_id": call.call_id,
+                            "input_preview": self._tool_input_preview(call.input),
+                        },
+                    )
                     if self.doom_loop_detector.record(call):
                         error_message = self._repeated_tool_call_error(call)
+                        self._record_session_store_event(
+                            "tool.call.failed",
+                            kind="tool",
+                            status="error",
+                            attributes={
+                                "step_index": steps,
+                                "tool_name": call.name,
+                                "call_id": call.call_id,
+                                "error_kind": "doom_loop",
+                                "message": error_message,
+                            },
+                        )
                         self._record_observation(
                             "doom_loop.detected",
                             kind="error",
@@ -1480,10 +1591,21 @@ class AgentLoop:
                             step_index=steps,
                             attempt_index=attempt,
                         )
+                        run_error = error_message
                         yield {"type": "error", "error": error_message}  # type: ignore[misc]
                         return
 
                     question_task: asyncio.Task[QuestionRequest] | None = None
+                    tool_started_at = time.time()
+                    self._record_session_store_event(
+                        "tool.call.started",
+                        kind="tool",
+                        attributes={
+                            "step_index": steps,
+                            "tool_name": call.name,
+                            "call_id": call.call_id,
+                        },
+                    )
                     try:
                         tool_task = asyncio.create_task(
                             self.toolkit.execute(
@@ -1537,6 +1659,7 @@ class AgentLoop:
                             with suppress(asyncio.CancelledError):
                                 await question_task
 
+                    tool_duration_ms = int((time.time() - tool_started_at) * 1000)
                     result = self._normalize_tool_result_error_kind(tool_name=call.name, result=result)
                     self._update_web_research_state(tool_name=call.name, result=result, state=web_research_state)
                     result, tool_message = project_tool_result_to_message(
@@ -1546,6 +1669,24 @@ class AgentLoop:
                         preview_bytes=int(context_budget_config["tool_context_preview_bytes"]),
                         preview_lines=int(context_budget_config["tool_context_preview_lines"]),
                         line_max_chars=int(context_budget_config["tool_context_line_max_chars"]),
+                    )
+                    result_metadata = dict(result.metadata or {})
+                    self._record_session_store_event(
+                        "tool.call.failed" if result.error else "tool.call.finished",
+                        kind="tool",
+                        status="error" if result.error else "ok",
+                        duration_ms=tool_duration_ms,
+                        attributes={
+                            "step_index": steps,
+                            "tool_name": call.name,
+                            "call_id": result.call_id,
+                            "tool_source": self._tool_source_for_store(call.name, result_metadata),
+                            "error": bool(result.error),
+                            "error_kind": result_metadata.get("error_kind"),
+                            "output_chars": len(result.output or ""),
+                            "output_path": result_metadata.get("output_path"),
+                            "title": result_metadata.get("title"),
+                        },
                     )
                     yield {
                         "type": "tool-result",
@@ -1566,21 +1707,23 @@ class AgentLoop:
 
                 patch = self.snapshot_manager.patch(snapshot_id)
                 if patch.get("files"):
+                    patch_attributes = {
+                        "step_index": steps,
+                        "snapshot_id": snapshot_id,
+                        "hash": patch.get("hash"),
+                        "file_count": len(patch.get("files") or []),
+                        "files": [
+                            item.get("path") or item.get("file") or item.get("name")
+                            for item in (patch.get("files") or [])
+                            if isinstance(item, dict)
+                        ],
+                    }
                     self._record_observation(
                         "patch.detected",
                         kind="patch",
-                        attributes={
-                            "step_index": steps,
-                            "snapshot_id": snapshot_id,
-                            "hash": patch.get("hash"),
-                            "file_count": len(patch.get("files") or []),
-                            "files": [
-                                item.get("path") or item.get("file") or item.get("name")
-                                for item in (patch.get("files") or [])
-                                if isinstance(item, dict)
-                            ],
-                        },
+                        attributes=patch_attributes,
                     )
+                    self._record_session_store_event("patch.detected", kind="patch", attributes=patch_attributes)
                     self._log_runtime(
                         "INFO",
                         "Workspace patch detected",
@@ -1598,21 +1741,39 @@ class AgentLoop:
                 finish_reason: FinishReason = info.finish_reason
                 if info_tool_calls and finish_reason == "unknown":
                     finish_reason = "tool_call"
-                for warning in step_usage_warnings(runtime_warning_config, usage, step_index=steps):
-                    yield self._record_runtime_warning(warning)
-                step_duration_ms = int((time.time() - step_started_at) * 1000)
-                self._record_observation(
-                    "step.finished",
-                    kind="step",
+                self._record_session_store_event(
+                    "model.usage",
+                    kind="model",
                     attributes={
                         "step_index": steps,
-                        "attempt_index": attempt,
-                        "finish_reason": finish_reason,
-                        "tool_call_count": len(info_tool_calls),
                         "input_tokens": usage.input_tokens,
                         "output_tokens": usage.output_tokens,
                         "cost": usage.cost,
+                        "finish_reason": finish_reason,
                     },
+                )
+                for warning in step_usage_warnings(runtime_warning_config, usage, step_index=steps):
+                    yield self._record_runtime_warning(warning)
+                step_duration_ms = int((time.time() - step_started_at) * 1000)
+                step_finished_attributes = {
+                    "step_index": steps,
+                    "attempt_index": attempt,
+                    "finish_reason": finish_reason,
+                    "tool_call_count": len(info_tool_calls),
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost": usage.cost,
+                }
+                self._record_observation(
+                    "step.finished",
+                    kind="step",
+                    attributes=step_finished_attributes,
+                    duration_ms=step_duration_ms,
+                )
+                self._record_session_store_event(
+                    "step.finished",
+                    kind="step",
+                    attributes=step_finished_attributes,
                     duration_ms=step_duration_ms,
                 )
                 self._log_runtime(
@@ -1671,6 +1832,8 @@ class AgentLoop:
                 if followup_messages and finish_reason == "stop" and not is_last_step:
                     continue
                 if finish_reason == "stop" or is_last_step:
+                    run_status = "completed"
+                    run_finish_reason = finish_reason
                     self._record_observation(
                         "run.finished",
                         kind="run",
@@ -1691,15 +1854,22 @@ class AgentLoop:
                         },
                     )
                     return
+            run_error = "max_steps exceeded"
             self._mark_observed_error(
                 None,
-                message="max_steps exceeded",
+                message=run_error,
                 error_kind="max_steps_exceeded",
                 step_index=steps,
             )
-            yield {"type": "error", "error": "max_steps exceeded"}  # type: ignore[misc]
+            yield {"type": "error", "error": run_error}  # type: ignore[misc]
         finally:
             self.session.status = SessionStatus.STOP
+            self._finish_session_store_run(
+                status=run_status,
+                steps=steps,
+                finish_reason=run_finish_reason,
+                error=run_error,
+            )
 
 
 __all__ = ["AgentLoop", "AgentLoopConfig"]

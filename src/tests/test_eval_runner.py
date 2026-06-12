@@ -192,6 +192,10 @@ class EvalRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["schema_version"], "openagent.eval.report.v1")
         self.assertEqual(payload["aggregate"]["total_cases"], 1)
         self.assertEqual(payload["results"][0]["case_id"], "report_case")
+        self.assertEqual(payload["results"][0]["session_id"], report.results[0].session_id)
+        self.assertTrue(payload["results"][0]["run_id"])
+        self.assertTrue(Path(payload["results"][0]["ledger_path"]).exists())
+        self.assertTrue(Path(payload["results"][0]["session_state_path"]).exists())
         self.assertIn("trace_check_ok", payload["results"][0])
         self.assertIn("Success rate", Path(report.summary_path).read_text(encoding="utf-8"))
 
