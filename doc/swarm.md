@@ -13,7 +13,7 @@ Implemented in this slice:
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
-- `A2ARunner`, an HTTP+JSON adapter for Agent2Agent-compatible remote agents;
+- `A2ARunner`, an HTTP+JSON adapter for Agent2Agent-compatible remote agents, including SSE streaming;
 - opt-in worker workspace isolation for future write-capable workers;
 - merge-back conflict review for isolated worker outputs;
 - coordinator-level merge approval policy for deciding whether a merge plan can be applied;
@@ -25,7 +25,7 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- streaming A2A support.
+- resumable team adapters.
 
 ## Configuration Shape
 
@@ -391,7 +391,7 @@ Request headers are sent as HTTP headers. They are not copied into the JSON `run
 
 ## A2A Runner
 
-A2A runners call standard Agent2Agent HTTP+JSON endpoints. The runner uses the `POST /message:send` binding with `application/a2a+json` request bodies and an `A2A-Version` header.
+A2A runners call standard Agent2Agent HTTP+JSON endpoints. By default, the runner uses the `POST /message:send` binding with `application/a2a+json` request bodies and an `A2A-Version` header.
 
 ```yaml
 runners:
@@ -418,6 +418,30 @@ result = await SwarmRuntime(registry=registry).run_task(config.task("compare"))
 ```
 
 The runner converts `AgentSpec` into a `ROLE_USER` message with one text part containing the role, objective, context, boundaries, output schema, and inputs. Completed task artifact text becomes the `AgentResult.summary`. Input-required or working task states become `partial`; failed, rejected, or canceled states become `failed`.
+
+Enable streaming with runner metadata:
+
+```yaml
+runners:
+  a2a_streaming_researcher:
+    kind: a2a
+    roles: [research]
+    metadata:
+      url: "https://agent.example.com/a2a"
+      streaming: true
+      version: "1.0"
+      timeout_seconds: 60
+      accepted_output_modes: ["text/plain"]
+```
+
+With `streaming: true`, the runner normalizes the endpoint to `POST /message:stream`, sends `Accept: text/event-stream`, and parses Server-Sent Events whose `data:` payloads are A2A `StreamResponse` objects. The supported stream events are:
+
+- `task`
+- `message`
+- `statusUpdate`
+- `artifactUpdate`
+
+Each stream item becomes an `a2a.stream.*` runner event in the local swarm trace. Streamed artifact text, status messages, and direct messages are folded into the final `AgentResult.summary`; terminal task states still control the final result status.
 
 ## OpenAgent Adapter
 
@@ -527,6 +551,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add streaming A2A support for long-running remote agents.
-2. Add resumable team adapters for multi-session worker handoff.
-3. Add a coordinator workflow that combines resume, merge approval, and optional apply into one run receipt.
+1. Add resumable team adapters for multi-session worker handoff.
+2. Add a coordinator workflow that combines resume, merge approval, and optional apply into one run receipt.
+3. Add A2A task subscription support for reconnecting to already-started remote tasks.

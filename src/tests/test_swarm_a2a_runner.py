@@ -70,6 +70,50 @@ class SwarmA2ARunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.results["remote"].metadata["http_status"], 500)
         self.assertIn("a2a failed", result.results["remote"].summary)
 
+    async def test_a2a_runner_streams_task_artifact_and_status_updates(self) -> None:
+        server = _TestA2AServer({"/message:stream": _completed_stream})
+        self.addCleanup(server.close)
+        config = _config(server.url("/"), streaming=True)
+
+        result = await SwarmRuntime(registry=build_a2a_registry(config)).run_task(config.task("task"), run_id="stream-run")
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.results["remote"].summary, "# Report\n\nDone")
+        self.assertEqual(result.results["remote"].evidence, ["final"])
+        self.assertEqual(result.results["remote"].metadata["response_format"], "a2a-sse")
+        self.assertEqual(result.results["remote"].metadata["a2a_stream_events"], 3)
+        self.assertEqual(result.results["remote"].metadata["a2a_task_id"], "task-stream-1")
+        self.assertEqual(result.results["remote"].metadata["a2a_task_state"], "TASK_STATE_COMPLETED")
+        self.assertEqual(server.records[0]["path"], "/message:stream")
+        self.assertEqual(server.records[0]["headers"]["Accept"], "text/event-stream")
+        event_names = [event.name for event in result.trace_events]
+        self.assertIn("a2a.stream.task", event_names)
+        self.assertIn("a2a.stream.artifactUpdate", event_names)
+        self.assertIn("a2a.stream.statusUpdate", event_names)
+
+    async def test_a2a_runner_streams_direct_message_response(self) -> None:
+        server = _TestA2AServer({"/message:stream": _message_stream})
+        self.addCleanup(server.close)
+        config = _config(server.url("/message:send"), streaming=True)
+
+        result = await SwarmRuntime(registry=build_a2a_registry(config)).run_task(config.task("task"))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.results["remote"].summary, "Direct stream answer")
+        self.assertEqual(server.records[0]["path"], "/message:stream")
+
+    async def test_a2a_runner_streams_failed_status(self) -> None:
+        server = _TestA2AServer({"/message:stream": _failed_stream})
+        self.addCleanup(server.close)
+        config = _config(server.url("/"), streaming=True)
+
+        result = await SwarmRuntime(registry=build_a2a_registry(config)).run_task(config.task("task"))
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.results["remote"].status, "failed")
+        self.assertEqual(result.results["remote"].summary, "Stream failed")
+        self.assertEqual(result.results["remote"].metadata["a2a_task_state"], "TASK_STATE_FAILED")
+
 
 def _completed_task(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
     return (
@@ -129,11 +173,55 @@ def _failed_task(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
     )
 
 
+def _completed_stream(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
+    return (
+        200,
+        {"Content-Type": "text/event-stream"},
+        _sse(
+            {"task": {"id": "task-stream-1", "status": {"state": "TASK_STATE_WORKING"}}},
+            {"artifactUpdate": {"taskId": "task-stream-1", "artifact": {"name": "final", "parts": [{"text": "# Report\n\nDone"}]}}},
+            {"statusUpdate": {"taskId": "task-stream-1", "status": {"state": "TASK_STATE_COMPLETED"}}},
+        ),
+    )
+
+
+def _message_stream(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
+    return (
+        200,
+        {"Content-Type": "text/event-stream"},
+        _sse({"message": {"role": "ROLE_AGENT", "parts": [{"text": "Direct stream answer"}]}}),
+    )
+
+
+def _failed_stream(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
+    return (
+        200,
+        {"Content-Type": "text/event-stream"},
+        _sse(
+            {"task": {"id": "task-stream-2", "status": {"state": "TASK_STATE_WORKING"}}},
+            {
+                "statusUpdate": {
+                    "taskId": "task-stream-2",
+                    "status": {
+                        "state": "TASK_STATE_FAILED",
+                        "message": {"role": "ROLE_AGENT", "parts": [{"text": "Stream failed"}]},
+                    },
+                }
+            },
+        ),
+    )
+
+
+def _sse(*events: dict[str, Any]) -> str:
+    return "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+
+
 def _config(
     url: str,
     *,
     headers: dict[str, str] | None = None,
     version: str = "1.0",
+    streaming: bool = False,
 ):
     return load_swarm_config(
         {
@@ -146,6 +234,7 @@ def _config(
                         "headers": headers or {},
                         "version": version,
                         "accepted_output_modes": ["text/plain"],
+                        "streaming": streaming,
                     },
                 }
             },

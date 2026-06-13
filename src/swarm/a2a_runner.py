@@ -26,12 +26,20 @@ class A2ARequestConfig:
     timeout_seconds: float | None = None
     version: str = "1.0"
     accepted_output_modes: list[str] = field(default_factory=lambda: ["text/plain"])
+    streaming: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class _A2AResponse:
     status: int
     body: str
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _A2AStreamResponse:
+    status: int
+    events: list[dict[str, Any]]
     headers: dict[str, str] = field(default_factory=dict)
 
 
@@ -74,7 +82,7 @@ class A2ARunner:
             message=f"Started {self.descriptor.id}",
             metadata={"role": spec.role, "kind": self.descriptor.kind, "transport": "a2a-http-json"},
         )
-        result = await self._send_message(spec=spec, ctx=ctx)
+        result, stream_events = await self._send_message(spec=spec, ctx=ctx)
         finished = AgentEvent(
             type="runner.finished",
             run_id=ctx.run_id,
@@ -82,12 +90,20 @@ class A2ARunner:
             message=result.summary,
             metadata={"status": result.status, "confidence": result.confidence, "transport": "a2a-http-json"},
         )
-        return A2ARunHandle(events=[started, finished], result=result)
+        return A2ARunHandle(events=[started, *stream_events, finished], result=result)
 
-    async def _send_message(self, *, spec: AgentSpec, ctx: RunContext) -> AgentResult:
+    async def _send_message(self, *, spec: AgentSpec, ctx: RunContext) -> tuple[AgentResult, list[AgentEvent]]:
         timeout = spec.limits.timeout_seconds or self.request.timeout_seconds or 30.0
         payload = _payload_for_a2a(spec=spec, ctx=ctx, runner_id=self.descriptor.id, request=self.request)
         try:
+            if self.request.streaming:
+                stream_response = await asyncio.to_thread(
+                    _perform_stream_request,
+                    request=self.request,
+                    payload=payload,
+                    timeout=timeout,
+                )
+                return _result_from_stream_response(response=stream_response, runner_id=self.descriptor.id, run_id=ctx.run_id)
             response = await asyncio.to_thread(
                 _perform_request,
                 request=self.request,
@@ -96,31 +112,43 @@ class A2ARunner:
             )
         except urllib.error.HTTPError as error:
             body = _read_error_body(error)
-            return AgentResult(
-                status="failed",
-                summary=body or str(error),
-                metadata={"error_kind": "a2a_http_status_error", "runner_id": self.descriptor.id, "http_status": error.code},
+            return (
+                AgentResult(
+                    status="failed",
+                    summary=body or str(error),
+                    metadata={"error_kind": "a2a_http_status_error", "runner_id": self.descriptor.id, "http_status": error.code},
+                ),
+                [],
             )
         except (TimeoutError, socket.timeout) as error:
-            return AgentResult(
-                status="failed",
-                summary=f"A2A runner timed out after {timeout} seconds.",
-                metadata={"error_kind": "a2a_timeout", "runner_id": self.descriptor.id, "error": str(error)},
+            return (
+                AgentResult(
+                    status="failed",
+                    summary=f"A2A runner timed out after {timeout} seconds.",
+                    metadata={"error_kind": "a2a_timeout", "runner_id": self.descriptor.id, "error": str(error)},
+                ),
+                [],
             )
         except urllib.error.URLError as error:
             reason = getattr(error, "reason", error)
-            return AgentResult(
-                status="failed",
-                summary=str(reason),
-                metadata={"error_kind": "a2a_request_error", "runner_id": self.descriptor.id},
+            return (
+                AgentResult(
+                    status="failed",
+                    summary=str(reason),
+                    metadata={"error_kind": "a2a_request_error", "runner_id": self.descriptor.id},
+                ),
+                [],
             )
         except Exception as error:  # noqa: BLE001
-            return AgentResult(
-                status="failed",
-                summary=str(error),
-                metadata={"error_kind": "a2a_request_error", "runner_id": self.descriptor.id},
+            return (
+                AgentResult(
+                    status="failed",
+                    summary=str(error),
+                    metadata={"error_kind": "a2a_request_error", "runner_id": self.descriptor.id},
+                ),
+                [],
             )
-        return _result_from_response(response=response, runner_id=self.descriptor.id)
+        return _result_from_response(response=response, runner_id=self.descriptor.id), []
 
 
 def build_a2a_registry(config: SwarmConfig) -> RunnerRegistry:
@@ -152,12 +180,14 @@ def _request_from_metadata(metadata: dict[str, Any]) -> A2ARequestConfig:
         accepted_modes = [str(item) for item in accepted]
     else:
         raise ValueError("a2a accepted_output_modes must be a string or list")
+    streaming = bool(metadata.get("streaming") or metadata.get("stream"))
     return A2ARequestConfig(
-        url=_message_send_url(raw_url),
+        url=_message_stream_url(raw_url) if streaming else _message_send_url(raw_url),
         headers={str(key): str(value) for key, value in raw_headers.items()},
         timeout_seconds=float(timeout) if timeout is not None else None,
         version=str(metadata.get("version") or "1.0"),
         accepted_output_modes=accepted_modes,
+        streaming=streaming,
     )
 
 
@@ -204,6 +234,24 @@ def _perform_request(*, request: A2ARequestConfig, payload: dict[str, Any], time
         return _A2AResponse(
             status=int(response.status),
             body=response_body,
+            headers={str(key): str(value) for key, value in response.headers.items()},
+        )
+
+
+def _perform_stream_request(*, request: A2ARequestConfig, payload: dict[str, Any], timeout: float) -> _A2AStreamResponse:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Content-Type": "application/a2a+json",
+        "Accept": "text/event-stream",
+        "A2A-Version": request.version,
+        **request.headers,
+    }
+    req = urllib.request.Request(request.url, data=body, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310 - URL is user-configured A2A endpoint.
+        events = list(_iter_sse_events(response))
+        return _A2AStreamResponse(
+            status=int(response.status),
+            events=events,
             headers={str(key): str(value) for key, value in response.headers.items()},
         )
 
@@ -268,6 +316,101 @@ def _result_from_response(*, response: _A2AResponse, runner_id: str) -> AgentRes
     return AgentResult(status="completed", summary=str(decoded), metadata=metadata)
 
 
+def _result_from_stream_response(*, response: _A2AStreamResponse, runner_id: str, run_id: str) -> tuple[AgentResult, list[AgentEvent]]:
+    stream_events: list[AgentEvent] = []
+    summary_chunks: list[str] = []
+    evidence: list[str] = []
+    latest_state = ""
+    task_id = None
+    latest_task: dict[str, Any] | None = None
+    direct_message: dict[str, Any] | None = None
+
+    for index, raw_event in enumerate(response.events):
+        event = _unwrap_stream_event(raw_event)
+        kind = _stream_event_kind(event)
+        if kind == "task":
+            task = event.get("task") if isinstance(event.get("task"), dict) else event
+            latest_task = task
+            task_id = task.get("id") or task_id
+            status = task.get("status") if isinstance(task.get("status"), dict) else {}
+            latest_state = str(status.get("state") or latest_state)
+            text = _summary_from_task(task)
+            if text:
+                summary_chunks.append(text)
+            evidence.extend(_artifact_names(task))
+        elif kind == "message":
+            direct_message = event.get("message") if isinstance(event.get("message"), dict) else event
+            text = _summary_from_message(direct_message)
+            if text:
+                summary_chunks.append(text)
+        elif kind == "statusUpdate":
+            update = event.get("statusUpdate") if isinstance(event.get("statusUpdate"), dict) else event
+            task_id = update.get("taskId") or update.get("task_id") or task_id
+            status = update.get("status") if isinstance(update.get("status"), dict) else {}
+            latest_state = str(status.get("state") or latest_state)
+            message_text = _summary_from_message(status.get("message"))
+            if message_text:
+                summary_chunks.append(message_text)
+        elif kind == "artifactUpdate":
+            update = event.get("artifactUpdate") if isinstance(event.get("artifactUpdate"), dict) else event
+            task_id = update.get("taskId") or update.get("task_id") or task_id
+            artifact = update.get("artifact") if isinstance(update.get("artifact"), dict) else {}
+            artifact_text = _text_from_parts(artifact.get("parts"))
+            if artifact_text:
+                summary_chunks.append(artifact_text)
+            artifact_name = artifact.get("name") or artifact.get("artifactId") or artifact.get("artifact_id")
+            if artifact_name:
+                evidence.append(str(artifact_name))
+        stream_events.append(
+            AgentEvent(
+                type=f"a2a.stream.{kind}",
+                run_id=run_id,
+                runner_id=runner_id,
+                message=_stream_event_message(kind=kind, event=event),
+                metadata={
+                    "transport": "a2a-http-json",
+                    "streaming": True,
+                    "event_index": index,
+                    "event_kind": kind,
+                    **_stream_event_metadata(event),
+                },
+            )
+        )
+
+    metadata: dict[str, Any] = {
+        "runner_id": runner_id,
+        "http_status": response.status,
+        "response_format": "a2a-sse",
+        "a2a_stream_events": len(response.events),
+        "streaming": True,
+    }
+    if task_id:
+        metadata["a2a_task_id"] = task_id
+    if latest_state:
+        metadata["a2a_task_state"] = latest_state
+
+    if direct_message and not latest_task and not latest_state:
+        return (
+            AgentResult(
+                status="completed",
+                summary=_summary_from_message(direct_message) or "A2A stream message response.",
+                metadata=metadata,
+            ),
+            stream_events,
+        )
+
+    summary = _dedupe_join(summary_chunks) or (latest_state if latest_state else "A2A stream completed.")
+    return (
+        AgentResult(
+            status=_status_from_task_state(latest_state),
+            summary=summary,
+            evidence=_dedupe(evidence),
+            metadata=metadata,
+        ),
+        stream_events,
+    )
+
+
 def _status_from_task_state(state: str) -> str:
     normalized = state.upper()
     if normalized.endswith("COMPLETED") or normalized == "COMPLETED":
@@ -320,6 +463,123 @@ def _artifact_names(task: dict[str, Any]) -> list[str]:
     return names
 
 
+def _iter_sse_events(response: Any):
+    data_lines: list[str] = []
+    while True:
+        raw_line = response.readline()
+        if raw_line == b"":
+            break
+        line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+        if line == "":
+            yield from _decode_sse_data(data_lines)
+            data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        field, separator, value = line.partition(":")
+        if not separator:
+            continue
+        if value.startswith(" "):
+            value = value[1:]
+        if field == "data":
+            data_lines.append(value)
+    yield from _decode_sse_data(data_lines)
+
+
+def _decode_sse_data(data_lines: list[str]):
+    if not data_lines:
+        return
+    data = "\n".join(data_lines).strip()
+    if not data or data == "[DONE]":
+        return
+    try:
+        decoded = json.loads(data)
+    except json.JSONDecodeError:
+        yield {"text": data}
+        return
+    if isinstance(decoded, dict):
+        yield decoded
+    else:
+        yield {"data": decoded}
+
+
+def _unwrap_stream_event(event: dict[str, Any]) -> dict[str, Any]:
+    result = event.get("result")
+    if isinstance(result, dict):
+        return result
+    return event
+
+
+def _stream_event_kind(event: dict[str, Any]) -> str:
+    if isinstance(event.get("task"), dict):
+        return "task"
+    if isinstance(event.get("message"), dict):
+        return "message"
+    if isinstance(event.get("statusUpdate"), dict) or event.get("kind") == "status-update":
+        return "statusUpdate"
+    if isinstance(event.get("artifactUpdate"), dict) or event.get("kind") == "artifact-update":
+        return "artifactUpdate"
+    if event.get("id") and isinstance(event.get("status"), dict):
+        return "task"
+    return "event"
+
+
+def _stream_event_message(*, kind: str, event: dict[str, Any]) -> str:
+    if kind == "message":
+        message = event.get("message") if isinstance(event.get("message"), dict) else event
+        return _summary_from_message(message)
+    if kind == "statusUpdate":
+        update = event.get("statusUpdate") if isinstance(event.get("statusUpdate"), dict) else event
+        status = update.get("status") if isinstance(update.get("status"), dict) else {}
+        return str(status.get("state") or "status update")
+    if kind == "artifactUpdate":
+        update = event.get("artifactUpdate") if isinstance(event.get("artifactUpdate"), dict) else event
+        artifact = update.get("artifact") if isinstance(update.get("artifact"), dict) else {}
+        return str(artifact.get("name") or artifact.get("artifactId") or artifact.get("artifact_id") or "artifact update")
+    if kind == "task":
+        task = event.get("task") if isinstance(event.get("task"), dict) else event
+        status = task.get("status") if isinstance(task.get("status"), dict) else {}
+        return str(status.get("state") or task.get("id") or "task update")
+    return "stream event"
+
+
+def _stream_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    task = event.get("task") if isinstance(event.get("task"), dict) else event if event.get("id") else {}
+    if isinstance(task, dict) and task.get("id"):
+        metadata["a2a_task_id"] = task.get("id")
+    if isinstance(task, dict) and isinstance(task.get("status"), dict) and task["status"].get("state"):
+        metadata["a2a_task_state"] = task["status"].get("state")
+    status_update = event.get("statusUpdate") if isinstance(event.get("statusUpdate"), dict) else None
+    if status_update:
+        metadata["a2a_task_id"] = status_update.get("taskId") or status_update.get("task_id")
+        status = status_update.get("status") if isinstance(status_update.get("status"), dict) else {}
+        if status.get("state"):
+            metadata["a2a_task_state"] = status.get("state")
+    artifact_update = event.get("artifactUpdate") if isinstance(event.get("artifactUpdate"), dict) else None
+    if artifact_update:
+        metadata["a2a_task_id"] = artifact_update.get("taskId") or artifact_update.get("task_id")
+        artifact = artifact_update.get("artifact") if isinstance(artifact_update.get("artifact"), dict) else {}
+        artifact_name = artifact.get("name") or artifact.get("artifactId") or artifact.get("artifact_id")
+        if artifact_name:
+            metadata["a2a_artifact"] = artifact_name
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    selected: list[str] = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            selected.append(item)
+    return selected
+
+
+def _dedupe_join(items: list[str]) -> str:
+    return "\n".join(_dedupe([item.strip() for item in items if item.strip()]))
+
+
 def _message_send_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     path = parsed.path or "/"
@@ -327,6 +587,19 @@ def _message_send_url(url: str) -> str:
         return url
     base_path = path.rstrip("/")
     next_path = f"{base_path}/message:send" if base_path else "/message:send"
+    return urllib.parse.urlunparse(parsed._replace(path=next_path))
+
+
+def _message_stream_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path or "/"
+    if path.rstrip("/").endswith("/message:stream"):
+        return url
+    if path.rstrip("/").endswith("/message:send"):
+        next_path = path.rstrip("/")[: -len("message:send")] + "message:stream"
+        return urllib.parse.urlunparse(parsed._replace(path=next_path))
+    base_path = path.rstrip("/")
+    next_path = f"{base_path}/message:stream" if base_path else "/message:stream"
     return urllib.parse.urlunparse(parsed._replace(path=next_path))
 
 
