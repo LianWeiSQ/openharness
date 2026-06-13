@@ -17,6 +17,7 @@ import json
 import os
 import re
 import socket
+import asyncio
 from typing import Any, Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -28,12 +29,15 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject
     BeautifulSoup = None
     BeautifulSoupComment = None
 
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 
 MAX_RESPONSE_SIZE = 5 * 1024 * 1024
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 120
+MAX_SCRAPE_ITEMS = 100
+DEFAULT_SCRAPE_LIMIT = 20
+SCRAPLING_STEALTHY_ENV = "OPENAGENT_WEB_SCRAPE_ENABLE_STEALTHY"
 EXA_MCP_URL = "https://mcp.exa.ai/mcp"
 EXA_MCP_URL_ENV = "OPENAGENT_WEB_SEARCH_EXA_MCP_URL"
 EXA_API_KEY_ENV = "OPENAGENT_WEB_SEARCH_EXA_API_KEY"
@@ -96,6 +100,32 @@ class WebSearchParameters:
         default=None,
         metadata={"description": "限制返回给 LLM 的上下文字符数"},
     )
+
+
+@dataclass
+class WebScrapeParameters:
+    url: str = field(metadata={"description": "要抓取的 URL"})
+    mode: Literal["http", "dynamic", "stealthy"] = field(
+        default="http",
+        metadata={"description": "抓取模式：http、dynamic 或 stealthy"},
+    )
+    format: Literal["markdown", "text", "html"] = field(
+        default="markdown",
+        metadata={"description": "输出格式：markdown、text 或 html"},
+    )
+    selector: str | None = field(
+        default=None,
+        metadata={"description": "可选 CSS 或 XPath 选择器；为空时返回整页内容"},
+    )
+    selector_type: Literal["css", "xpath"] = field(
+        default="css",
+        metadata={"description": "选择器类型：css 或 xpath"},
+    )
+    limit: int = field(default=DEFAULT_SCRAPE_LIMIT, metadata={"description": "最多返回多少个匹配元素，最大 100"})
+    timeout: int | None = field(default=None, metadata={"description": "超时秒数，最大 120"})
+    adaptive: bool = field(default=False, metadata={"description": "是否启用 Scrapling adaptive selector 配置"})
+    network_idle: bool = field(default=True, metadata={"description": "浏览器模式下是否等待网络空闲"})
+    headless: bool = field(default=True, metadata={"description": "浏览器模式下是否使用 headless"})
 
 
 class WebRequestError(RuntimeError):
@@ -171,6 +201,10 @@ def _request_headers(*, accept: str, content_type: str | None = None) -> dict[st
     if content_type:
         headers["Content-Type"] = content_type
     return headers
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _exa_mcp_url() -> str:
@@ -405,6 +439,84 @@ def _html_to_markdown(html: str) -> str:
     )
     markdown = re.sub(r"\n{3,}", "\n\n", markdown)
     return markdown.strip()
+
+
+def _load_scrapling_fetchers() -> tuple[Any, Any, Any]:
+    try:
+        from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
+    except ImportError as error:
+        raise WebRequestError(
+            "Scrapling fetchers are not installed. Install the optional dependency with `pip install 'openagent-core[scraping]'` or `pip install 'scrapling[fetchers]'`.",
+        ) from error
+    return Fetcher, DynamicFetcher, StealthyFetcher
+
+
+def _page_body_text(page: Any) -> str:
+    body = getattr(page, "body", None)
+    if isinstance(body, bytes):
+        encoding = getattr(page, "encoding", None) or "utf-8"
+        return body.decode(str(encoding), errors="replace")
+    if isinstance(body, str):
+        return body
+    return str(page)
+
+
+def _response_content_type(page: Any) -> str:
+    headers = getattr(page, "headers", None)
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if str(key).lower() == "content-type":
+                return str(value).split(";", 1)[0].strip() or "text/html"
+    return "text/html"
+
+
+def _format_scraped_content(raw: str, *, output_format: Literal["markdown", "text", "html"], content_type: str = "text/html") -> str:
+    if output_format == "html":
+        return raw
+    if content_type == "text/html" or "<" in raw and ">" in raw:
+        return _html_to_markdown(raw) if output_format == "markdown" else _html_to_text(raw)
+    return raw
+
+
+def _selector_values(page: Any, *, selector: str, selector_type: Literal["css", "xpath"], limit: int) -> list[str]:
+    query = page.css if selector_type == "css" else page.xpath
+    selected = query(selector)
+    if hasattr(selected, "getall") and callable(selected.getall):
+        values = selected.getall()
+    elif isinstance(selected, list):
+        values = []
+        for item in selected:
+            get = getattr(item, "get", None)
+            values.append(get() if callable(get) else str(item))
+    else:
+        get = getattr(selected, "get", None)
+        values = [get() if callable(get) else str(selected)]
+    return [str(value) for value in values[:limit] if str(value).strip()]
+
+
+def _scrape_with_scrapling(args: WebScrapeParameters, *, url: str, timeout: int) -> Any:
+    if args.mode == "stealthy" and not _env_truthy(SCRAPLING_STEALTHY_ENV):
+        raise WebRequestError(
+            f"Stealthy scraping is disabled. Set {SCRAPLING_STEALTHY_ENV}=true to enable this high-risk mode."
+        )
+
+    Fetcher, DynamicFetcher, StealthyFetcher = _load_scrapling_fetchers()
+    selector_config = {"adaptive": bool(args.adaptive)}
+    common_kwargs: dict[str, Any] = {
+        "timeout": timeout,
+        "selector_config": selector_config,
+    }
+    if args.mode == "http":
+        return Fetcher.get(url, **common_kwargs)
+
+    browser_kwargs = {
+        **common_kwargs,
+        "headless": bool(args.headless),
+        "network_idle": bool(args.network_idle),
+    }
+    if args.mode == "dynamic":
+        return DynamicFetcher.fetch(url, **browser_kwargs)
+    return StealthyFetcher.fetch(url, **browser_kwargs)
 
 
 def _normalized_lines(text: str) -> list[str]:
@@ -787,9 +899,117 @@ async def web_search_tool(args: WebSearchParameters, _ctx: ToolContext) -> ToolO
     )
 
 
+async def web_scrape_tool(args: WebScrapeParameters, _ctx: ToolContext) -> ToolOutput:
+    url = _normalize_url(args.url)
+    timeout = _timeout_seconds(args.timeout)
+    limit = max(1, min(int(args.limit or DEFAULT_SCRAPE_LIMIT), MAX_SCRAPE_ITEMS))
+
+    metadata: dict[str, Any] = {
+        "backend": "scrapling",
+        "url": url,
+        "mode": args.mode,
+        "format": args.format,
+        "selector": args.selector or "",
+        "selector_type": args.selector_type,
+        "limit": limit,
+        "timeout": timeout,
+        "adaptive": bool(args.adaptive),
+        "network_idle": bool(args.network_idle),
+        "headless": bool(args.headless),
+    }
+
+    try:
+        page = await asyncio.to_thread(_scrape_with_scrapling, args, url=url, timeout=timeout)
+    except WebRequestError as error:
+        message = str(error)
+        error_kind = "web_scrape_dependency_missing" if "not installed" in message.lower() else "web_scrape_error"
+        if "stealthy scraping is disabled" in message.lower():
+            error_kind = "web_scrape_stealthy_disabled"
+        metadata["error_kind"] = error_kind
+        metadata["returned_count"] = 0
+        metadata["count"] = 0
+        return ToolOutput(
+            title=f"{url} scrape failed",
+            output="",
+            error=message,
+            metadata=metadata,
+        )
+    except Exception as error:  # noqa: BLE001
+        metadata["error_kind"] = "web_scrape_error"
+        metadata["returned_count"] = 0
+        metadata["count"] = 0
+        return ToolOutput(
+            title=f"{url} scrape failed",
+            output="",
+            error=str(error),
+            metadata=metadata,
+        )
+
+    status = getattr(page, "status", None)
+    if isinstance(status, int):
+        metadata["status_code"] = status
+    reason = getattr(page, "reason", None)
+    if isinstance(reason, str) and reason:
+        metadata["reason"] = reason
+
+    content_type = _response_content_type(page)
+    metadata["content_type"] = content_type
+
+    if args.selector:
+        raw_values = _selector_values(page, selector=args.selector, selector_type=args.selector_type, limit=limit)
+        values = [_format_scraped_content(value, output_format=args.format, content_type=content_type) for value in raw_values]
+        output = "\n\n".join(value for value in values if value.strip())
+        returned_count = len(values)
+        metadata["selection_limited"] = len(raw_values) >= limit
+    else:
+        raw = _page_body_text(page)
+        output = _format_scraped_content(raw, output_format=args.format, content_type=content_type)
+        returned_count = 1 if output.strip() else 0
+        metadata["selection_limited"] = False
+
+    metadata["returned_count"] = returned_count
+    metadata["count"] = returned_count
+    preview_source = _html_to_text(output) if args.format == "html" else output
+    preview = _block_preview_from_text(preview_source)
+    if preview:
+        metadata["preview"] = preview
+        metadata["preview_strategy"] = "scrapling_extract"
+
+    return ToolOutput(
+        title=f"{url} scraped with Scrapling",
+        output=output,
+        metadata=metadata,
+    )
+
+
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="web_fetch", parameters=WebFetchParameters, description_md="web_fetch.md", group="web", dangerous=True, execution_scope="agnostic")(web_fetch_tool)
-    registry.define_tool(tool_id="web_search", parameters=WebSearchParameters, description_md="web_search.md", group="web", dangerous=True, execution_scope="agnostic")(web_search_tool)
+    registry.define_tool(
+        tool_id="web_fetch",
+        parameters=WebFetchParameters,
+        description_md="web_fetch.md",
+        group="web",
+        dangerous=True,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="web", external_io=True, max_parallelism=4),
+    )(web_fetch_tool)
+    registry.define_tool(
+        tool_id="web_search",
+        parameters=WebSearchParameters,
+        description_md="web_search.md",
+        group="web",
+        dangerous=True,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="web", external_io=True, max_parallelism=3),
+    )(web_search_tool)
+    registry.define_tool(
+        tool_id="web_scrape",
+        parameters=WebScrapeParameters,
+        description_md="web_scrape.md",
+        group="web",
+        dangerous=True,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="web", external_io=True, max_parallelism=2),
+    )(web_scrape_tool)
 
 
 __all__ = ["register"]

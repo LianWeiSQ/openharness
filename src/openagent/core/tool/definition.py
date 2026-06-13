@@ -16,6 +16,83 @@ from types import UnionType
 from typing import Any, Awaitable, Callable, Literal, Union, get_args, get_origin, get_type_hints
 
 ToolExecutionScope = Literal["workspace", "agnostic", "host_only"]
+ToolConcurrency = Literal["safe", "exclusive", "keyed", "unknown"]
+
+
+@dataclass(frozen=True)
+class ToolExecutionSchema:
+    """Runtime-only scheduling semantics for a tool.
+
+    This schema is separate from the model-facing parameter schema. It tells the
+    Agent runtime whether a tool can be batched or must be executed exclusively.
+    """
+
+    read_only: bool = False
+    mutates_workspace: bool = False
+    mutates_session: bool = False
+    mutates_external: bool = False
+    external_io: bool = False
+    requires_user_interaction: bool = False
+    concurrency: ToolConcurrency = "unknown"
+    batch_group: str = "default"
+    conflict_key_template: str | None = None
+    max_parallelism: int | None = None
+
+    @classmethod
+    def readonly(
+        cls,
+        *,
+        batch_group: str,
+        external_io: bool = False,
+        mutates_session: bool = False,
+        max_parallelism: int | None = None,
+    ) -> "ToolExecutionSchema":
+        return cls(
+            read_only=True,
+            mutates_session=mutates_session,
+            external_io=external_io,
+            concurrency="safe",
+            batch_group=batch_group,
+            max_parallelism=max_parallelism,
+        )
+
+    @classmethod
+    def exclusive(
+        cls,
+        *,
+        batch_group: str,
+        mutates_workspace: bool = False,
+        mutates_session: bool = False,
+        mutates_external: bool = False,
+        external_io: bool = False,
+        requires_user_interaction: bool = False,
+        conflict_key_template: str | None = None,
+    ) -> "ToolExecutionSchema":
+        return cls(
+            read_only=False,
+            mutates_workspace=mutates_workspace,
+            mutates_session=mutates_session,
+            mutates_external=mutates_external,
+            external_io=external_io,
+            requires_user_interaction=requires_user_interaction,
+            concurrency="exclusive",
+            batch_group=batch_group,
+            conflict_key_template=conflict_key_template,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "read_only": self.read_only,
+            "mutates_workspace": self.mutates_workspace,
+            "mutates_session": self.mutates_session,
+            "mutates_external": self.mutates_external,
+            "external_io": self.external_io,
+            "requires_user_interaction": self.requires_user_interaction,
+            "concurrency": self.concurrency,
+            "batch_group": self.batch_group,
+            "conflict_key_template": self.conflict_key_template,
+            "max_parallelism": self.max_parallelism,
+        }
 
 
 @dataclass
@@ -61,6 +138,7 @@ class ToolDefinition:
     group: str = "default"
     schema_override: dict[str, Any] | None = None
     execution_scope: ToolExecutionScope = "host_only"
+    execution_schema: ToolExecutionSchema = field(default_factory=ToolExecutionSchema)
 
     def parameters_schema(self) -> dict[str, Any]:
         """Return an OpenAI-compatible JSON schema for the tool parameters."""

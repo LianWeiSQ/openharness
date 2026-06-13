@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ...question import QuestionInfo, QuestionManager, QuestionOption, QuestionRejectedError
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 
 
@@ -102,7 +102,19 @@ def _questions_to_metadata(questions: list[QuestionInfo]) -> list[dict[str, obje
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="question", parameters=QuestionParameters, description_md="question.md", group="interactive", dangerous=False, execution_scope="agnostic")(
+    registry.define_tool(
+        tool_id="question",
+        parameters=QuestionParameters,
+        description_md="question.md",
+        group="interactive",
+        dangerous=False,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.exclusive(
+            batch_group="interactive",
+            mutates_session=True,
+            requires_user_interaction=True,
+        ),
+    )(
         question_tool
     )
 

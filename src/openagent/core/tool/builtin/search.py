@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 from ..utils import resolve_optional_path
 
@@ -70,7 +70,15 @@ async def code_search_tool(args: CodeSearchParameters, ctx: ToolContext) -> Tool
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="code_search", parameters=CodeSearchParameters, description_md="code_search.md", group="search", dangerous=False, execution_scope="host_only")(
+    registry.define_tool(
+        tool_id="code_search",
+        parameters=CodeSearchParameters,
+        description_md="code_search.md",
+        group="search",
+        dangerous=False,
+        execution_scope="host_only",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="workspace-read"),
+    )(
         code_search_tool
     )
 

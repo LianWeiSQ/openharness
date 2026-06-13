@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...execution.runtime import LocalWorkspaceRuntime
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 
 DEFAULT_TIMEOUT_MS = 120_000
@@ -99,6 +99,13 @@ def register(registry: ToolRegistry) -> None:
         group="shell",
         dangerous=True,
         execution_scope="workspace",
+        execution_schema=ToolExecutionSchema.exclusive(
+            batch_group="shell",
+            mutates_workspace=True,
+            mutates_session=True,
+            mutates_external=True,
+            external_io=True,
+        ),
     )(bash_tool)
 
 

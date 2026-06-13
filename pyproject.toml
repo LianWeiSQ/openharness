@@ -23,6 +23,9 @@ sandbox = ["opensandbox"]
 langfuse = [
     "langfuse>=4,<5",
 ]
+scraping = [
+    "scrapling[fetchers]>=0.4.9",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

@@ -34,16 +34,19 @@ OpenAgent is a hackable Python runtime for building tool-using, observable agent
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
+source scripts/local/use-sub2api.sh
 PYTHONPATH=src python src/examples/run_query_only.py "你好，介绍一下 OpenAgent"
 ```
 
-The smoke demo falls back to a local scripted model when no model key is configured.
+The smoke demo requires a real OpenAI-compatible model. For local development, `scripts/local/use-sub2api.sh`
+starts from the local Sub2API gateway, validates the API key/model through `/v1/models`, and sets `gpt-5.5`
+as the default model. It does not configure Codex itself.
 
 OpenAI-compatible gateway:
 
 ```bash
 export OPENAI_API_KEY="your-api-key"
-export OPENAI_BASE_URL="http://localhost:8080"
+export OPENAI_BASE_URL="http://localhost:8080/v1"
 export OPENAI_MODEL="your-model"
 export OPENAI_WIRE_API="responses"
 ```

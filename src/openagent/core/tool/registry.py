@@ -20,7 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from .definition import ToolContext, ToolDefinition, ToolExecutionScope, ToolOutput
+from .definition import ToolContext, ToolDefinition, ToolExecutionSchema, ToolExecutionScope, ToolOutput
 
 T = TypeVar("T")
 
@@ -105,6 +105,7 @@ class ToolRegistry:
         group: str = "default",
         dangerous: bool = False,
         execution_scope: ToolExecutionScope = "host_only",
+        execution_schema: ToolExecutionSchema | None = None,
     ) -> Callable[[Callable[[Any, ToolContext], Any]], Callable[[Any, ToolContext], Any]]:
         """
         装饰器：定义一个工具，并注册到当前 registry。
@@ -124,6 +125,7 @@ class ToolRegistry:
                 dangerous=dangerous,
                 group=group,
                 execution_scope=execution_scope,
+                execution_schema=execution_schema or ToolExecutionSchema(),
             )
             self._tools[tool.id] = tool
             return execute_func
@@ -191,4 +193,3 @@ def _import_module_from_path(path: Path):
 
 
 __all__ = ["ToolRegistry", "ToolDefinition", "ToolContext", "ToolOutput"]
-

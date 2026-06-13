@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ...skill import SkillRegistry
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 
 
@@ -144,6 +144,7 @@ def register(registry: ToolRegistry) -> None:
         group="skill",
         dangerous=False,
         execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="skill"),
     )(skill_tool)
 
 

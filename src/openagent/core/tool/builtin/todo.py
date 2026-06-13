@@ -8,7 +8,7 @@ from typing import Literal
 
 from ...session.session import Session
 from ...session.todo import TodoItem, todos_from_payload, todos_to_dicts
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 
 TodoStatus = Literal["pending", "in_progress", "completed", "cancelled"]
@@ -107,10 +107,30 @@ async def todo_read_tool(_args: TodoReadParameters, ctx: ToolContext) -> ToolOut
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="todowrite", parameters=TodoWriteParameters, description_md="todowrite.md", group="todo", dangerous=False, execution_scope="agnostic")(
+    registry.define_tool(
+        tool_id="todowrite",
+        parameters=TodoWriteParameters,
+        description_md="todowrite.md",
+        group="todo",
+        dangerous=False,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.exclusive(
+            batch_group="todo",
+            mutates_session=True,
+            conflict_key_template="session:todos",
+        ),
+    )(
         todo_write_tool
     )
-    registry.define_tool(tool_id="todoread", parameters=TodoReadParameters, description_md="todoread.md", group="todo", dangerous=False, execution_scope="agnostic")(
+    registry.define_tool(
+        tool_id="todoread",
+        parameters=TodoReadParameters,
+        description_md="todoread.md",
+        group="todo",
+        dangerous=False,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="todo"),
+    )(
         todo_read_tool
     )
 

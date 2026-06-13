@@ -24,6 +24,7 @@ Not complete:
 - CLI and Web Console are outside the public core;
 - ContextPackBuilder is trace-first, not yet the only model-message assembly path;
 - step budgeting is static, so complex tasks can spend too many turns on confirmation and push required closeout artifacts past the final tool-enabled step.
+- tool execution now has runtime scheduling metadata and a batch planner, but AgentLoop still executes tool calls serially.
 
 ## Next Milestones
 
@@ -31,9 +32,10 @@ Not complete:
 2. Extend `SessionStore` from P0 file ledger to resume/crash recovery, pause state, compaction boundaries, and long-term indexes.
 3. Add Langfuse-backed eval iteration: dataset sync, experiment grouping, and dashboard runbooks.
 4. Add adaptive step budgeting: task-complexity defaults, remaining-step warnings, closeout protection for required artifacts, and read-only-loop detection. Track this work in [Step Budget Optimization](step-budget-optimization.md).
-5. Split optional dependencies for MCP, sandbox, and benchmark integrations.
-6. Publish reproducible benchmark reports for Terminal-Bench and Harbor.
-7. Rebuild CLI/Web Console as a separate demo package with sanitized config templates.
+5. Connect the tool batch planner to AgentLoop trace, then enable read-only concurrent execution. Track this work in [Tool Optimization](tool-optimization.md).
+6. Split optional dependencies for MCP, sandbox, and benchmark integrations.
+7. Publish reproducible benchmark reports for Terminal-Bench and Harbor.
+8. Rebuild CLI/Web Console as a separate demo package with sanitized config templates.
 
 ## Documentation Policy
 

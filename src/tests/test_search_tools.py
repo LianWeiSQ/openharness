@@ -24,6 +24,11 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
         toolkit.load_builtin()
         return toolkit
 
+    async def test_web_scrape_tool_is_registered(self) -> None:
+        toolkit = self._make_toolkit()
+        names = {tool.name for tool in toolkit.get_all_tools()}
+        self.assertIn("web_scrape", names)
+
     async def test_code_search_hits_and_miss(self) -> None:
         root = self._make_temp_root()
         try:
@@ -188,6 +193,146 @@ class SearchToolTests(unittest.IsolatedAsyncioTestCase):
                     "contextMaxCharacters": 10000,
                 },
             )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_scrape_returns_dependency_error_when_scrapling_missing(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            with patch.object(
+                web_tools,
+                "_load_scrapling_fetchers",
+                side_effect=web_tools.WebRequestError("Scrapling is not installed."),
+            ):
+                res = await toolkit.execute(
+                    name="web_scrape",
+                    input={"url": "https://example.com"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNotNone(res.error)
+            self.assertEqual(res.metadata["backend"], "scrapling")
+            self.assertEqual(res.metadata["error_kind"], "web_scrape_dependency_missing")
+            self.assertEqual(res.metadata["returned_count"], 0)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_scrape_uses_scrapling_http_selector(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            calls: list[tuple[str, dict[str, object]]] = []
+
+            class FakeSelection:
+                def getall(self) -> list[str]:
+                    return ["<h1>Primary title</h1>", "<h1>Secondary title</h1>"]
+
+            class FakePage:
+                status = 200
+                reason = "OK"
+                headers = {"content-type": "text/html; charset=utf-8"}
+                body = b"<html><body><h1>Primary title</h1></body></html>"
+                encoding = "utf-8"
+
+                def css(self, selector: str) -> FakeSelection:
+                    calls.append((selector, {}))
+                    return FakeSelection()
+
+            class FakeFetcher:
+                @staticmethod
+                def get(url: str, **kwargs: object) -> FakePage:
+                    calls.append((url, kwargs))
+                    return FakePage()
+
+            class FakeDynamicFetcher:
+                @staticmethod
+                def fetch(url: str, **kwargs: object) -> FakePage:
+                    raise AssertionError("dynamic fetcher should not be used")
+
+            class FakeStealthyFetcher:
+                @staticmethod
+                def fetch(url: str, **kwargs: object) -> FakePage:
+                    raise AssertionError("stealthy fetcher should not be used")
+
+            with patch.object(web_tools, "_load_scrapling_fetchers", return_value=(FakeFetcher, FakeDynamicFetcher, FakeStealthyFetcher)):
+                res = await toolkit.execute(
+                    name="web_scrape",
+                    input={"url": "https://example.com", "selector": "h1", "format": "text", "limit": 1},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertIn("Primary title", res.output)
+            self.assertEqual(res.metadata["backend"], "scrapling")
+            self.assertEqual(res.metadata["mode"], "http")
+            self.assertEqual(res.metadata["selector"], "h1")
+            self.assertEqual(res.metadata["returned_count"], 1)
+            self.assertEqual(res.metadata["status_code"], 200)
+            self.assertEqual(calls[0][0], "https://example.com")
+            self.assertEqual(calls[0][1]["selector_config"], {"adaptive": False})
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_scrape_dynamic_mode_uses_dynamic_fetcher(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            calls: list[tuple[str, dict[str, object]]] = []
+
+            class FakePage:
+                status = 200
+                headers = {"content-type": "text/html"}
+                body = b"<main><p>Rendered content</p></main>"
+                encoding = "utf-8"
+
+            class FakeFetcher:
+                @staticmethod
+                def get(url: str, **kwargs: object) -> FakePage:
+                    raise AssertionError("http fetcher should not be used")
+
+            class FakeDynamicFetcher:
+                @staticmethod
+                def fetch(url: str, **kwargs: object) -> FakePage:
+                    calls.append((url, kwargs))
+                    return FakePage()
+
+            class FakeStealthyFetcher:
+                @staticmethod
+                def fetch(url: str, **kwargs: object) -> FakePage:
+                    raise AssertionError("stealthy fetcher should not be used")
+
+            with patch.object(web_tools, "_load_scrapling_fetchers", return_value=(FakeFetcher, FakeDynamicFetcher, FakeStealthyFetcher)):
+                res = await toolkit.execute(
+                    name="web_scrape",
+                    input={"url": "https://example.com/app", "mode": "dynamic", "adaptive": True, "network_idle": False},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNone(res.error)
+            self.assertIn("Rendered content", res.output)
+            self.assertEqual(res.metadata["mode"], "dynamic")
+            self.assertEqual(calls[0][0], "https://example.com/app")
+            self.assertEqual(calls[0][1]["selector_config"], {"adaptive": True})
+            self.assertFalse(calls[0][1]["network_idle"])
+            self.assertTrue(calls[0][1]["headless"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    async def test_web_scrape_stealthy_mode_is_disabled_by_default(self) -> None:
+        root = self._make_temp_root()
+        try:
+            toolkit = self._make_toolkit()
+            with patch.dict(web_tools.os.environ, {web_tools.SCRAPLING_STEALTHY_ENV: ""}, clear=False):
+                res = await toolkit.execute(
+                    name="web_scrape",
+                    input={"url": "https://example.com", "mode": "stealthy"},
+                    context={"session_root": str(root)},
+                )
+
+            self.assertIsNotNone(res.error)
+            self.assertEqual(res.metadata["error_kind"], "web_scrape_stealthy_disabled")
+            self.assertIn(web_tools.SCRAPLING_STEALTHY_ENV, res.error or "")
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

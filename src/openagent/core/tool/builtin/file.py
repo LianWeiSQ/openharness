@@ -20,7 +20,7 @@ from pathlib import Path
 
 from ...file_context import record_file_read
 from ...session.session import Session
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 from ..utils import ensure_within_root, resolve_optional_path, resolve_path_in_root
 
@@ -661,12 +661,68 @@ async def ls_tool(args: LsParameters, ctx: ToolContext) -> ToolOutput:
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="read", parameters=ReadParameters, description_md="read.md", group="file", dangerous=False, execution_scope="workspace")(read_tool)
-    registry.define_tool(tool_id="write", parameters=WriteParameters, description_md="write.md", group="file", dangerous=True, execution_scope="workspace")(write_tool)
-    registry.define_tool(tool_id="edit", parameters=EditParameters, description_md="edit.md", group="file", dangerous=True, execution_scope="workspace")(edit_tool)
-    registry.define_tool(tool_id="glob", parameters=GlobParameters, description_md="glob.md", group="file", dangerous=False, execution_scope="workspace")(glob_tool)
-    registry.define_tool(tool_id="grep", parameters=GrepParameters, description_md="grep.md", group="file", dangerous=False, execution_scope="workspace")(grep_tool)
-    registry.define_tool(tool_id="ls", parameters=LsParameters, description_md="ls.md", group="file", dangerous=False, execution_scope="workspace")(ls_tool)
+    workspace_read = ToolExecutionSchema.readonly(batch_group="workspace-read")
+    file_read = ToolExecutionSchema.readonly(batch_group="workspace-read", mutates_session=True)
+    file_write = ToolExecutionSchema.exclusive(
+        batch_group="workspace-write",
+        mutates_workspace=True,
+        mutates_session=True,
+        conflict_key_template="file:{file_path}",
+    )
+    registry.define_tool(
+        tool_id="read",
+        parameters=ReadParameters,
+        description_md="read.md",
+        group="file",
+        dangerous=False,
+        execution_scope="workspace",
+        execution_schema=file_read,
+    )(read_tool)
+    registry.define_tool(
+        tool_id="write",
+        parameters=WriteParameters,
+        description_md="write.md",
+        group="file",
+        dangerous=True,
+        execution_scope="workspace",
+        execution_schema=file_write,
+    )(write_tool)
+    registry.define_tool(
+        tool_id="edit",
+        parameters=EditParameters,
+        description_md="edit.md",
+        group="file",
+        dangerous=True,
+        execution_scope="workspace",
+        execution_schema=file_write,
+    )(edit_tool)
+    registry.define_tool(
+        tool_id="glob",
+        parameters=GlobParameters,
+        description_md="glob.md",
+        group="file",
+        dangerous=False,
+        execution_scope="workspace",
+        execution_schema=workspace_read,
+    )(glob_tool)
+    registry.define_tool(
+        tool_id="grep",
+        parameters=GrepParameters,
+        description_md="grep.md",
+        group="file",
+        dangerous=False,
+        execution_scope="workspace",
+        execution_schema=workspace_read,
+    )(grep_tool)
+    registry.define_tool(
+        tool_id="ls",
+        parameters=LsParameters,
+        description_md="ls.md",
+        group="file",
+        dangerous=False,
+        execution_scope="workspace",
+        execution_schema=workspace_read,
+    )(ls_tool)
 
 
 __all__ = ["register"]

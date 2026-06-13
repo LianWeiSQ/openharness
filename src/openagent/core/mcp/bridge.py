@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from ..tool.definition import ToolContext, ToolDefinition, ToolOutput
+from ..tool.definition import ToolContext, ToolDefinition, ToolExecutionSchema, ToolOutput
 from ..tool.registry import ToolRegistry
 from .runtime import RemoteMcpManager
 from .types import RemoteMcpToolDescriptor
@@ -57,5 +57,9 @@ def _build_tool_definition(
         group=group,
         schema_override=descriptor.input_schema,
         execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema(
+            external_io=True,
+            concurrency="unknown",
+            batch_group=group,
+        ),
     )
-

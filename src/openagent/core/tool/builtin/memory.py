@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ....adapter.memory_adapter import MemoryAdapter
-from ..definition import ToolContext, ToolOutput
+from ..definition import ToolContext, ToolExecutionSchema, ToolOutput
 from ..registry import ToolRegistry
 
 
@@ -43,13 +43,32 @@ async def memory_write_tool(args: MemoryWriteParameters, ctx: ToolContext) -> To
 
 
 def register(registry: ToolRegistry) -> None:
-    registry.define_tool(tool_id="memory_read", parameters=MemoryReadParameters, description_md="memory_read.md", group="memory", dangerous=False, execution_scope="agnostic")(
+    registry.define_tool(
+        tool_id="memory_read",
+        parameters=MemoryReadParameters,
+        description_md="memory_read.md",
+        group="memory",
+        dangerous=False,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="memory"),
+    )(
         memory_read_tool
     )
-    registry.define_tool(tool_id="memory_write", parameters=MemoryWriteParameters, description_md="memory_write.md", group="memory", dangerous=False, execution_scope="agnostic")(
+    registry.define_tool(
+        tool_id="memory_write",
+        parameters=MemoryWriteParameters,
+        description_md="memory_write.md",
+        group="memory",
+        dangerous=False,
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.exclusive(
+            batch_group="memory",
+            mutates_session=True,
+            conflict_key_template="memory:{key}",
+        ),
+    )(
         memory_write_tool
     )
 
 
 __all__ = ["register"]
-

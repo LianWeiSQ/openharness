@@ -14,7 +14,8 @@ from typing import Any, get_args, get_origin, get_type_hints
 from ..context_budget import ContextBudgetConfigError, load_context_budget_options
 from ..id import new_id
 from ..types import ToolCall, ToolResult, ToolSchema
-from .definition import ToolContext, ToolDefinition, ToolExecutionScope, ToolOutput
+from .batching import ToolBatch, ToolBatchPlanner
+from .definition import ToolContext, ToolDefinition, ToolExecutionSchema, ToolExecutionScope, ToolOutput
 from .middleware import Middleware
 from .registry import ToolRegistry
 from .truncation import Truncate
@@ -54,6 +55,7 @@ class ToolkitAdapter:
         group: str = "default",
         dangerous: bool = False,
         execution_scope: ToolExecutionScope = "host_only",
+        execution_schema: ToolExecutionSchema | None = None,
     ) -> None:
         """Deprecated compatibility shim for legacy function-style tools."""
 
@@ -81,6 +83,7 @@ class ToolkitAdapter:
             group=group,
             schema_override=schema or {"type": "object", "properties": {}},
             execution_scope=execution_scope,
+            execution_schema=execution_schema or ToolExecutionSchema(),
         )
         self.registry.register(tool)
 
@@ -114,6 +117,9 @@ class ToolkitAdapter:
         allowed = set(groups)
         return [tool for tool in self.get_all_tools(execution_mode=execution_mode) if tool.group in allowed]
 
+    def plan_tool_batches(self, calls: list[ToolCall] | tuple[ToolCall, ...]) -> list[ToolBatch]:
+        return ToolBatchPlanner(self.registry).plan(calls)
+
     async def execute(
         self,
         *,
@@ -143,6 +149,7 @@ class ToolkitAdapter:
             "group": tool.group,
             "dangerous": tool.dangerous,
             "execution_scope": tool.execution_scope,
+            "execution_schema": tool.execution_schema.as_dict(),
         }
 
         async def _invoke(tool_call: ToolCall) -> ToolResult:

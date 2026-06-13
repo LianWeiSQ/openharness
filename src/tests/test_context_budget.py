@@ -228,6 +228,7 @@ class ContextBudgetTests(unittest.TestCase):
                 "logging": {"level": "DEBUG"},
                 "trace": {"exporters": {"langfuse": {"enabled": True}}},
                 "runtime_warnings": {"enabled": True},
+                "session_store": {"root_dir": ".openagent/sessions"},
                 "reasoning_effort": "low",
             },
         )

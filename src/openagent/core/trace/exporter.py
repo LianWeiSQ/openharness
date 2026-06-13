@@ -191,13 +191,16 @@ class LangfuseTraceExporter:
         if not key or key in self._observations:
             return
         trace_context = {"trace_id": self.langfuse_trace_id}
-        parent_id = self._parent_observation_id(event, key)
+        parent_key = self._parent_observation_key(event, key)
+        parent_id = self._observation_ids.get(parent_key or "")
         if parent_id:
             trace_context["parent_span_id"] = parent_id
         observation = self._start_client_observation(
             name=self._observation_name(event),
             as_type=self._observation_type(event),
             trace_context=trace_context,
+            parent_observation=self._observations.get(parent_key or ""),
+            trace_name=self._trace_name() if key == "run" else None,
         )
         self._update_observation(observation, event, terminal=False)
         self._observations[key] = observation
@@ -224,13 +227,15 @@ class LangfuseTraceExporter:
 
     def _record_instant_observation(self, event: dict[str, Any]) -> None:
         trace_context = {"trace_id": self.langfuse_trace_id}
-        parent_id = self._observation_ids.get(self._active_step_key or "") or self._observation_ids.get("run")
+        parent_key = self._active_step_key or "run"
+        parent_id = self._observation_ids.get(parent_key) or self._observation_ids.get("run")
         if parent_id:
             trace_context["parent_span_id"] = parent_id
         observation = self._start_client_observation(
             name=self._observation_name(event),
             as_type=self._observation_type(event),
             trace_context=trace_context,
+            parent_observation=self._observations.get(parent_key) or self._observations.get("run"),
         )
         self._update_observation(observation, event, terminal=True)
         _safe_end(observation)
@@ -246,14 +251,57 @@ class LangfuseTraceExporter:
                 trace_context={"trace_id": self.langfuse_trace_id},
             )
 
-    def _start_client_observation(self, *, name: str, as_type: str, trace_context: dict[str, str]) -> Any:
+    def _start_client_observation(
+        self,
+        *,
+        name: str,
+        as_type: str,
+        trace_context: dict[str, str],
+        parent_observation: Any | None = None,
+        trace_name: str | None = None,
+    ) -> Any:
         method = getattr(self.client, "start_observation", None)
         if not callable(method):
             raise RuntimeError("Langfuse client does not support start_observation().")
+        parent_span = getattr(parent_observation, "_otel_span", None)
+        if parent_span is not None:
+            try:
+                from opentelemetry import trace as otel_trace_api
+
+                with otel_trace_api.use_span(parent_span):
+                    return method(name=name, as_type=as_type)
+            except Exception:
+                pass
+        if trace_name:
+            try:
+                from langfuse import propagate_attributes
+            except ImportError:
+                propagate_attributes = None
+        else:
+            propagate_attributes = None
+        if trace_name and propagate_attributes is not None:
+            with propagate_attributes(
+                session_id=_ascii_trace_value(self.run.session_id),
+                metadata={
+                    "openagent_run_id": _ascii_trace_value(self.run.run_id),
+                    "openagent_trace_id": _ascii_trace_value(self.run.trace_id),
+                    "openagent_agent_name": _ascii_trace_value(self.run.agent_name),
+                    "environment": _ascii_trace_value(self.environment),
+                },
+                tags=[_ascii_trace_value(tag) for tag in self.tags],
+                trace_name=_ascii_trace_value(trace_name),
+            ):
+                return self._invoke_start_observation(method=method, name=name, as_type=as_type, trace_context=trace_context)
+        return self._invoke_start_observation(method=method, name=name, as_type=as_type, trace_context=trace_context)
+
+    def _invoke_start_observation(self, *, method: Any, name: str, as_type: str, trace_context: dict[str, str]) -> Any:
         try:
             return method(name=name, as_type=as_type, trace_context=trace_context)
         except TypeError:
             return method(name=name, as_type=as_type)
+
+    def _trace_name(self) -> str:
+        return f"openagent.run {self.run.agent_name}"
 
     def _update_observation(self, observation: Any, event: dict[str, Any], *, terminal: bool) -> None:
         attrs = event.get("attributes") if isinstance(event.get("attributes"), dict) else {}
@@ -320,14 +368,14 @@ class LangfuseTraceExporter:
             return True
         return not any(marker in lowered for marker in CONTENT_KEY_MARKERS)
 
-    def _parent_observation_id(self, event: dict[str, Any], key: str) -> str | None:
+    def _parent_observation_key(self, event: dict[str, Any], key: str) -> str | None:
         parent_span_id = str(event.get("parent_span_id") or "").strip()
         if parent_span_id:
-            return self._observation_ids.get(f"span:{parent_span_id}")
+            return f"span:{parent_span_id}"
         if key.startswith("step:"):
-            return self._observation_ids.get("run")
+            return "run"
         if key.startswith("span:"):
-            return self._observation_ids.get(self._active_step_key or "") or self._observation_ids.get("run")
+            return self._active_step_key or "run"
         return None
 
     def _observation_key(self, event: dict[str, Any]) -> str | None:
@@ -386,6 +434,14 @@ def _started_event_name(name: str) -> str:
 
 def _normalize_attr_key(key: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in key).strip("_") or "value"
+
+
+def _ascii_trace_value(value: Any, *, default: str = "openagent", max_chars: int = 200) -> str:
+    text = str(value or "").encode("ascii", errors="ignore").decode("ascii")
+    text = " ".join(text.split())
+    if not text:
+        text = default
+    return text[:max_chars]
 
 
 def _int_value(value: Any) -> int | None:
