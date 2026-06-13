@@ -28,6 +28,7 @@ from .protocol import (
 )
 from .registry import RunnerRegistry
 from .runtime import SwarmRunResult, SwarmRuntime
+from .state import FileSwarmStateStore, SwarmStateStore, swarm_run_result_to_dict
 from .subprocess_runner import SubprocessCommand, SubprocessRunner, build_subprocess_registry
 from .trace import SwarmTraceEvent, SwarmTraceRecorder
 
@@ -40,6 +41,7 @@ __all__ = [
     "AgentSpec",
     "ArtifactRef",
     "FanoutBudget",
+    "FileSwarmStateStore",
     "FunctionRunner",
     "HttpRequestConfig",
     "HttpRunner",
@@ -58,6 +60,7 @@ __all__ = [
     "SwarmLangfuseExporter",
     "SwarmRunResult",
     "SwarmRuntime",
+    "SwarmStateStore",
     "SwarmTraceEvent",
     "SwarmTraceRecorder",
     "TaskConfig",
@@ -73,4 +76,5 @@ __all__ = [
     "apply_merge_plan",
     "prepare_worker_workspace",
     "resolve_worker_workspace_config",
+    "swarm_run_result_to_dict",
 ]

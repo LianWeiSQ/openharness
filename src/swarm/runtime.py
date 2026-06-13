@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+from typing import Any
 from uuid import uuid4
 
 from .config import TaskConfig
@@ -25,9 +26,10 @@ class SwarmRunResult:
 
 
 class SwarmRuntime:
-    def __init__(self, *, registry: RunnerRegistry, fanout_budget: FanoutBudget | None = None) -> None:
+    def __init__(self, *, registry: RunnerRegistry, fanout_budget: FanoutBudget | None = None, state_store: Any | None = None) -> None:
         self.registry = registry
         self.fanout_budget = (fanout_budget or FanoutBudget()).normalized()
+        self.state_store = state_store
 
     async def run_task(self, task: TaskConfig, *, run_id: str | None = None) -> SwarmRunResult:
         resolved_run_id = run_id or f"swarm_{uuid4().hex}"
@@ -166,7 +168,7 @@ class SwarmRuntime:
                 "warnings": list(warnings),
             },
         )
-        return SwarmRunResult(
+        result = SwarmRunResult(
             task_id=task.id,
             status=aggregate_status,
             summary=_aggregate_summary(results),
@@ -175,6 +177,8 @@ class SwarmRuntime:
             warnings=warnings,
             trace_events=trace.events,
         )
+        self._save_state(result=result, run_id=resolved_run_id)
+        return result
 
     def _resolve_runners(self, task: TaskConfig) -> list[str]:
         if task.runner_ids:
@@ -186,6 +190,13 @@ class SwarmRuntime:
         if not matches:
             raise KeyError(f'no runner matches role "{task.role}"')
         return [runner.descriptor.id for runner in matches]
+
+    def _save_state(self, *, result: SwarmRunResult, run_id: str) -> None:
+        if self.state_store is None:
+            return
+        save_run = getattr(self.state_store, "save_run", None)
+        if callable(save_run):
+            save_run(result, run_id=run_id)
 
 
 def _aggregate_status(results: dict[str, AgentResult]) -> str:

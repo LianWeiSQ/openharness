@@ -15,6 +15,7 @@ Implemented in this slice:
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
 - opt-in worker workspace isolation for future write-capable workers;
 - merge-back conflict review for isolated worker outputs;
+- optional file-backed persistent swarm run state;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
 - tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
@@ -22,7 +23,7 @@ Implemented in this slice:
 Not implemented yet:
 
 - A2A runners;
-- persistent team state.
+- resumable coordinator policy.
 
 ## Configuration Shape
 
@@ -140,6 +141,28 @@ The merge planner reports:
 `apply_merge_plan(...)` skips conflicts by default. It applies only non-conflicting changes unless `include_conflicts=True` is explicitly set.
 
 If a worker output needs merge-back review, keep isolation `cleanup` disabled until the merge plan has been built and reviewed.
+
+## Persistent State
+
+Swarm run persistence is optional. A file store records a durable snapshot after `run_task(...)` completes.
+
+```python
+from swarm import FileSwarmStateStore, SwarmRuntime
+
+store = FileSwarmStateStore(".swarm/runs")
+runtime = SwarmRuntime(registry=registry, state_store=store)
+result = await runtime.run_task(task, run_id="run-123")
+
+saved = store.load_run("run-123")
+```
+
+Each run writes:
+
+- `state.latest.json`: task id, run id, status, summary, usage, warnings, runner results, and trace events;
+- `runner-results.json`: runner result payloads for fast coordinator review;
+- `trace.jsonl`: local swarm trace events, one JSON object per line.
+
+This is a state receipt, not full resume semantics. A later coordinator policy can use this data to resume, retry, or approve merge plans.
 
 ## Subprocess Runner
 
@@ -380,5 +403,5 @@ Missing fields fail the runner result instead of silently executing a vague task
 ## Next Slices
 
 1. Add A2A runners for remote non-OpenAgent agents.
-2. Add persistent team state and resume for long swarm jobs.
+2. Add resumable coordinator policy for long swarm jobs.
 3. Add a higher-level coordinator policy for approving merge plans.
