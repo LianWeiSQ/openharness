@@ -16,11 +16,11 @@ Implemented:
 - JSONL-friendly observability and eval/replay support;
 - optional Langfuse trace export and eval score export.
 - P0 file-backed session ledger for run/message/step/tool events, latest session state, and eval report references.
-- Decoupled swarm/function kernel with function runners, subprocess runners, HTTP runners, A2A runners, YAML config, multi-runner dispatch, an OpenAgent runner adapter, local trace lineage, optional Langfuse export, opt-in worker workspace isolation, merge-back conflict review, and file-backed run state receipts.
+- Decoupled swarm/function kernel with function runners, subprocess runners, HTTP runners, A2A runners, YAML config, multi-runner dispatch, an OpenAgent runner adapter, local trace lineage, optional Langfuse export, opt-in worker workspace isolation, merge-back conflict review, file-backed run state receipts, and resumable coordinator policy.
 
 Not complete:
 
-- resume/crash recovery, compaction-boundary restore, and database-backed session history are not complete;
+- full OpenAgent session crash recovery, compaction-boundary restore, and database-backed session history are not complete;
 - memory tools are process-local, not cross-session long-term memory;
 - CLI and Web Console are outside the public core;
 - ContextPackBuilder is trace-first, not yet the only model-message assembly path;

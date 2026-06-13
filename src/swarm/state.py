@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
-from .protocol import AgentResult, ArtifactRef, Usage
+from .protocol import AgentResult, ArtifactRef, RunStatus, Usage, usage_from_mapping
 
 
 class SwarmStateStore(Protocol):
@@ -56,6 +56,19 @@ def swarm_run_result_to_dict(*, result: Any, run_id: str) -> dict[str, Any]:
     }
 
 
+def agent_result_from_dict(value: dict[str, Any]) -> AgentResult:
+    return AgentResult(
+        status=_run_status(value.get("status")),
+        summary=str(value.get("summary") or ""),
+        evidence=[str(item) for item in value.get("evidence") or []],
+        open_questions=[str(item) for item in value.get("open_questions") or []],
+        confidence=float(value.get("confidence") or 0.0),
+        artifacts=[_artifact_from_dict(item) for item in value.get("artifacts") or [] if isinstance(item, dict)],
+        usage=usage_from_mapping(value.get("usage") if isinstance(value.get("usage"), dict) else None),
+        metadata=_json_safe(value.get("metadata") if isinstance(value.get("metadata"), dict) else {}),
+    )
+
+
 def _agent_result_to_dict(result: AgentResult) -> dict[str, Any]:
     return {
         "status": result.status,
@@ -67,6 +80,22 @@ def _agent_result_to_dict(result: AgentResult) -> dict[str, Any]:
         "usage": _usage_to_dict(result.usage),
         "metadata": _json_safe(result.metadata),
     }
+
+
+def _artifact_from_dict(value: dict[str, Any]) -> ArtifactRef:
+    return ArtifactRef(
+        kind=str(value.get("kind") or ""),
+        uri=str(value.get("uri") or ""),
+        title=str(value.get("title") or ""),
+        metadata=_json_safe(value.get("metadata") if isinstance(value.get("metadata"), dict) else {}),
+    )
+
+
+def _run_status(value: Any) -> RunStatus:
+    status = str(value or "")
+    if status in {"completed", "partial", "failed", "cancelled"}:
+        return cast(RunStatus, status)
+    return "failed"
 
 
 def _usage_to_dict(usage: Usage | None) -> dict[str, Any]:
@@ -129,4 +158,4 @@ def _safe_name(value: str) -> str:
     return cleaned or "run"
 
 
-__all__ = ["FileSwarmStateStore", "SwarmStateStore", "swarm_run_result_to_dict"]
+__all__ = ["FileSwarmStateStore", "SwarmStateStore", "agent_result_from_dict", "swarm_run_result_to_dict"]

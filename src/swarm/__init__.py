@@ -28,8 +28,9 @@ from .protocol import (
     Usage,
 )
 from .registry import RunnerRegistry
+from .resume import SwarmResumePolicy, resolve_resume_policy, resume_policy_from_value
 from .runtime import SwarmRunResult, SwarmRuntime
-from .state import FileSwarmStateStore, SwarmStateStore, swarm_run_result_to_dict
+from .state import FileSwarmStateStore, SwarmStateStore, agent_result_from_dict, swarm_run_result_to_dict
 from .subprocess_runner import SubprocessCommand, SubprocessRunner, build_subprocess_registry
 from .trace import SwarmTraceEvent, SwarmTraceRecorder
 
@@ -61,6 +62,7 @@ __all__ = [
     "SwarmConfig",
     "SwarmLangfuseExportResult",
     "SwarmLangfuseExporter",
+    "SwarmResumePolicy",
     "SwarmRunResult",
     "SwarmRuntime",
     "SwarmStateStore",
@@ -70,6 +72,7 @@ __all__ = [
     "Usage",
     "WorkerWorkspace",
     "WorkerWorkspaceConfig",
+    "agent_result_from_dict",
     "build_a2a_registry",
     "build_function_registry",
     "build_http_registry",
@@ -79,6 +82,8 @@ __all__ = [
     "load_swarm_config",
     "apply_merge_plan",
     "prepare_worker_workspace",
+    "resolve_resume_policy",
     "resolve_worker_workspace_config",
+    "resume_policy_from_value",
     "swarm_run_result_to_dict",
 ]

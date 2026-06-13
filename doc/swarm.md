@@ -17,13 +17,15 @@ Implemented in this slice:
 - opt-in worker workspace isolation for future write-capable workers;
 - merge-back conflict review for isolated worker outputs;
 - optional file-backed persistent swarm run state;
+- resumable coordinator policy for reusing completed runner results;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
 - tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
 
 Not implemented yet:
 
-- resumable coordinator policy.
+- coordinator-level merge approval policy;
+- streaming A2A support.
 
 ## Configuration Shape
 
@@ -162,7 +164,47 @@ Each run writes:
 - `runner-results.json`: runner result payloads for fast coordinator review;
 - `trace.jsonl`: local swarm trace events, one JSON object per line.
 
-This is a state receipt, not full resume semantics. A later coordinator policy can use this data to resume, retry, or approve merge plans.
+## Resume Policy
+
+Resume is opt-in. By default, `SwarmRuntime.run_task(...)` reruns all selected runners even if a previous state file exists for the same `run_id`.
+
+Enable resume at runtime:
+
+```python
+runtime = SwarmRuntime(
+    registry=registry,
+    state_store=store,
+    resume_policy=True,
+)
+```
+
+Or enable it from task metadata in YAML:
+
+```yaml
+tasks:
+  compare:
+    role: research
+    objective: Compare two implementations.
+    context: Repo paths are provided in inputs.
+    boundaries: Read-only.
+    output_schema:
+      type: object
+    runner_ids: [researcher, reviewer]
+    metadata:
+      resume:
+        enabled: true
+        reuse_statuses: [completed]
+        strict_task_id: true
+```
+
+When resume is enabled, the coordinator loads `state.latest.json` for the requested `run_id`. If the saved `task_id` matches the current task, reusable runner results are restored before dispatch. By default only `completed` results are reused; missing, failed, partial, and cancelled results are rerun. Reused results are marked with:
+
+```python
+result.results["researcher"].metadata["resumed"]
+result.results["researcher"].metadata["resumed_from_run_id"]
+```
+
+The run also records a `swarm.resume` trace event with reused and dispatched runner ids. The final state file is rewritten with the merged result set.
 
 ## Subprocess Runner
 
@@ -432,6 +474,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add resumable coordinator policy for long swarm jobs.
-2. Add a higher-level coordinator policy for approving merge plans.
-3. Add streaming A2A support for long-running remote agents.
+1. Add a higher-level coordinator policy for approving merge plans.
+2. Add streaming A2A support for long-running remote agents.
+3. Add resumable team adapters for multi-session worker handoff.

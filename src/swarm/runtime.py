@@ -11,6 +11,8 @@ from .config import TaskConfig
 from .isolation import WorkerWorkspace, prepare_worker_workspace, resolve_worker_workspace_config
 from .protocol import AgentResult, AgentSpec, FanoutBudget, RunContext, Usage
 from .registry import RunnerRegistry
+from .resume import SwarmResumePolicy, resolve_resume_policy, resume_policy_from_value
+from .state import agent_result_from_dict
 from .trace import SwarmTraceEvent, SwarmTraceRecorder
 
 
@@ -26,10 +28,18 @@ class SwarmRunResult:
 
 
 class SwarmRuntime:
-    def __init__(self, *, registry: RunnerRegistry, fanout_budget: FanoutBudget | None = None, state_store: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        registry: RunnerRegistry,
+        fanout_budget: FanoutBudget | None = None,
+        state_store: Any | None = None,
+        resume_policy: SwarmResumePolicy | bool | dict[str, Any] | None = None,
+    ) -> None:
         self.registry = registry
         self.fanout_budget = (fanout_budget or FanoutBudget()).normalized()
         self.state_store = state_store
+        self.resume_policy = resume_policy_from_value(resume_policy)
 
     async def run_task(self, task: TaskConfig, *, run_id: str | None = None) -> SwarmRunResult:
         resolved_run_id = run_id or f"swarm_{uuid4().hex}"
@@ -46,13 +56,45 @@ class SwarmRuntime:
             task_id=task.id,
             attributes={"role": task.role, "runner_ids": list(task.runner_ids)},
         )
-        runners = self._resolve_runners(task)
         warnings: list[str] = []
+        runners = self._resolve_runners(task)
         if len(runners) > self.fanout_budget.max_total_workers:
             warnings.append(
                 f"runner count {len(runners)} exceeds max_total_workers {self.fanout_budget.max_total_workers}; truncating"
             )
             runners = runners[: self.fanout_budget.max_total_workers]
+
+        resume_policy = resolve_resume_policy(self.resume_policy, task.metadata)
+        resume_state, resume_warnings = self._load_resume_state(
+            run_id=resolved_run_id,
+            task_id=task.id,
+            policy=resume_policy,
+        )
+        warnings.extend(resume_warnings)
+        reused_results = _reused_results_from_state(
+            state=resume_state,
+            runner_ids=runners,
+            run_id=resolved_run_id,
+            policy=resume_policy,
+        )
+        if reused_results:
+            warnings.append(f"resumed {len(reused_results)} runner result(s) from previous state")
+        runners_to_dispatch = [runner_id for runner_id in runners if runner_id not in reused_results]
+        if resume_policy.enabled:
+            trace.record_event(
+                name="swarm.resume",
+                kind="resume",
+                parent_span_id=task_span_id,
+                task_id=task.id,
+                attributes={
+                    "enabled": True,
+                    "loaded_state": bool(resume_state),
+                    "reused_runner_ids": list(reused_results),
+                    "dispatch_runner_ids": list(runners_to_dispatch),
+                    "reuse_statuses": list(resume_policy.reuse_statuses),
+                    "strict_task_id": resume_policy.strict_task_id,
+                },
+            )
 
         semaphore = asyncio.Semaphore(self.fanout_budget.max_concurrent)
         context = RunContext(run_id=resolved_run_id, parent_span_id=task_span_id, budget=self.fanout_budget)
@@ -144,8 +186,13 @@ class SwarmRuntime:
                 if workspace is not None:
                     workspace.cleanup_path()
 
-        pairs = await asyncio.gather(*(run_one(runner_id) for runner_id in runners))
-        results = {runner_id: result for runner_id, result in pairs}
+        pairs = await asyncio.gather(*(run_one(runner_id) for runner_id in runners_to_dispatch))
+        fresh_results = {runner_id: result for runner_id, result in pairs}
+        results = {
+            runner_id: reused_results[runner_id] if runner_id in reused_results else fresh_results[runner_id]
+            for runner_id in runners
+            if runner_id in reused_results or runner_id in fresh_results
+        }
         usage = Usage()
         for result in results.values():
             usage = usage.plus(result.usage)
@@ -198,6 +245,33 @@ class SwarmRuntime:
         if callable(save_run):
             save_run(result, run_id=run_id)
 
+    def _load_resume_state(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        policy: SwarmResumePolicy,
+    ) -> tuple[dict[str, Any] | None, list[str]]:
+        if not policy.enabled or self.state_store is None:
+            return None, []
+        load_run = getattr(self.state_store, "load_run", None)
+        if not callable(load_run):
+            return None, ["resume requested but state_store does not support load_run"]
+        try:
+            state = load_run(run_id)
+        except FileNotFoundError:
+            return None, []
+        except Exception as error:  # noqa: BLE001
+            if policy.strict_load:
+                raise
+            return None, [f"resume state load failed: {error}"]
+        if not isinstance(state, dict):
+            return None, ["resume state payload was not a mapping"]
+        state_task_id = str(state.get("task_id") or "")
+        if policy.strict_task_id and state_task_id and state_task_id != task_id:
+            return None, [f'resume state task_id "{state_task_id}" did not match "{task_id}"; running fresh']
+        return state, []
+
 
 def _aggregate_status(results: dict[str, AgentResult]) -> str:
     if not results:
@@ -210,6 +284,40 @@ def _aggregate_status(results: dict[str, AgentResult]) -> str:
     if "cancelled" in statuses:
         return "cancelled"
     return "failed"
+
+
+def _reused_results_from_state(
+    *,
+    state: dict[str, Any] | None,
+    runner_ids: list[str],
+    run_id: str,
+    policy: SwarmResumePolicy,
+) -> dict[str, AgentResult]:
+    if not state or not policy.enabled:
+        return {}
+    raw_results = state.get("results")
+    if not isinstance(raw_results, dict):
+        return {}
+
+    reused: dict[str, AgentResult] = {}
+    for runner_id in runner_ids:
+        raw_result = raw_results.get(runner_id)
+        if not isinstance(raw_result, dict):
+            continue
+        status = str(raw_result.get("status") or "")
+        if not policy.should_reuse(status):
+            continue
+        result = agent_result_from_dict(raw_result)
+        reused[runner_id] = replace(
+            result,
+            metadata={
+                **dict(result.metadata or {}),
+                "resumed": True,
+                "resumed_from_run_id": run_id,
+                "resume_reused_status": result.status,
+            },
+        )
+    return reused
 
 
 def _aggregate_summary(results: dict[str, AgentResult]) -> str:
