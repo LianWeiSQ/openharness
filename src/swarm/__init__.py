@@ -9,6 +9,7 @@ Python functions, subprocess agents, HTTP agents, or any other runner.
 
 from .config import RunnerConfig, SwarmConfig, TaskConfig, load_swarm_config
 from .a2a_runner import A2ARequestConfig, A2ARunner, build_a2a_registry
+from .coordinator import SwarmCoordinatorOptions, SwarmCoordinatorReceipt, SwarmCoordinatorResult, run_swarm_coordinator
 from .function_runner import FunctionRunner, build_function_registry
 from .http_runner import HttpRequestConfig, HttpRunner, build_http_registry
 from .isolation import WorkerWorkspace, WorkerWorkspaceConfig, prepare_worker_workspace, resolve_worker_workspace_config
@@ -82,6 +83,9 @@ __all__ = [
     "SubprocessCommand",
     "SubprocessRunner",
     "SwarmConfig",
+    "SwarmCoordinatorOptions",
+    "SwarmCoordinatorReceipt",
+    "SwarmCoordinatorResult",
     "SwarmLangfuseExportResult",
     "SwarmLangfuseExporter",
     "SwarmResumePolicy",
@@ -113,6 +117,7 @@ __all__ = [
     "resolve_resume_policy",
     "resolve_worker_workspace_config",
     "resume_policy_from_value",
+    "run_swarm_coordinator",
     "swarm_run_result_to_dict",
     "task_for_team_handoff_resume",
     "team_handoff_from_dict",

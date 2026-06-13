@@ -20,6 +20,7 @@ Implemented in this slice:
 - optional file-backed persistent swarm run state;
 - resumable coordinator policy for reusing completed runner results;
 - team handoff manifests for carrying multi-runner progress across sessions;
+- combined coordinator workflow for run, handoff, merge approval, and optional apply receipts;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
 - tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
@@ -292,6 +293,49 @@ Each `team-handoff.json` records:
 - the resume reuse statuses that a follow-up run should use.
 
 `task_for_team_handoff_resume(...)` injects `metadata.resume.enabled=true` and the handoff metadata. By default it keeps the original runner list so `SwarmRuntime` can reuse completed results and rerun pending ones with the same `run_id`. Pass `pending_only=True` when a coordinator wants a narrower follow-up task that targets only pending runners.
+
+## Coordinator Workflow
+
+`run_swarm_coordinator(...)` combines the durable pieces into one workflow:
+
+1. optionally load an existing `team-handoff.json`;
+2. derive a resume task for the same `run_id`;
+3. run `SwarmRuntime.run_task(...)`;
+4. save a fresh team handoff;
+5. optionally build a merge plan;
+6. evaluate merge approval;
+7. optionally apply approved changes.
+
+```python
+from swarm import (
+    FileTeamHandoffStore,
+    SwarmCoordinatorOptions,
+    run_swarm_coordinator,
+)
+
+result = await run_swarm_coordinator(
+    runtime=runtime,
+    task=task,
+    team_handoff_store=FileTeamHandoffStore(".swarm/runs"),
+    options=SwarmCoordinatorOptions(
+        run_id="run-123",
+        merge_enabled=True,
+        apply_approved_merge=False,
+    ),
+)
+
+receipt = result.receipt.as_dict()
+```
+
+The receipt records:
+
+- run id, task id, and aggregate run status;
+- whether a handoff was saved and whether pending runners remain;
+- reusable and pending runner ids;
+- merge decision, reason codes, change count, conflict count, and applied count;
+- warnings and diagnostics.
+
+By default the coordinator does not apply merge changes. Set `apply_approved_merge=True` to apply only when the merge approval decision is `approved`.
 
 ## Subprocess Runner
 
@@ -585,6 +629,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add a coordinator workflow that combines resume, team handoff, merge approval, and optional apply into one run receipt.
-2. Add A2A task subscription support for reconnecting to already-started remote tasks.
-3. Add CLI examples for running swarm configs from a file.
+1. Add A2A task subscription support for reconnecting to already-started remote tasks.
+2. Add CLI examples for running swarm configs from a file.
+3. Add richer coordinator receipts for Langfuse export and Web inspection.
