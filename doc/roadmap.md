@@ -16,6 +16,7 @@ Implemented:
 - JSONL-friendly observability and eval/replay support;
 - optional Langfuse trace export and eval score export.
 - P0 file-backed session ledger for run/message/step/tool events, latest session state, and eval report references.
+- P0 decoupled swarm/function kernel with function runners, YAML config, and multi-runner dispatch.
 
 Not complete:
 
@@ -25,6 +26,7 @@ Not complete:
 - ContextPackBuilder is trace-first, not yet the only model-message assembly path;
 - step budgeting is static, so complex tasks can spend too many turns on confirmation and push required closeout artifacts past the final tool-enabled step.
 - tool execution now has runtime scheduling metadata and a batch planner, but AgentLoop still executes tool calls serially.
+- the swarm kernel does not yet have OpenAgent, subprocess, HTTP/A2A, trace lineage, or persistent team adapters.
 
 ## Next Milestones
 
@@ -33,9 +35,10 @@ Not complete:
 3. Add Langfuse-backed eval iteration: dataset sync, experiment grouping, and dashboard runbooks.
 4. Add adaptive step budgeting: task-complexity defaults, remaining-step warnings, closeout protection for required artifacts, and read-only-loop detection. Track this work in [Step Budget Optimization](step-budget-optimization.md).
 5. Connect the tool batch planner to AgentLoop trace, then enable read-only concurrent execution. Track this work in [Tool Optimization](tool-optimization.md).
-6. Split optional dependencies for MCP, sandbox, and benchmark integrations.
-7. Publish reproducible benchmark reports for Terminal-Bench and Harbor.
-8. Rebuild CLI/Web Console as a separate demo package with sanitized config templates.
+6. Add OpenAgentRunner, trace lineage, and non-OpenAgent runners on top of the decoupled [Swarm Function Kernel](swarm.md).
+7. Split optional dependencies for MCP, sandbox, and benchmark integrations.
+8. Publish reproducible benchmark reports for Terminal-Bench and Harbor.
+9. Rebuild CLI/Web Console as a separate demo package with sanitized config templates.
 
 ## Documentation Policy
 

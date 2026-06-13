@@ -10,6 +10,7 @@ OpenAgent keeps the public docs intentionally small. Start with the README, then
 | [Roadmap](roadmap.md) | Current gaps and the next engineering milestones |
 | [Step Budget Optimization](step-budget-optimization.md) | Adaptive `max_steps`, closeout protection, and runtime warnings discovered from real traces |
 | [Tool Optimization](tool-optimization.md) | Tool execution schema, builtin tool classification, and batch scheduling roadmap |
+| [Swarm Function Kernel](swarm.md) | Decoupled function-mode swarm kernel, YAML config, and runner boundary |
 
 ## Maintainer Rule
 
