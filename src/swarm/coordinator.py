@@ -12,6 +12,24 @@ from .merge_policy import MergeApprovalDecision, MergeApprovalPolicy, evaluate_m
 from .runtime import SwarmRunResult, SwarmRuntime
 from .team import FileTeamHandoffStore, TeamHandoff, build_team_handoff, task_for_team_handoff_resume
 
+SUMMARY_PREVIEW_CHARS = 240
+SAFE_RUNNER_METADATA_KEYS = {
+    "a2a_stream_events",
+    "a2a_subscribed_task_id",
+    "a2a_task_id",
+    "a2a_task_state",
+    "error_kind",
+    "http_status",
+    "response_format",
+    "returncode",
+    "runner_id",
+    "stdout_format",
+    "workspace_cleanup",
+    "workspace_isolated",
+    "workspace_mode",
+}
+SAFE_RUNNER_METADATA_PREFIXES = ("workspace_",)
+
 
 @dataclass(frozen=True, slots=True)
 class SwarmCoordinatorOptions:
@@ -31,6 +49,14 @@ class SwarmCoordinatorReceipt:
     run_id: str
     task_id: str
     run_status: str
+    schema_version: int = 1
+    task_role: str = ""
+    runner_count: int = 0
+    runner_status_counts: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
+    trace_event_count: int = 0
+    trace_error_count: int = 0
+    runner_summaries: list[dict[str, Any]] = field(default_factory=list)
     handoff_saved: bool = False
     handoff_path: str | None = None
     handoff_has_pending: bool = False
@@ -47,9 +73,17 @@ class SwarmCoordinatorReceipt:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "schema_version": self.schema_version,
             "run_id": self.run_id,
             "task_id": self.task_id,
+            "task_role": self.task_role,
             "run_status": self.run_status,
+            "runner_count": self.runner_count,
+            "runner_status_counts": dict(self.runner_status_counts),
+            "usage": dict(self.usage),
+            "trace_event_count": self.trace_event_count,
+            "trace_error_count": self.trace_error_count,
+            "runner_summaries": [_json_safe(item) for item in self.runner_summaries],
             "handoff_saved": self.handoff_saved,
             "handoff_path": self.handoff_path,
             "handoff_has_pending": self.handoff_has_pending,
@@ -123,7 +157,14 @@ async def run_swarm_coordinator(
     receipt = SwarmCoordinatorReceipt(
         run_id=run_id,
         task_id=task.id,
+        task_role=task.role,
         run_status=run_result.status,
+        runner_count=len(run_result.results),
+        runner_status_counts=_runner_status_counts(run_result.results),
+        usage=_usage_to_dict(run_result.usage),
+        trace_event_count=len(run_result.trace_events),
+        trace_error_count=sum(1 for event in run_result.trace_events if getattr(event, "status", "") == "error"),
+        runner_summaries=_runner_summaries(run_result.results),
         handoff_saved=handoff_saved,
         handoff_path=handoff_path,
         handoff_has_pending=handoff.has_pending,
@@ -156,6 +197,83 @@ def _load_existing_handoff(store: FileTeamHandoffStore, run_id: str, diagnostics
     except Exception as error:  # noqa: BLE001
         diagnostics.append(f"team handoff load failed: {error}")
         return None
+
+
+def _runner_status_counts(results: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for result in results.values():
+        status = str(getattr(result, "status", "unknown") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _runner_summaries(results: dict[str, Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for runner_id, result in sorted(results.items()):
+        usage = getattr(result, "usage", None)
+        summaries.append(
+            {
+                "runner_id": str(runner_id),
+                "status": str(getattr(result, "status", "")),
+                "summary_preview": _preview(str(getattr(result, "summary", "") or "")),
+                "summary_chars": len(str(getattr(result, "summary", "") or "")),
+                "evidence_count": len(list(getattr(result, "evidence", []) or [])),
+                "open_question_count": len(list(getattr(result, "open_questions", []) or [])),
+                "artifact_count": len(list(getattr(result, "artifacts", []) or [])),
+                "confidence": float(getattr(result, "confidence", 0.0) or 0.0),
+                "usage": _usage_to_dict(usage),
+                "metadata": _safe_runner_metadata(dict(getattr(result, "metadata", {}) or {})),
+            }
+        )
+    return summaries
+
+
+def _usage_to_dict(usage: Any) -> dict[str, Any]:
+    return {
+        "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+        "cost": float(getattr(usage, "cost", 0.0) or 0.0),
+        "steps": int(getattr(usage, "steps", 0) or 0),
+        "latency_ms": int(getattr(usage, "latency_ms", 0) or 0),
+    }
+
+
+def _safe_runner_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in sorted(metadata.items()):
+        key_str = str(key)
+        if key_str in SAFE_RUNNER_METADATA_KEYS or key_str.startswith(SAFE_RUNNER_METADATA_PREFIXES):
+            safe[key_str] = _compact_json_safe(value)
+    return safe
+
+
+def _preview(value: str) -> str:
+    if len(value) <= SUMMARY_PREVIEW_CHARS:
+        return value
+    return value[: SUMMARY_PREVIEW_CHARS - 3].rstrip() + "..."
+
+
+def _compact_json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return _preview(value)
+    if isinstance(value, (list, tuple, set)):
+        return [_compact_json_safe(item) for item in list(value)[:10]]
+    if isinstance(value, dict):
+        return {str(key): _compact_json_safe(item) for key, item in list(value.items())[:20]}
+    return _preview(str(value))
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    return str(value)
 
 
 __all__ = [

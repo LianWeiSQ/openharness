@@ -13,6 +13,7 @@ from swarm import (
     RunContext,
     SwarmCoordinatorOptions,
     SwarmRuntime,
+    Usage,
     build_function_registry,
     load_swarm_config,
     run_swarm_coordinator,
@@ -34,10 +35,31 @@ class SwarmCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         config = _config(["alpha", "beta"])
 
         def alpha(_spec: AgentSpec, _ctx: RunContext) -> AgentResult:
-            return AgentResult(status="completed", summary="alpha done")
+            return AgentResult(
+                status="completed",
+                summary="alpha " + ("done " * 80),
+                evidence=["alpha.txt", "alpha.log"],
+                open_questions=["Need beta recovery."],
+                confidence=0.75,
+                usage=Usage(input_tokens=10, output_tokens=5, cost=0.02, steps=2, latency_ms=40),
+                metadata={
+                    "runner_id": "alpha",
+                    "workspace_isolated": True,
+                    "workspace_path": str(temp / "worker-alpha"),
+                    "prompt": "should not be copied into receipt",
+                },
+            )
 
         def beta(_spec: AgentSpec, _ctx: RunContext) -> AgentResult:
-            return AgentResult(status="failed", summary="beta failed")
+            return AgentResult(
+                status="failed",
+                summary="beta failed",
+                usage=Usage(input_tokens=3, output_tokens=1, cost=0.01, steps=1, latency_ms=10),
+                metadata={
+                    "error_kind": "test_failure",
+                    "stderr": "should not be copied into receipt",
+                },
+            )
 
         result = await run_swarm_coordinator(
             runtime=SwarmRuntime(registry=build_function_registry(config, {"alpha": alpha, "beta": beta})),
@@ -52,7 +74,31 @@ class SwarmCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.receipt.pending_runner_ids, ["beta"])
         self.assertEqual(result.receipt.reusable_runner_ids, ["alpha"])
         self.assertEqual(handoffs.load_handoff("coordinator-run").pending_runner_ids, ["beta"])
-        self.assertEqual(result.receipt.as_dict()["run_id"], "coordinator-run")
+        receipt = result.receipt.as_dict()
+        self.assertEqual(receipt["schema_version"], 1)
+        self.assertEqual(receipt["run_id"], "coordinator-run")
+        self.assertEqual(receipt["task_role"], "worker")
+        self.assertEqual(receipt["runner_count"], 2)
+        self.assertEqual(receipt["runner_status_counts"], {"completed": 1, "failed": 1})
+        self.assertEqual(receipt["usage"]["input_tokens"], 13)
+        self.assertEqual(receipt["usage"]["output_tokens"], 6)
+        self.assertEqual(receipt["usage"]["total_tokens"], 19)
+        self.assertGreater(receipt["trace_event_count"], 0)
+        self.assertGreater(receipt["trace_error_count"], 0)
+        self.assertEqual([item["runner_id"] for item in receipt["runner_summaries"]], ["alpha", "beta"])
+        alpha_summary = receipt["runner_summaries"][0]
+        self.assertEqual(alpha_summary["status"], "completed")
+        self.assertLessEqual(len(alpha_summary["summary_preview"]), 240)
+        self.assertTrue(alpha_summary["summary_preview"].endswith("..."))
+        self.assertGreater(alpha_summary["summary_chars"], len(alpha_summary["summary_preview"]))
+        self.assertEqual(alpha_summary["evidence_count"], 2)
+        self.assertEqual(alpha_summary["open_question_count"], 1)
+        self.assertEqual(alpha_summary["usage"]["steps"], 2)
+        self.assertIn("workspace_path", alpha_summary["metadata"])
+        self.assertNotIn("prompt", alpha_summary["metadata"])
+        beta_summary = receipt["runner_summaries"][1]
+        self.assertEqual(beta_summary["metadata"], {"error_kind": "test_failure"})
+        self.assertNotIn("stderr", beta_summary["metadata"])
 
     async def test_coordinator_resumes_from_previous_handoff_and_state(self) -> None:
         temp = self._workspace()

@@ -20,7 +20,7 @@ Implemented in this slice:
 - optional file-backed persistent swarm run state;
 - resumable coordinator policy for reusing completed runner results;
 - team handoff manifests for carrying multi-runner progress across sessions;
-- combined coordinator workflow for run, handoff, merge approval, and optional apply receipts;
+- combined coordinator workflow for run, handoff, merge approval, optional apply receipts, and observability-ready run summaries;
 - CLI entrypoint for running YAML configs against subprocess, HTTP, and A2A runners;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
@@ -397,11 +397,17 @@ receipt = result.receipt.as_dict()
 
 The receipt records:
 
-- run id, task id, and aggregate run status;
+- schema version, run id, task id, task role, and aggregate run status;
+- runner count and runner status counts;
+- aggregate usage: input tokens, output tokens, total tokens, cost, steps, and latency;
+- trace event count and trace error count;
+- compact per-runner summaries with status, summary preview, evidence count, open question count, artifact count, confidence, usage, and safe metadata;
 - whether a handoff was saved and whether pending runners remain;
 - reusable and pending runner ids;
 - merge decision, reason codes, change count, conflict count, and applied count;
 - warnings and diagnostics.
+
+The receipt is intentionally compact. It does not dump full trace events, prompts, task context, model output, tool output, or arbitrary runner metadata. Per-runner metadata is allowlisted for operational keys such as HTTP status, response format, return code, A2A task id/state, error kind, and workspace isolation fields.
 
 By default the coordinator does not apply merge changes. Set `apply_approved_merge=True` to apply only when the merge approval decision is `approved`.
 
@@ -720,6 +726,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add richer coordinator receipts for Langfuse export and Web inspection.
-2. Add public examples that show one OpenAgent runner plus one external A2A runner in the same YAML config.
-3. Add a thin Web/API wrapper over the CLI/coordinator receipt for manual inspection.
+1. Add public examples that show one OpenAgent runner plus one external A2A runner in the same YAML config.
+2. Add a thin Web/API wrapper over the CLI/coordinator receipt for manual inspection.
+3. Add optional Langfuse annotations that attach coordinator receipt fields as run metadata.
