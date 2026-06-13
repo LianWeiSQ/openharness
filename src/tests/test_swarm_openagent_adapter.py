@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from openagent.integrations.swarm import OpenAgentRunner
+from openagent.integrations.swarm import OpenAgentRunner, build_openagent_registry
 from swarm import AgentResult, AgentSpec, RunContext, SwarmRuntime
-from swarm.config import RunnerConfig, TaskConfig
+from swarm.config import RunnerConfig, TaskConfig, load_swarm_config
 from swarm.registry import RunnerRegistry
 
 from _mock_model import ScriptedLanguageModel
@@ -169,6 +169,50 @@ class OpenAgentSwarmAdapterTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "completed")
         self.assertEqual({runner_id: item.summary for runner_id, item in result.results.items()}, {"oa-a": "A", "oa-b": "B"})
+
+    async def test_build_openagent_registry_from_yaml_config(self) -> None:
+        workspace = self._workspace()
+        config = load_swarm_config(
+            {
+                "runners": {
+                    "oa-reader": {
+                        "kind": "openagent",
+                        "roles": ["research"],
+                        "metadata": {"tools": "readonly", "example": "mixed"},
+                    },
+                    "remote-reviewer": {
+                        "kind": "a2a",
+                        "roles": ["research"],
+                        "metadata": {"url": "http://127.0.0.1:9/a2a"},
+                    },
+                },
+                "tasks": {
+                    "mixed": {
+                        "role": "research",
+                        "objective": "Run OpenAgent only for this test.",
+                        "context": "The A2A runner is configured but not registered here.",
+                        "boundaries": "Read-only.",
+                        "output_schema": {"type": "object"},
+                        "runner_ids": ["oa-reader"],
+                    }
+                },
+            }
+        )
+        model = ScriptedLanguageModel(
+            script=[[{"type": "text-delta", "id": "m", "text": "yaml builder ok"}, {"type": "finish", "finish_reason": "stop", "usage": {}}]]
+        )
+
+        registry = build_openagent_registry(
+            config,
+            model=model,
+            model_metadata=_make_model_metadata(context_window=32768, max_output=128),
+            workspace_root=workspace.path,
+        )
+        result = await SwarmRuntime(registry=registry).run_task(config.task("mixed"), run_id="mixed-yaml")
+
+        self.assertEqual(list(registry.ids()), ["oa-reader"])
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.results["oa-reader"].summary, "yaml builder ok")
 
     def test_swarm_package_still_has_no_openagent_imports(self) -> None:
         root = Path(__file__).resolve().parents[1] / "swarm"

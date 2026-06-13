@@ -11,6 +11,7 @@ Implemented in this slice:
 - YAML config loading for runners, tasks, limits, and fanout budget;
 - `SwarmRuntime`, a minimal supervisor that dispatches one task to one or multiple runners;
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
+- `build_openagent_registry(...)`, a config-driven OpenAgent runner builder for mixed registries;
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
 - `A2ARunner`, an HTTP+JSON adapter for Agent2Agent-compatible remote agents, including SSE streaming and task subscription reconnect;
@@ -651,6 +652,46 @@ src/swarm                  -X-> openagent
 
 The adapter converts an `AgentSpec` into a bounded OpenAgent subagent instruction, runs an isolated `Session`, and returns a swarm `AgentResult` with summary, usage, session id, trace metadata, and tool-call count.
 
+OpenAgent runners can also be built from YAML runner config:
+
+```python
+from openagent.integrations.swarm import build_openagent_registry
+from swarm import build_a2a_registry, load_swarm_config
+from swarm.registry import RunnerRegistry
+
+config = load_swarm_config("swarm.yaml")
+registry = RunnerRegistry()
+
+for partial in (
+    build_openagent_registry(
+        config,
+        model=language_model,
+        model_metadata=model_metadata,
+        workspace_root="/path/to/workspace",
+    ),
+    build_a2a_registry(config),
+):
+    for runner in partial.all():
+        registry.register(runner)
+```
+
+The config-only CLI does not auto-bind OpenAgent runners because an OpenAgent runner needs a real `LanguageModel`, model metadata, and workspace root. Use Python binding for mixed OpenAgent/non-OpenAgent registries.
+
+## Mixed OpenAgent + A2A Example
+
+The public mixed-runner example demonstrates one task routed to two different agent endpoints from one YAML config:
+
+- `openagent_researcher`: a local OpenAgent runner backed by a scripted model;
+- `a2a_reviewer`: a local mock A2A HTTP+JSON endpoint.
+
+Run it without model credentials or external services:
+
+```bash
+PYTHONPATH=src python src/examples/swarm_mixed_openagent_a2a.py
+```
+
+The example loads [swarm_mixed_openagent_a2a.yaml](../src/examples/swarm_mixed_openagent_a2a.yaml), patches the A2A URL to a local mock server, builds a mixed registry with `build_openagent_registry(...)` and `build_a2a_registry(...)`, runs `run_swarm_coordinator(...)`, and prints compact JSON with runner results, trace count, and coordinator receipt.
+
 ## Trace Lineage
 
 Every `SwarmRuntime.run_task(...)` result includes `trace_events`.
@@ -726,6 +767,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add public examples that show one OpenAgent runner plus one external A2A runner in the same YAML config.
-2. Add a thin Web/API wrapper over the CLI/coordinator receipt for manual inspection.
-3. Add optional Langfuse annotations that attach coordinator receipt fields as run metadata.
+1. Add a thin Web/API wrapper over the CLI/coordinator receipt for manual inspection.
+2. Add optional Langfuse annotations that attach coordinator receipt fields as run metadata.
+3. Add richer mixed-runner examples for subprocess/http/a2a plus OpenAgent side by side.

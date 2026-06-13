@@ -27,6 +27,7 @@ OpenAgent is a hackable Python runtime for building tool-using, observable agent
 | Execution | Local workspace, optional remote sandbox runtime, Terminal-Bench, Harbor |
 | Providers | OpenAI-compatible provider for Chat Completions and Responses-style gateways |
 | Operations | Stream events, file-backed session ledger, JSONL-friendly traces, runtime logs, eval/replay, optional Langfuse export |
+| Swarm | Decoupled function/swarm kernel for routing one task to OpenAgent, subprocess, HTTP, or A2A runners |
 
 ## Quick Start
 
@@ -124,6 +125,9 @@ src/openagent/
 ├── prompts/         # Default build / plan / explore prompts
 └── sdk/             # Aggregated SDK exports
 
+src/swarm/           # Agent-agnostic function/swarm kernel
+src/examples/        # Runnable examples, including mixed OpenAgent + A2A swarm
+
 .openagent/skills/   # Official Codex/OpenAI and Claude skill snapshots
 doc/                 # Short public docs
 src/tests/           # unittest suite
@@ -142,6 +146,7 @@ Latest local verification: `222 tests OK`.
 - [Architecture](doc/architecture.md)
 - [Context Engineering](doc/context.md)
 - [Operations](doc/operations.md)
+- [Swarm Function Kernel](doc/swarm.md)
 - [Roadmap](doc/roadmap.md)
 
 ## Current Gaps

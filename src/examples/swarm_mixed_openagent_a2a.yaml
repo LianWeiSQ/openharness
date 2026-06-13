@@ -1,0 +1,36 @@
+fanout_budget:
+  max_concurrent: 2
+  max_total_workers: 2
+
+runners:
+  openagent_researcher:
+    kind: openagent
+    roles: [research]
+    metadata:
+      tools: readonly
+      system_prompt: "You are the local OpenAgent worker. Return a compact research summary."
+      example: mixed-openagent-a2a
+
+  a2a_reviewer:
+    kind: a2a
+    roles: [research]
+    metadata:
+      url: "http://127.0.0.1:0/a2a"
+      version: "1.0"
+      accepted_output_modes: ["text/plain"]
+      timeout_seconds: 10
+
+tasks:
+  mixed_review:
+    role: research
+    objective: Compare local OpenAgent analysis with an external A2A review.
+    context: "This public example uses a scripted OpenAgent model and a local mock A2A endpoint."
+    boundaries: "Read-only. Do not call external services."
+    output_schema:
+      type: object
+      required: [summary]
+    runner_ids:
+      - openagent_researcher
+      - a2a_reviewer
+    inputs:
+      topic: "agent runtime routing"

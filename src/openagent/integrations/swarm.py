@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from swarm import AgentDescriptor, AgentEvent, AgentResult, AgentSpec, RunContext, Usage
-from swarm.config import RunnerConfig
+from swarm.config import RunnerConfig, SwarmConfig
+from swarm.registry import RunnerRegistry
 
 from ..core.agent.universal import UniversalAgent
 from ..core.loop.processor import AgentLoop
@@ -267,6 +268,32 @@ class OpenAgentRunner:
         return options
 
 
+def build_openagent_registry(
+    config: SwarmConfig,
+    *,
+    model: LanguageModel,
+    model_metadata: Model,
+    workspace_root: str | Path,
+    toolkit_factory: ToolkitFactory | None = None,
+    permission_manager_factory: PermissionManagerFactory | None = None,
+) -> RunnerRegistry:
+    registry = RunnerRegistry()
+    for runner_config in config.runners:
+        if runner_config.kind != "openagent":
+            continue
+        registry.register(
+            OpenAgentRunner.from_config(
+                runner_config,
+                model=model,
+                model_metadata=model_metadata,
+                workspace_root=workspace_root,
+                toolkit_factory=toolkit_factory,
+                permission_manager_factory=permission_manager_factory,
+            )
+        )
+    return registry
+
+
 def _instruction_for_spec(spec: AgentSpec) -> str:
     payload = {
         "role": spec.role,
@@ -311,4 +338,4 @@ def _default_system_prompt() -> str:
     )
 
 
-__all__ = ["OpenAgentRunner", "OpenAgentRunHandle"]
+__all__ = ["OpenAgentRunner", "OpenAgentRunHandle", "build_openagent_registry"]

@@ -16,7 +16,7 @@ Implemented:
 - JSONL-friendly observability and eval/replay support;
 - optional Langfuse trace export and eval score export.
 - P0 file-backed session ledger for run/message/step/tool events, latest session state, and eval report references.
-- Decoupled swarm/function kernel with function runners, subprocess runners, HTTP runners, A2A send/stream/subscribe runners, YAML config, CLI YAML runner, multi-runner dispatch, an OpenAgent runner adapter, local trace lineage, optional Langfuse export, opt-in worker workspace isolation, merge-back conflict review, merge approval policy, file-backed run state receipts, resumable coordinator policy, team handoff manifests, and observability-ready coordinator workflow receipts.
+- Decoupled swarm/function kernel with function runners, subprocess runners, HTTP runners, A2A send/stream/subscribe runners, YAML config, CLI YAML runner, multi-runner dispatch, an OpenAgent runner adapter, mixed OpenAgent+A2A example, local trace lineage, optional Langfuse export, opt-in worker workspace isolation, merge-back conflict review, merge approval policy, file-backed run state receipts, resumable coordinator policy, team handoff manifests, and observability-ready coordinator workflow receipts.
 
 Not complete:
 
@@ -26,7 +26,7 @@ Not complete:
 - ContextPackBuilder is trace-first, not yet the only model-message assembly path;
 - step budgeting is static, so complex tasks can spend too many turns on confirmation and push required closeout artifacts past the final tool-enabled step.
 - tool execution now has runtime scheduling metadata and a batch planner, but AgentLoop still executes tool calls serially.
-- the swarm kernel has CLI and observability-ready receipts, but still needs public mixed-runner examples and a thin inspection surface.
+- the swarm kernel has CLI, observability-ready receipts, and a public mixed OpenAgent+A2A example, but still needs a thin inspection surface.
 
 ## Next Milestones
 
@@ -35,7 +35,7 @@ Not complete:
 3. Add Langfuse-backed eval iteration: dataset sync, experiment grouping, and dashboard runbooks.
 4. Add adaptive step budgeting: task-complexity defaults, remaining-step warnings, closeout protection for required artifacts, and read-only-loop detection. Track this work in [Step Budget Optimization](step-budget-optimization.md).
 5. Connect the tool batch planner to AgentLoop trace, then enable read-only concurrent execution. Track this work in [Tool Optimization](tool-optimization.md).
-6. Add public mixed-runner examples and a thin inspection surface for the decoupled [Swarm Function Kernel](swarm.md).
+6. Add a thin inspection surface for the decoupled [Swarm Function Kernel](swarm.md).
 7. Split optional dependencies for MCP, sandbox, and benchmark integrations.
 8. Publish reproducible benchmark reports for Terminal-Bench and Harbor.
 9. Rebuild CLI/Web Console as a separate demo package with sanitized config templates.
