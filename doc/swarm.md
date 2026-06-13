@@ -21,9 +21,10 @@ Implemented in this slice:
 - resumable coordinator policy for reusing completed runner results;
 - team handoff manifests for carrying multi-runner progress across sessions;
 - combined coordinator workflow for run, handoff, merge approval, and optional apply receipts;
+- CLI entrypoint for running YAML configs against subprocess, HTTP, and A2A runners;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
-- tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
+- tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, A2A dispatch, CLI YAML execution, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
 
 ## Configuration Shape
 
@@ -59,6 +60,77 @@ config = load_swarm_config("swarm.yaml")
 registry = build_function_registry(config, {"research_fn": research_fn})
 result = await SwarmRuntime(registry=registry, fanout_budget=config.fanout_budget).run_task(config.task("compare"))
 ```
+
+## CLI Runner
+
+YAML configs that use external runner kinds can be run directly:
+
+```bash
+openagent-swarm run swarm.yaml --task compare --run-id compare-demo --pretty
+```
+
+The module form works without installing console scripts:
+
+```bash
+PYTHONPATH=src python -m swarm.cli run swarm.yaml --task compare --run-id compare-demo --pretty
+```
+
+The config-only CLI supports runner kinds that do not require in-process Python handler binding:
+
+- `subprocess`
+- `http`
+- `a2a`
+
+It intentionally does not auto-import `function` handlers. Function runners remain library-first because code must explicitly bind handler names to Python callables.
+
+Example subprocess YAML:
+
+```yaml
+runners:
+  external_worker:
+    kind: subprocess
+    roles: [worker]
+    metadata:
+      command: ["python", "worker_agent.py"]
+
+tasks:
+  compare:
+    role: worker
+    objective: Compare two files.
+    context: Paths are provided in inputs.
+    boundaries: Read-only. Return JSON summary and evidence.
+    output_schema:
+      type: object
+    runner_ids: [external_worker]
+    inputs:
+      paths: ["a.py", "b.py"]
+```
+
+Optional persistence:
+
+```bash
+openagent-swarm run swarm.yaml \
+  --task compare \
+  --run-id compare-demo \
+  --state-dir .swarm/state \
+  --handoff-dir .swarm/handoff \
+  --pretty
+```
+
+The command writes JSON to stdout. The compact output includes:
+
+- `run_id`
+- `task_id`
+- `status`
+- `summary`
+- `usage`
+- `results`
+- `warnings`
+- `trace_event_count`
+- optional `state_dir`
+- optional coordinator `receipt`
+
+When `--state-dir` is set, the full run state, runner results, and trace JSONL are written under `<state-dir>/<run-id>/`. When `--handoff-dir` is set, the coordinator also writes `<handoff-dir>/<run-id>/team-handoff.json`.
 
 ## Worker Workspace Isolation
 
@@ -648,6 +720,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add CLI examples for running swarm configs from a file.
-2. Add richer coordinator receipts for Langfuse export and Web inspection.
-3. Add public examples that show one OpenAgent runner plus one external A2A runner in the same YAML config.
+1. Add richer coordinator receipts for Langfuse export and Web inspection.
+2. Add public examples that show one OpenAgent runner plus one external A2A runner in the same YAML config.
+3. Add a thin Web/API wrapper over the CLI/coordinator receipt for manual inspection.
