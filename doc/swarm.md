@@ -131,7 +131,37 @@ The command writes JSON to stdout. The compact output includes:
 - optional `state_dir`
 - optional coordinator `receipt`
 
-When `--state-dir` is set, the full run state, runner results, and trace JSONL are written under `<state-dir>/<run-id>/`. When `--handoff-dir` is set, the coordinator also writes `<handoff-dir>/<run-id>/team-handoff.json`.
+When `--state-dir` is set, the full run state, runner results, and trace JSONL are written under `<state-dir>/<run-id>/`. When `--handoff-dir` is set, the coordinator also writes `<handoff-dir>/<run-id>/team-handoff.json` and `<handoff-dir>/<run-id>/coordinator-receipt.json`.
+
+## Inspection API
+
+Persisted swarm runs can be inspected over a local JSON API:
+
+```bash
+openagent-swarm inspect \
+  --state-dir .swarm/state \
+  --handoff-dir .swarm/handoff \
+  --host 127.0.0.1 \
+  --port 8765
+```
+
+The module form is also available:
+
+```bash
+PYTHONPATH=src python -m swarm.cli inspect --state-dir .swarm/state --handoff-dir .swarm/handoff
+```
+
+Endpoints:
+
+- `GET /health`
+- `GET /runs`
+- `GET /runs/{run_id}`
+- `GET /runs/{run_id}/state`
+- `GET /runs/{run_id}/handoff`
+- `GET /runs/{run_id}/receipt`
+- `GET /runs/{run_id}/trace`
+
+`/runs` and `/runs/{run_id}` are compact by default and include diagnostics for malformed artifacts. Full trace events are only returned from `/runs/{run_id}/trace`.
 
 ## Worker Workspace Isolation
 
@@ -767,6 +797,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add a thin Web/API wrapper over the CLI/coordinator receipt for manual inspection.
-2. Add optional Langfuse annotations that attach coordinator receipt fields as run metadata.
-3. Add richer mixed-runner examples for subprocess/http/a2a plus OpenAgent side by side.
+1. Add optional Langfuse annotations that attach coordinator receipt fields as run metadata.
+2. Add richer mixed-runner examples for subprocess/http/a2a plus OpenAgent side by side.
+3. Add a minimal browser page that consumes the inspection API.

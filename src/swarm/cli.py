@@ -14,6 +14,7 @@ from .a2a_runner import build_a2a_registry
 from .config import SwarmConfig, TaskConfig, load_swarm_config
 from .coordinator import SwarmCoordinatorOptions, run_swarm_coordinator
 from .http_runner import build_http_registry
+from .inspection import SwarmInspectionConfig, serve_inspection_api, write_coordinator_receipt
 from .registry import RunnerRegistry
 from .runtime import SwarmRunResult, SwarmRuntime
 from .state import FileSwarmStateStore, swarm_run_result_to_dict
@@ -29,6 +30,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.command == "run":
         return _run_command(args)
+    if args.command == "inspect":
+        return _inspect_command(args)
     parser.print_help(sys.stderr)
     return 2
 
@@ -44,6 +47,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--state-dir", help="Optional directory for state.latest.json, runner-results.json, and trace.jsonl.")
     run.add_argument("--handoff-dir", help="Optional directory for team-handoff.json receipts.")
     run.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
+
+    inspect = subparsers.add_parser("inspect", help="Serve a local JSON API over persisted swarm runs.")
+    inspect.add_argument("--state-dir", help="Directory containing state.latest.json run folders.")
+    inspect.add_argument("--handoff-dir", help="Directory containing team-handoff.json and coordinator-receipt.json run folders.")
+    inspect.add_argument("--host", default="127.0.0.1", help="Host to bind. Defaults to 127.0.0.1.")
+    inspect.add_argument("--port", type=int, default=8765, help="Port to bind. Defaults to 8765.")
     return parser
 
 
@@ -63,6 +72,19 @@ def _run_command(args: argparse.Namespace) -> int:
     return 0 if payload.get("status") in SUCCESS_STATUSES else 1
 
 
+def _inspect_command(args: argparse.Namespace) -> int:
+    if not args.state_dir and not args.handoff_dir:
+        print(json.dumps({"status": "error", "error": "inspect requires --state-dir or --handoff-dir"}, sort_keys=True), file=sys.stderr)
+        return 2
+    print(f"Serving swarm inspection API on http://{args.host}:{args.port}", file=sys.stderr)
+    serve_inspection_api(
+        SwarmInspectionConfig(state_dir=args.state_dir, handoff_dir=args.handoff_dir),
+        host=args.host,
+        port=args.port,
+    )
+    return 0
+
+
 async def _run_from_args(args: argparse.Namespace) -> dict[str, Any]:
     config_path = Path(args.config)
     config = load_swarm_config(config_path)
@@ -79,11 +101,13 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, Any]:
             options=SwarmCoordinatorOptions(run_id=run_id, save_team_handoff=True),
             team_handoff_store=FileTeamHandoffStore(args.handoff_dir),
         )
+        receipt = coordinator.receipt.as_dict()
+        receipt_path = write_coordinator_receipt(args.handoff_dir, receipt)
         return _payload_for_result(
             result=coordinator.run_result,
             run_id=run_id,
             state_dir=args.state_dir,
-            receipt=coordinator.receipt.as_dict(),
+            receipt={**receipt, "receipt_path": str(receipt_path)},
         )
 
     result = await runtime.run_task(task, run_id=run_id)

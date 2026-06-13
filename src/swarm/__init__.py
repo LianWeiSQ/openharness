@@ -12,6 +12,16 @@ from .a2a_runner import A2ARequestConfig, A2ARunner, build_a2a_registry
 from .coordinator import SwarmCoordinatorOptions, SwarmCoordinatorReceipt, SwarmCoordinatorResult, run_swarm_coordinator
 from .function_runner import FunctionRunner, build_function_registry
 from .http_runner import HttpRequestConfig, HttpRunner, build_http_registry
+from .inspection import (
+    COORDINATOR_RECEIPT_FILE,
+    SwarmInspectionConfig,
+    create_inspection_server,
+    load_run_artifact,
+    load_run_detail,
+    load_run_index,
+    serve_inspection_api,
+    write_coordinator_receipt,
+)
 from .isolation import WorkerWorkspace, WorkerWorkspaceConfig, prepare_worker_workspace, resolve_worker_workspace_config
 from .langfuse_exporter import SwarmLangfuseExportResult, SwarmLangfuseExporter, export_swarm_trace_to_langfuse
 from .merge import MergeApplyResult, MergeChange, MergeConflict, MergePlan, apply_merge_plan, build_merge_plan
@@ -62,6 +72,7 @@ __all__ = [
     "A2ARequestConfig",
     "A2ARunner",
     "ArtifactRef",
+    "COORDINATOR_RECEIPT_FILE",
     "FanoutBudget",
     "FileSwarmStateStore",
     "FileTeamHandoffStore",
@@ -86,6 +97,7 @@ __all__ = [
     "SwarmCoordinatorOptions",
     "SwarmCoordinatorReceipt",
     "SwarmCoordinatorResult",
+    "SwarmInspectionConfig",
     "SwarmLangfuseExportResult",
     "SwarmLangfuseExporter",
     "SwarmResumePolicy",
@@ -107,8 +119,12 @@ __all__ = [
     "build_merge_plan",
     "build_subprocess_registry",
     "build_team_handoff",
+    "create_inspection_server",
     "evaluate_merge_plan",
     "export_swarm_trace_to_langfuse",
+    "load_run_artifact",
+    "load_run_detail",
+    "load_run_index",
     "load_swarm_config",
     "apply_merge_plan",
     "merge_approval_policy_from_metadata",
@@ -118,7 +134,9 @@ __all__ = [
     "resolve_worker_workspace_config",
     "resume_policy_from_value",
     "run_swarm_coordinator",
+    "serve_inspection_api",
     "swarm_run_result_to_dict",
     "task_for_team_handoff_resume",
     "team_handoff_from_dict",
+    "write_coordinator_receipt",
 ]

@@ -53,6 +53,7 @@ class SwarmCliTests(unittest.TestCase):
             state_path = state_dir / "persist-run" / "state.latest.json"
             trace_path = state_dir / "persist-run" / "trace.jsonl"
             handoff_path = handoff_dir / "persist-run" / "team-handoff.json"
+            receipt_path = handoff_dir / "persist-run" / "coordinator-receipt.json"
 
             self.assertEqual(code, 0, stderr)
             payload = json.loads(stdout)
@@ -63,10 +64,12 @@ class SwarmCliTests(unittest.TestCase):
             self.assertGreater(payload["receipt"]["trace_event_count"], 0)
             self.assertEqual(payload["receipt"]["runner_summaries"][0]["runner_id"], "worker")
             self.assertEqual(payload["receipt"]["runner_summaries"][0]["summary_preview"], "persisted")
+            self.assertEqual(payload["receipt"]["receipt_path"], str(receipt_path.resolve()))
             self.assertEqual(payload["receipt"]["handoff_path"], str(handoff_path.resolve()))
             self.assertTrue(state_path.exists())
             self.assertTrue(trace_path.exists())
             self.assertTrue(handoff_path.exists())
+            self.assertTrue(receipt_path.exists())
 
     def test_cli_returns_nonzero_for_failed_runner(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp:
