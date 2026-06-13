@@ -1,0 +1,127 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Swarm Function Kernel architecture</title>
+  <desc id="desc">A professional architecture diagram showing YAML and Python configuration routed through the Swarm coordinator to OpenAgent, function, subprocess, HTTP, and A2A runners, then into results and observability outputs.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FAFC"/>
+      <stop offset="1" stop-color="#EEF4FF"/>
+    </linearGradient>
+    <linearGradient id="hub" x1="422" y1="278" x2="638" y2="442" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#172033"/>
+      <stop offset="1" stop-color="#244FB8"/>
+    </linearGradient>
+    <linearGradient id="runner" x1="690" y1="102" x2="956" y2="612" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F2F6FF"/>
+    </linearGradient>
+    <linearGradient id="result" x1="966" y1="284" x2="1136" y2="428" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1F6FEB"/>
+      <stop offset="1" stop-color="#18A999"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-16%" width="120%" height="132%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#10203A" flood-opacity="0.13"/>
+    </filter>
+    <filter id="soft" x="-8%" y="-10%" width="116%" height="120%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#1A365D" flood-opacity="0.09"/>
+    </filter>
+    <marker id="arrow-blue" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1 1L10 5.5L1 10V1Z" fill="#2B6EEA"/>
+    </marker>
+    <marker id="arrow-dark" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1 1L10 5.5L1 10V1Z" fill="#4A5568"/>
+    </marker>
+    <style>
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #142033; letter-spacing: 0; }
+      .subtitle { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #59687D; letter-spacing: 0; }
+      .label { font: 650 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; letter-spacing: 0; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748B; letter-spacing: 0; }
+      .tiny { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #718096; letter-spacing: .2px; }
+      .hubtext { font: 720 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #FFFFFF; letter-spacing: 0; }
+      .hubsmall { font: 520 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #C8D7FF; letter-spacing: 0; }
+      .resulttext { font: 720 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #FFFFFF; letter-spacing: 0; }
+      .resultsml { font: 520 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #E8FFF9; letter-spacing: 0; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="720" rx="34" fill="url(#bg)"/>
+  <circle cx="1144" cy="116" r="172" fill="#DCEBFF" opacity="0.55"/>
+  <circle cx="148" cy="612" r="220" fill="#EAF6F1" opacity="0.65"/>
+
+  <text x="66" y="70" class="title">Swarm Function Kernel</text>
+  <text x="66" y="99" class="subtitle">Config-driven orchestration for OpenAgent and external agent runners</text>
+
+  <rect x="66" y="146" width="258" height="118" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="92" y="188" class="label">YAML / Python config</text>
+  <text x="92" y="218" class="small">runners, tasks, fanout budget</text>
+  <text x="92" y="242" class="tiny">NO RUNTIME COUPLING</text>
+
+  <path d="M324 205C365 205 384 240 418 300" stroke="#2B6EEA" stroke-width="2.4" marker-end="url(#arrow-blue)"/>
+
+  <rect x="404" y="276" width="246" height="166" rx="24" fill="url(#hub)"/>
+  <text x="452" y="343" class="hubtext">SwarmRuntime</text>
+  <text x="468" y="374" class="hubtext">Coordinator</text>
+  <text x="452" y="405" class="hubsmall">dispatch, budget, resume</text>
+
+  <rect x="374" y="482" width="306" height="84" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="404" y="520" class="label">Kernel boundary</text>
+  <text x="404" y="548" class="small">src/swarm has no openagent imports</text>
+
+  <g>
+    <rect x="724" y="96" width="254" height="76" rx="16" fill="url(#runner)" stroke="#CED9E8"/>
+    <rect x="724" y="205" width="254" height="76" rx="16" fill="url(#runner)" stroke="#CED9E8"/>
+    <rect x="724" y="314" width="254" height="76" rx="16" fill="url(#runner)" stroke="#CED9E8"/>
+    <rect x="724" y="423" width="254" height="76" rx="16" fill="url(#runner)" stroke="#CED9E8"/>
+    <rect x="724" y="532" width="254" height="76" rx="16" fill="url(#runner)" stroke="#CED9E8"/>
+  </g>
+
+  <text x="760" y="129" class="label">OpenAgent runner</text>
+  <text x="760" y="153" class="small">model, tools, workspace</text>
+  <text x="760" y="238" class="label">Function runner</text>
+  <text x="760" y="262" class="small">in-process callable</text>
+  <text x="760" y="347" class="label">Subprocess runner</text>
+  <text x="760" y="371" class="small">JSON stdin / stdout</text>
+  <text x="760" y="456" class="label">HTTP runner</text>
+  <text x="760" y="480" class="small">remote JSON service</text>
+  <text x="760" y="565" class="label">A2A runner</text>
+  <text x="760" y="589" class="small">send, stream, subscribe</text>
+
+  <path d="M650 336C684 268 684 145 724 134" stroke="#2B6EEA" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+  <path d="M650 348C688 318 688 252 724 243" stroke="#2B6EEA" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+  <path d="M650 359H724" stroke="#2B6EEA" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+  <path d="M650 372C688 402 688 461 724 461" stroke="#2B6EEA" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+  <path d="M650 384C684 452 684 559 724 570" stroke="#2B6EEA" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+
+  <rect x="1042" y="290" width="164" height="140" rx="22" fill="url(#result)"/>
+  <text x="1082" y="354" class="resulttext">AgentResult</text>
+  <text x="1076" y="382" class="resultsml">status + usage</text>
+
+  <path d="M978 134C1025 150 1029 304 1042 334" stroke="#4A5568" stroke-width="2" marker-end="url(#arrow-dark)"/>
+  <path d="M978 243C1020 250 1027 318 1042 342" stroke="#4A5568" stroke-width="2" marker-end="url(#arrow-dark)"/>
+  <path d="M978 352H1042" stroke="#4A5568" stroke-width="2" marker-end="url(#arrow-dark)"/>
+  <path d="M978 461C1020 454 1027 393 1042 376" stroke="#4A5568" stroke-width="2" marker-end="url(#arrow-dark)"/>
+  <path d="M978 570C1025 554 1029 420 1042 386" stroke="#4A5568" stroke-width="2" marker-end="url(#arrow-dark)"/>
+
+  <rect x="1034" y="500" width="198" height="92" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="1064" y="536" class="label">Coordinator receipt</text>
+  <text x="1064" y="564" class="small">runner counts, usage, traces</text>
+
+  <path d="M1124 430V500" stroke="#2B6EEA" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+
+  <rect x="1010" y="94" width="222" height="122" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="1040" y="132" class="label">Observability</text>
+  <text x="1040" y="162" class="small">trace, state, handoff</text>
+  <text x="1040" y="187" class="small">Langfuse, inspection UI</text>
+  <path d="M1132 290C1132 254 1132 238 1132 216" stroke="#2B6EEA" stroke-width="2.2" marker-end="url(#arrow-blue)"/>
+
+  <g opacity="0.85">
+    <rect x="66" y="620" width="244" height="38" rx="19" fill="#FFFFFF" stroke="#D7E0EA"/>
+    <circle cx="91" cy="639" r="6" fill="#1F6FEB"/>
+    <text x="108" y="644" class="small">Config first</text>
+    <rect x="328" y="620" width="258" height="38" rx="19" fill="#FFFFFF" stroke="#D7E0EA"/>
+    <circle cx="353" cy="639" r="6" fill="#18A999"/>
+    <text x="370" y="644" class="small">OpenAgent is optional</text>
+    <rect x="604" y="620" width="280" height="38" rx="19" fill="#FFFFFF" stroke="#D7E0EA"/>
+    <circle cx="629" cy="639" r="6" fill="#F59E0B"/>
+    <text x="646" y="644" class="small">Runs are observable and resumable</text>
+  </g>
+</svg>

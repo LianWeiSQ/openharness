@@ -44,21 +44,9 @@ OpenAgent 围绕这些工程问题构建：
 | `http` | HTTP JSON endpoint | 简单 JSON 协议背后的远端 agent service |
 | `a2a` | Agent2Agent HTTP+JSON endpoint | A2A 兼容 agent，包含 stream / subscribe 路径 |
 
-```mermaid
-flowchart LR
-    Config["YAML / Python config"] --> Coordinator["SwarmRuntime / Coordinator"]
-    Coordinator --> OA["OpenAgent runner"]
-    Coordinator --> Fn["Function runner"]
-    Coordinator --> CLI["Subprocess runner"]
-    Coordinator --> HTTP["HTTP runner"]
-    Coordinator --> A2A["A2A runner"]
-    OA --> Result["AgentResult"]
-    Fn --> Result
-    CLI --> Result
-    HTTP --> Result
-    A2A --> Result
-    Result --> Obs["Trace / Receipt / State / Handoff / Langfuse / Inspection UI"]
-```
+<p align="center">
+  <img src="assets/swarm-function-kernel.svg" alt="Swarm Function Kernel architecture" width="100%">
+</p>
 
 ### 蜂群现在能做什么
 
@@ -158,17 +146,9 @@ http://127.0.0.1:8765
 
 OpenAgent 仍然包含完整的单 Agent runtime。模型接收可用工具 schema，决定直接回答或调用工具；OpenAgent 负责校验权限、在当前 runtime 执行工具、记录事件，并持续循环直到任务完成或需要用户输入。
 
-```mermaid
-flowchart LR
-    User["Task"] --> Loop["AgentLoop"]
-    Loop --> Context["Context pack"]
-    Context --> Model["Model + tool schemas"]
-    Model --> Loop
-    Loop --> Tools["Tools"]
-    Tools --> Runtime["Workspace runtime"]
-    Runtime --> Loop
-    Loop --> Trace["Events / logs / replay"]
-```
+<p align="center">
+  <img src="assets/openagent-runtime.svg" alt="OpenAgent runtime loop" width="100%">
+</p>
 
 | Area | What is included |
 | --- | --- |

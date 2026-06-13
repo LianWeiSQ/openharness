@@ -1,0 +1,78 @@
+<svg width="1180" height="430" viewBox="0 0 1180 430" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">OpenAgent single-agent runtime</title>
+  <desc id="desc">A professional architecture diagram for the OpenAgent runtime loop: task input, context pack, model and tool schemas, tool execution through a workspace runtime, and traces.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1180" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#F4F8FF"/>
+    </linearGradient>
+    <linearGradient id="loop" x1="440" y1="120" x2="720" y2="300" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#1F6FEB"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-18%" width="120%" height="136%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#10203A" flood-opacity="0.11"/>
+    </filter>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto" markerUnits="strokeWidth">
+      <path d="M1 1L10 5.5L1 10V1Z" fill="#2563EB"/>
+    </marker>
+    <style>
+      .title { font: 700 30px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #142033; letter-spacing: 0; }
+      .subtitle { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5D6B7E; letter-spacing: 0; }
+      .label { font: 680 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #172033; letter-spacing: 0; }
+      .small { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #64748B; letter-spacing: 0; }
+      .hub { font: 720 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #FFFFFF; letter-spacing: 0; }
+      .hubsmall { font: 520 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #DCE8FF; letter-spacing: 0; }
+    </style>
+  </defs>
+
+  <rect width="1180" height="430" rx="28" fill="url(#bg)"/>
+  <text x="48" y="62" class="title">OpenAgent Runtime Loop</text>
+  <text x="48" y="90" class="subtitle">A tool-using agent loop with context assembly, permission checks, workspace execution, and replayable traces</text>
+
+  <rect x="58" y="168" width="162" height="94" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="92" y="207" class="label">Task</text>
+  <text x="92" y="234" class="small">instruction + session</text>
+
+  <rect x="286" y="92" width="184" height="90" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="326" y="129" class="label">Context pack</text>
+  <text x="326" y="156" class="small">budget, files, memory</text>
+
+  <rect x="486" y="142" width="204" height="146" rx="26" fill="url(#loop)"/>
+  <text x="540" y="203" class="hub">AgentLoop</text>
+  <text x="525" y="235" class="hubsmall">stream, step, decide</text>
+
+  <rect x="752" y="92" width="198" height="90" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="792" y="129" class="label">Model</text>
+  <text x="792" y="156" class="small">messages + tool schemas</text>
+
+  <rect x="752" y="248" width="198" height="90" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="792" y="285" class="label">Tools</text>
+  <text x="792" y="312" class="small">bash, file, search, MCP</text>
+
+  <rect x="990" y="248" width="144" height="90" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="1017" y="285" class="label">Runtime</text>
+  <text x="1017" y="312" class="small">workspace / sandbox</text>
+
+  <rect x="286" y="298" width="184" height="90" rx="18" fill="#FFFFFF" stroke="#D7E0EA"/>
+  <text x="326" y="335" class="label">Trace</text>
+  <text x="326" y="362" class="small">events, logs, replay</text>
+
+  <path d="M220 215H486" stroke="#2563EB" stroke-width="2.4" marker-end="url(#arrow)"/>
+  <path d="M378 182C378 214 436 217 486 217" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M690 190C720 144 730 137 752 137" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M752 154C723 205 716 215 690 215" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M690 239C720 280 730 293 752 293" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M950 293H990" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow)"/>
+  <path d="M990 319C868 390 690 358 626 288" stroke="#2563EB" stroke-width="2" marker-end="url(#arrow)" opacity="0.82"/>
+  <path d="M486 254C438 286 407 310 390 333" stroke="#2563EB" stroke-width="2.2" marker-end="url(#arrow)"/>
+
+  <g opacity="0.92">
+    <rect x="48" y="374" width="178" height="30" rx="15" fill="#EEF6FF" stroke="#C7DCF8"/>
+    <text x="68" y="394" class="small">permission checked</text>
+    <rect x="240" y="374" width="156" height="30" rx="15" fill="#EEF6FF" stroke="#C7DCF8"/>
+    <text x="260" y="394" class="small">tool events</text>
+    <rect x="410" y="374" width="186" height="30" rx="15" fill="#EEF6FF" stroke="#C7DCF8"/>
+    <text x="430" y="394" class="small">runtime warnings</text>
+  </g>
+</svg>
