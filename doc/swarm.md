@@ -722,6 +722,23 @@ PYTHONPATH=src python src/examples/swarm_mixed_openagent_a2a.py
 
 The example loads [swarm_mixed_openagent_a2a.yaml](../src/examples/swarm_mixed_openagent_a2a.yaml), patches the A2A URL to a local mock server, builds a mixed registry with `build_openagent_registry(...)` and `build_a2a_registry(...)`, runs `run_swarm_coordinator(...)`, and prints compact JSON with runner results, trace count, and coordinator receipt.
 
+## Mixed All-Runners Example
+
+The full mixed-runner example demonstrates one YAML-configured task routed to four integration paths:
+
+- `openagent_researcher`: a local OpenAgent runner backed by a scripted model;
+- `subprocess_checker`: a local CLI-style external agent that reads JSON from stdin;
+- `http_planner`: a local mock HTTP JSON agent endpoint;
+- `a2a_reviewer`: a local mock A2A HTTP+JSON endpoint.
+
+Run it without model credentials or external services:
+
+```bash
+PYTHONPATH=src python src/examples/swarm_mixed_all_runners.py
+```
+
+The example loads [swarm_mixed_all_runners.yaml](../src/examples/swarm_mixed_all_runners.yaml), patches the HTTP/A2A URLs and subprocess command to local offline mocks, builds registries with `build_openagent_registry(...)`, `build_subprocess_registry(...)`, `build_http_registry(...)`, and `build_a2a_registry(...)`, then runs `run_swarm_coordinator(...)`. The printed JSON includes runner results, runner kinds, mock request counts, trace event count, and the compact coordinator receipt.
+
 ## Trace Lineage
 
 Every `SwarmRuntime.run_task(...)` result includes `trace_events`.

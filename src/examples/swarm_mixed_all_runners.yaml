@@ -1,0 +1,54 @@
+fanout_budget:
+  max_concurrent: 4
+  max_total_workers: 4
+
+runners:
+  openagent_researcher:
+    kind: openagent
+    roles: [analysis]
+    metadata:
+      tools: readonly
+      system_prompt: "You are the local OpenAgent worker. Return a compact analysis summary."
+      example: mixed-all-runners
+
+  subprocess_checker:
+    kind: subprocess
+    roles: [analysis]
+    metadata:
+      command: "python src/examples/swarm_subprocess_worker.py"
+      timeout_seconds: 10
+
+  http_planner:
+    kind: http
+    roles: [analysis]
+    metadata:
+      url: "http://127.0.0.1:0/http-agent"
+      timeout_seconds: 10
+      headers:
+        X-OpenAgent-Example: "swarm-mixed-all-runners"
+
+  a2a_reviewer:
+    kind: a2a
+    roles: [analysis]
+    metadata:
+      url: "http://127.0.0.1:0/a2a"
+      version: "1.0"
+      accepted_output_modes: ["text/plain"]
+      timeout_seconds: 10
+
+tasks:
+  mixed_all_review:
+    role: analysis
+    objective: Compare four agent integration paths in one coordinator run.
+    context: "This public example uses a scripted OpenAgent model, a local subprocess worker, a local HTTP mock, and a local A2A mock."
+    boundaries: "Read-only. Do not call external services."
+    output_schema:
+      type: object
+      required: [summary, runner_notes]
+    runner_ids:
+      - openagent_researcher
+      - subprocess_checker
+      - http_planner
+      - a2a_reviewer
+    inputs:
+      topic: "agent runtime routing"
