@@ -8,6 +8,7 @@ Python functions, subprocess agents, HTTP agents, or any other runner.
 """
 
 from .config import RunnerConfig, SwarmConfig, TaskConfig, load_swarm_config
+from .a2a_runner import A2ARequestConfig, A2ARunner, build_a2a_registry
 from .function_runner import FunctionRunner, build_function_registry
 from .http_runner import HttpRequestConfig, HttpRunner, build_http_registry
 from .isolation import WorkerWorkspace, WorkerWorkspaceConfig, prepare_worker_workspace, resolve_worker_workspace_config
@@ -39,6 +40,8 @@ __all__ = [
     "AgentRunHandle",
     "AgentRunner",
     "AgentSpec",
+    "A2ARequestConfig",
+    "A2ARunner",
     "ArtifactRef",
     "FanoutBudget",
     "FileSwarmStateStore",
@@ -67,6 +70,7 @@ __all__ = [
     "Usage",
     "WorkerWorkspace",
     "WorkerWorkspaceConfig",
+    "build_a2a_registry",
     "build_function_registry",
     "build_http_registry",
     "build_merge_plan",

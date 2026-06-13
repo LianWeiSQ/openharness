@@ -13,6 +13,7 @@ Implemented in this slice:
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
+- `A2ARunner`, an HTTP+JSON adapter for Agent2Agent-compatible remote agents;
 - opt-in worker workspace isolation for future write-capable workers;
 - merge-back conflict review for isolated worker outputs;
 - optional file-backed persistent swarm run state;
@@ -22,7 +23,6 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- A2A runners;
 - resumable coordinator policy.
 
 ## Configuration Shape
@@ -294,6 +294,36 @@ Plain response bodies are accepted as completed summaries. HTTP status errors, r
 
 Request headers are sent as HTTP headers. They are not copied into the JSON `runner.metadata` payload, so bearer tokens and API keys are not echoed to the remote agent body.
 
+## A2A Runner
+
+A2A runners call standard Agent2Agent HTTP+JSON endpoints. The runner uses the `POST /message:send` binding with `application/a2a+json` request bodies and an `A2A-Version` header.
+
+```yaml
+runners:
+  a2a_researcher:
+    kind: a2a
+    roles: [research]
+    metadata:
+      url: "https://agent.example.com/a2a"
+      version: "1.0"
+      timeout_seconds: 30
+      accepted_output_modes: ["text/plain"]
+      headers:
+        Authorization: "Bearer ${TOKEN}"
+```
+
+Build a registry:
+
+```python
+from swarm import SwarmRuntime, build_a2a_registry, load_swarm_config
+
+config = load_swarm_config("swarm.yaml")
+registry = build_a2a_registry(config)
+result = await SwarmRuntime(registry=registry).run_task(config.task("compare"))
+```
+
+The runner converts `AgentSpec` into a `ROLE_USER` message with one text part containing the role, objective, context, boundaries, output schema, and inputs. Completed task artifact text becomes the `AgentResult.summary`. Input-required or working task states become `partial`; failed, rejected, or canceled states become `failed`.
+
 ## OpenAgent Adapter
 
 OpenAgent integrates outside the kernel boundary:
@@ -402,6 +432,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add A2A runners for remote non-OpenAgent agents.
-2. Add resumable coordinator policy for long swarm jobs.
-3. Add a higher-level coordinator policy for approving merge plans.
+1. Add resumable coordinator policy for long swarm jobs.
+2. Add a higher-level coordinator policy for approving merge plans.
+3. Add streaming A2A support for long-running remote agents.
