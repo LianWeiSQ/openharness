@@ -14,6 +14,7 @@ Implemented in this slice:
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
 - opt-in worker workspace isolation for future write-capable workers;
+- merge-back conflict review for isolated worker outputs;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
 - tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
@@ -21,8 +22,7 @@ Implemented in this slice:
 Not implemented yet:
 
 - A2A runners;
-- persistent team state;
-- merge-back workflow for write-capable worker outputs.
+- persistent team state.
 
 ## Configuration Shape
 
@@ -106,7 +106,40 @@ Supported modes:
 - `copy`: copy `source_root` into a fresh worker directory.
 - `empty`: create a fresh empty worker directory.
 
-This layer does not merge worker outputs back into the source workspace. That merge-back policy should be a later explicit workflow, after review and conflict checks are defined.
+This layer only prepares worker directories. Merge-back remains an explicit workflow, after review and conflict checks.
+
+## Merge-Back Review
+
+Merge-back is explicit and review-first. `SwarmRuntime.run_task(...)` does not write worker outputs back to the source workspace.
+
+When isolation is enabled, each runner result preserves workspace metadata:
+
+```python
+result.results["alpha"].metadata["worker_workspace"]
+result.results["alpha"].metadata["workspace_source_root"]
+```
+
+Build a merge plan from the run results:
+
+```python
+from swarm import apply_merge_plan, build_merge_plan
+
+plan = build_merge_plan(result.results)
+
+if not plan.has_conflicts:
+    applied = apply_merge_plan(plan)
+```
+
+The merge planner reports:
+
+- `added` files created by a worker;
+- `modified` files changed from the source workspace;
+- `deleted` files removed in a worker workspace;
+- conflicts when multiple workers change the same relative path differently.
+
+`apply_merge_plan(...)` skips conflicts by default. It applies only non-conflicting changes unless `include_conflicts=True` is explicitly set.
+
+If a worker output needs merge-back review, keep isolation `cleanup` disabled until the merge plan has been built and reviewed.
 
 ## Subprocess Runner
 
@@ -346,6 +379,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add merge-back and conflict review for write-capable worker outputs.
-2. Add A2A runners for remote non-OpenAgent agents.
-3. Add persistent team state and resume for long swarm jobs.
+1. Add A2A runners for remote non-OpenAgent agents.
+2. Add persistent team state and resume for long swarm jobs.
+3. Add a higher-level coordinator policy for approving merge plans.

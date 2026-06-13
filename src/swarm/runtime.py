@@ -3,7 +3,7 @@ from __future__ import annotations
 """Minimal supervisor runtime for the swarm kernel."""
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from uuid import uuid4
 
 from .config import TaskConfig
@@ -105,6 +105,8 @@ class SwarmRuntime:
                     )
                     handle = await runner.start(spec, runner_context)
                     result = await handle.result()
+                    if workspace_metadata:
+                        result = replace(result, metadata={**dict(result.metadata or {}), **workspace_metadata})
                     await _record_runner_events(
                         trace=trace,
                         handle=handle,

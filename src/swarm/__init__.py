@@ -12,6 +12,7 @@ from .function_runner import FunctionRunner, build_function_registry
 from .http_runner import HttpRequestConfig, HttpRunner, build_http_registry
 from .isolation import WorkerWorkspace, WorkerWorkspaceConfig, prepare_worker_workspace, resolve_worker_workspace_config
 from .langfuse_exporter import SwarmLangfuseExportResult, SwarmLangfuseExporter, export_swarm_trace_to_langfuse
+from .merge import MergeApplyResult, MergeChange, MergeConflict, MergePlan, apply_merge_plan, build_merge_plan
 from .protocol import (
     AgentDescriptor,
     AgentEvent,
@@ -42,6 +43,10 @@ __all__ = [
     "FunctionRunner",
     "HttpRequestConfig",
     "HttpRunner",
+    "MergeApplyResult",
+    "MergeChange",
+    "MergeConflict",
+    "MergePlan",
     "RunnerConfig",
     "RunnerRegistry",
     "RunContext",
@@ -61,9 +66,11 @@ __all__ = [
     "WorkerWorkspaceConfig",
     "build_function_registry",
     "build_http_registry",
+    "build_merge_plan",
     "build_subprocess_registry",
     "export_swarm_trace_to_langfuse",
     "load_swarm_config",
+    "apply_merge_plan",
     "prepare_worker_workspace",
     "resolve_worker_workspace_config",
 ]
