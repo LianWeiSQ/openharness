@@ -11,12 +11,13 @@ Implemented in this slice:
 - YAML config loading for runners, tasks, limits, and fanout budget;
 - `SwarmRuntime`, a minimal supervisor that dispatches one task to one or multiple runners;
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
+- `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
-- tests proving function dispatch, OpenAgent dispatch, multi-runner aggregation, trace lineage, failure capture, contract validation, and the OpenAgent boundary.
+- tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, multi-runner aggregation, trace lineage, failure capture, contract validation, and the OpenAgent boundary.
 
 Not implemented yet:
 
-- HTTP, subprocess, or A2A runners;
+- HTTP or A2A runners;
 - persistent team state;
 - write-capable worker isolation;
 - Langfuse export for swarm spans.
@@ -55,6 +56,69 @@ config = load_swarm_config("swarm.yaml")
 registry = build_function_registry(config, {"research_fn": research_fn})
 result = await SwarmRuntime(registry=registry, fanout_budget=config.fanout_budget).run_task(config.task("compare"))
 ```
+
+## Subprocess Runner
+
+Subprocess runners let the kernel call external CLI agents without importing them.
+
+```yaml
+runners:
+  external_researcher:
+    kind: subprocess
+    roles: [research]
+    metadata:
+      command: ["python", "agent.py"]
+      cwd: "/path/to/agent"
+      timeout_seconds: 30
+```
+
+Build a registry:
+
+```python
+from swarm import SwarmRuntime, build_subprocess_registry, load_swarm_config
+
+config = load_swarm_config("swarm.yaml")
+registry = build_subprocess_registry(config)
+result = await SwarmRuntime(registry=registry).run_task(config.task("compare"))
+```
+
+The subprocess receives JSON on stdin:
+
+```json
+{
+  "spec": {
+    "role": "research",
+    "objective": "...",
+    "context": "...",
+    "boundaries": "...",
+    "output_schema": {},
+    "inputs": {},
+    "permissions": "READONLY"
+  },
+  "context": {
+    "run_id": "swarm_...",
+    "parent_span_id": "span_..."
+  },
+  "runner": {
+    "id": "external_researcher",
+    "kind": "subprocess"
+  }
+}
+```
+
+The subprocess may return an `AgentResult`-like JSON object on stdout:
+
+```json
+{
+  "status": "completed",
+  "summary": "result",
+  "evidence": ["file.py:12"],
+  "confidence": 0.8,
+  "usage": {"input_tokens": 10, "output_tokens": 4, "cost": 0.01}
+}
+```
+
+Plain stdout is accepted as a completed summary. Non-zero exit code, startup errors, and timeouts become failed `AgentResult` values.
 
 ## OpenAgent Adapter
 
@@ -134,5 +198,5 @@ Missing fields fail the runner result instead of silently executing a vague task
 ## Next Slices
 
 1. Add Langfuse export for swarm trace events.
-2. Add subprocess and HTTP runners for non-OpenAgent agents.
+2. Add HTTP/A2A runners for remote non-OpenAgent agents.
 3. Add file/worktree isolation before write-capable workers.

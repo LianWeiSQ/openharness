@@ -24,6 +24,7 @@ from .protocol import (
 )
 from .registry import RunnerRegistry
 from .runtime import SwarmRunResult, SwarmRuntime
+from .subprocess_runner import SubprocessCommand, SubprocessRunner, build_subprocess_registry
 from .trace import SwarmTraceEvent, SwarmTraceRecorder
 
 __all__ = [
@@ -40,6 +41,8 @@ __all__ = [
     "RunnerRegistry",
     "RunContext",
     "RunLimits",
+    "SubprocessCommand",
+    "SubprocessRunner",
     "SwarmConfig",
     "SwarmRunResult",
     "SwarmRuntime",
@@ -48,5 +51,6 @@ __all__ = [
     "TaskConfig",
     "Usage",
     "build_function_registry",
+    "build_subprocess_registry",
     "load_swarm_config",
 ]

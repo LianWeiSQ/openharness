@@ -16,7 +16,7 @@ Implemented:
 - JSONL-friendly observability and eval/replay support;
 - optional Langfuse trace export and eval score export.
 - P0 file-backed session ledger for run/message/step/tool events, latest session state, and eval report references.
-- Decoupled swarm/function kernel with function runners, YAML config, multi-runner dispatch, an OpenAgent runner adapter, and local trace lineage.
+- Decoupled swarm/function kernel with function runners, subprocess runners, YAML config, multi-runner dispatch, an OpenAgent runner adapter, and local trace lineage.
 
 Not complete:
 
@@ -26,7 +26,7 @@ Not complete:
 - ContextPackBuilder is trace-first, not yet the only model-message assembly path;
 - step budgeting is static, so complex tasks can spend too many turns on confirmation and push required closeout artifacts past the final tool-enabled step.
 - tool execution now has runtime scheduling metadata and a batch planner, but AgentLoop still executes tool calls serially.
-- the swarm kernel does not yet have Langfuse export, subprocess, HTTP/A2A, or persistent team adapters.
+- the swarm kernel does not yet have Langfuse export, HTTP/A2A, or persistent team adapters.
 
 ## Next Milestones
 

@@ -12,8 +12,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from typing import Any
 
 from .config import SwarmConfig
-from .protocol import AgentDescriptor, AgentEvent, AgentResult, AgentSpec, RunContext, usage_from_mapping
+from .protocol import AgentDescriptor, AgentEvent, AgentResult, AgentSpec, RunContext
 from .registry import RunnerRegistry
+from .results import normalize_result_payload
 
 FunctionResult = AgentResult | str | dict[str, Any]
 FunctionHandler = Callable[[AgentSpec, RunContext], FunctionResult | Awaitable[FunctionResult]]
@@ -79,21 +80,7 @@ class FunctionRunner:
 
 
 def normalize_function_result(value: FunctionResult) -> AgentResult:
-    if isinstance(value, AgentResult):
-        return value
-    if isinstance(value, str):
-        return AgentResult(status="completed", summary=value)
-    if isinstance(value, dict):
-        return AgentResult(
-            status=str(value.get("status") or "completed"),  # type: ignore[arg-type]
-            summary=str(value.get("summary") or value),
-            evidence=[str(item) for item in value.get("evidence") or []],
-            open_questions=[str(item) for item in value.get("open_questions") or []],
-            confidence=float(value.get("confidence") or 0.0),
-            usage=usage_from_mapping(value.get("usage") if isinstance(value.get("usage"), dict) else None),
-            metadata=dict(value.get("metadata") or {}),
-        )
-    return AgentResult(status="completed", summary=str(value))
+    return normalize_result_payload(value)
 
 
 def build_function_registry(
