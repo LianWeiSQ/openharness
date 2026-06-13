@@ -10,6 +10,7 @@ Python functions, subprocess agents, HTTP agents, or any other runner.
 from .config import RunnerConfig, SwarmConfig, TaskConfig, load_swarm_config
 from .function_runner import FunctionRunner, build_function_registry
 from .http_runner import HttpRequestConfig, HttpRunner, build_http_registry
+from .isolation import WorkerWorkspace, WorkerWorkspaceConfig, prepare_worker_workspace, resolve_worker_workspace_config
 from .langfuse_exporter import SwarmLangfuseExportResult, SwarmLangfuseExporter, export_swarm_trace_to_langfuse
 from .protocol import (
     AgentDescriptor,
@@ -56,9 +57,13 @@ __all__ = [
     "SwarmTraceRecorder",
     "TaskConfig",
     "Usage",
+    "WorkerWorkspace",
+    "WorkerWorkspaceConfig",
     "build_function_registry",
     "build_http_registry",
     "build_subprocess_registry",
     "export_swarm_trace_to_langfuse",
     "load_swarm_config",
+    "prepare_worker_workspace",
+    "resolve_worker_workspace_config",
 ]

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from .config import TaskConfig
+from .isolation import WorkerWorkspace, prepare_worker_workspace, resolve_worker_workspace_config
 from .protocol import AgentResult, AgentSpec, FanoutBudget, RunContext, Usage
 from .registry import RunnerRegistry
 from .trace import SwarmTraceEvent, SwarmTraceRecorder
@@ -69,25 +70,38 @@ class SwarmRuntime:
                     "model_tier": runner.descriptor.model_tier,
                 },
             )
-            spec = AgentSpec(
-                role=role,
-                objective=task.objective,
-                context=task.context,
-                boundaries=task.boundaries,
-                output_schema=task.output_schema,
-                inputs=dict(task.inputs),
-                limits=task.limits,
-                permissions=task.permissions,
-                metadata={**task.metadata, "task_id": task.id, "runner_id": runner_id},
-            )
+            workspace: WorkerWorkspace | None = None
             try:
+                isolation_config = resolve_worker_workspace_config(
+                    task_metadata=task.metadata,
+                    runner_metadata=runner.descriptor.metadata,
+                )
                 async with semaphore:
+                    workspace = await asyncio.to_thread(
+                        prepare_worker_workspace,
+                        run_id=context.run_id,
+                        task_id=task.id,
+                        runner_id=runner_id,
+                        config=isolation_config,
+                    )
+                    workspace_metadata = workspace.as_metadata() if workspace else {}
+                    spec = AgentSpec(
+                        role=role,
+                        objective=task.objective,
+                        context=task.context,
+                        boundaries=task.boundaries,
+                        output_schema=task.output_schema,
+                        inputs={**dict(task.inputs), **({"worker_workspace": workspace.path} if workspace else {})},
+                        limits=task.limits,
+                        permissions=task.permissions,
+                        metadata={**task.metadata, "task_id": task.id, "runner_id": runner_id, **workspace_metadata},
+                    )
                     runner_context = RunContext(
                         run_id=context.run_id,
                         parent_span_id=runner_span_id,
                         budget=context.budget,
                         cancellation=context.cancellation,
-                        metadata={**context.metadata, "task_id": task.id, "runner_id": runner_id},
+                        metadata={**context.metadata, "task_id": task.id, "runner_id": runner_id, **workspace_metadata},
                     )
                     handle = await runner.start(spec, runner_context)
                     result = await handle.result()
@@ -107,6 +121,7 @@ class SwarmRuntime:
                             "input_tokens": result.usage.input_tokens,
                             "output_tokens": result.usage.output_tokens,
                             "cost": result.usage.cost,
+                            **workspace_metadata,
                         },
                     )
                     return runner_id, result
@@ -121,6 +136,9 @@ class SwarmRuntime:
                     summary=str(error),
                     metadata={"error_kind": "runner_dispatch_error", "runner_id": runner_id},
                 )
+            finally:
+                if workspace is not None:
+                    workspace.cleanup_path()
 
         pairs = await asyncio.gather(*(run_one(runner_id) for runner_id in runners))
         results = {runner_id: result for runner_id, result in pairs}

@@ -13,6 +13,7 @@ Implemented in this slice:
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
+- opt-in worker workspace isolation for future write-capable workers;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
 - tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
@@ -21,7 +22,7 @@ Not implemented yet:
 
 - A2A runners;
 - persistent team state;
-- write-capable worker isolation.
+- merge-back workflow for write-capable worker outputs.
 
 ## Configuration Shape
 
@@ -57,6 +58,55 @@ config = load_swarm_config("swarm.yaml")
 registry = build_function_registry(config, {"research_fn": research_fn})
 result = await SwarmRuntime(registry=registry, fanout_budget=config.fanout_budget).run_task(config.task("compare"))
 ```
+
+## Worker Workspace Isolation
+
+Workspace isolation is opt-in. It prepares a per-runner directory before dispatch and injects the path into:
+
+- `AgentSpec.inputs["worker_workspace"]`
+- `AgentSpec.metadata["worker_workspace"]`
+- `RunContext.metadata["worker_workspace"]`
+- `swarm.runner.finished` trace attributes
+
+Task-level metadata defines defaults:
+
+```yaml
+tasks:
+  edit:
+    role: worker
+    objective: Prepare a patch.
+    context: Work from an isolated copy.
+    boundaries: Only write inside worker_workspace. Do not modify source_root.
+    output_schema:
+      type: object
+    metadata:
+      isolation:
+        enabled: true
+        mode: copy
+        source_root: "/path/to/repo"
+        base_dir: "/tmp/openagent-swarm"
+        exclude: [".git", ".venv", "__pycache__"]
+```
+
+Runner-level metadata can override the task default:
+
+```yaml
+runners:
+  scratch_worker:
+    kind: function
+    roles: [worker]
+    metadata:
+      isolation:
+        enabled: true
+        mode: empty
+```
+
+Supported modes:
+
+- `copy`: copy `source_root` into a fresh worker directory.
+- `empty`: create a fresh empty worker directory.
+
+This layer does not merge worker outputs back into the source workspace. That merge-back policy should be a later explicit workflow, after review and conflict checks are defined.
 
 ## Subprocess Runner
 
@@ -296,6 +346,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add A2A runners for remote non-OpenAgent agents.
-2. Add file/worktree isolation before write-capable workers.
+1. Add merge-back and conflict review for write-capable worker outputs.
+2. Add A2A runners for remote non-OpenAgent agents.
 3. Add persistent team state and resume for long swarm jobs.
