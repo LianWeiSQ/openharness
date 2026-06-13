@@ -19,13 +19,14 @@ Implemented in this slice:
 - coordinator-level merge approval policy for deciding whether a merge plan can be applied;
 - optional file-backed persistent swarm run state;
 - resumable coordinator policy for reusing completed runner results;
+- team handoff manifests for carrying multi-runner progress across sessions;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
 - tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
 
 Not implemented yet:
 
-- resumable team adapters.
+- A2A task subscription reconnect support.
 
 ## Configuration Shape
 
@@ -258,6 +259,39 @@ result.results["researcher"].metadata["resumed_from_run_id"]
 ```
 
 The run also records a `swarm.resume` trace event with reused and dispatched runner ids. The final state file is rewritten with the merged result set.
+
+## Team Handoff
+
+Team handoff manifests are optional coordinator receipts for long swarm jobs. They summarize a multi-runner result so a later session can see which runners are reusable and which still need work.
+
+```python
+from swarm import (
+    FileTeamHandoffStore,
+    build_team_handoff,
+    task_for_team_handoff_resume,
+)
+
+handoff = build_team_handoff(
+    task=task,
+    result=result,
+    run_id="run-123",
+)
+
+store = FileTeamHandoffStore(".swarm/runs")
+store.save_handoff(handoff)
+
+resume_task = task_for_team_handoff_resume(task=task, handoff=handoff)
+resume_result = await runtime.run_task(resume_task, run_id=handoff.run_id)
+```
+
+Each `team-handoff.json` records:
+
+- the task contract and original runner order;
+- reusable runner ids, pending runner ids, and failed/partial/cancelled/missing runner ids;
+- compact per-runner status, summary, evidence, and metadata;
+- the resume reuse statuses that a follow-up run should use.
+
+`task_for_team_handoff_resume(...)` injects `metadata.resume.enabled=true` and the handoff metadata. By default it keeps the original runner list so `SwarmRuntime` can reuse completed results and rerun pending ones with the same `run_id`. Pass `pending_only=True` when a coordinator wants a narrower follow-up task that targets only pending runners.
 
 ## Subprocess Runner
 
@@ -551,6 +585,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add resumable team adapters for multi-session worker handoff.
-2. Add a coordinator workflow that combines resume, merge approval, and optional apply into one run receipt.
-3. Add A2A task subscription support for reconnecting to already-started remote tasks.
+1. Add a coordinator workflow that combines resume, team handoff, merge approval, and optional apply into one run receipt.
+2. Add A2A task subscription support for reconnecting to already-started remote tasks.
+3. Add CLI examples for running swarm configs from a file.

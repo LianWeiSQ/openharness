@@ -41,6 +41,14 @@ from .resume import SwarmResumePolicy, resolve_resume_policy, resume_policy_from
 from .runtime import SwarmRunResult, SwarmRuntime
 from .state import FileSwarmStateStore, SwarmStateStore, agent_result_from_dict, swarm_run_result_to_dict
 from .subprocess_runner import SubprocessCommand, SubprocessRunner, build_subprocess_registry
+from .team import (
+    FileTeamHandoffStore,
+    TeamHandoff,
+    TeamRunnerHandoff,
+    build_team_handoff,
+    task_for_team_handoff_resume,
+    team_handoff_from_dict,
+)
 from .trace import SwarmTraceEvent, SwarmTraceRecorder
 
 __all__ = [
@@ -55,6 +63,7 @@ __all__ = [
     "ArtifactRef",
     "FanoutBudget",
     "FileSwarmStateStore",
+    "FileTeamHandoffStore",
     "FunctionRunner",
     "HttpRequestConfig",
     "HttpRunner",
@@ -82,6 +91,8 @@ __all__ = [
     "SwarmTraceEvent",
     "SwarmTraceRecorder",
     "TaskConfig",
+    "TeamHandoff",
+    "TeamRunnerHandoff",
     "Usage",
     "WorkerWorkspace",
     "WorkerWorkspaceConfig",
@@ -91,6 +102,7 @@ __all__ = [
     "build_http_registry",
     "build_merge_plan",
     "build_subprocess_registry",
+    "build_team_handoff",
     "evaluate_merge_plan",
     "export_swarm_trace_to_langfuse",
     "load_swarm_config",
@@ -102,4 +114,6 @@ __all__ = [
     "resolve_worker_workspace_config",
     "resume_policy_from_value",
     "swarm_run_result_to_dict",
+    "task_for_team_handoff_resume",
+    "team_handoff_from_dict",
 ]
