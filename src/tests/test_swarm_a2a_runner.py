@@ -114,6 +114,57 @@ class SwarmA2ARunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.results["remote"].summary, "Stream failed")
         self.assertEqual(result.results["remote"].metadata["a2a_task_state"], "TASK_STATE_FAILED")
 
+    async def test_a2a_runner_subscribes_to_task_from_metadata(self) -> None:
+        server = _TestA2AServer({"/tasks/task-subscribe-1:subscribe": _subscribed_stream})
+        self.addCleanup(server.close)
+        config = _config(server.url("/"), subscribe_task_id="task-subscribe-1")
+
+        result = await SwarmRuntime(registry=build_a2a_registry(config)).run_task(config.task("task"), run_id="subscribe-run")
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.results["remote"].summary, "Subscribed result")
+        self.assertEqual(result.results["remote"].evidence, ["final"])
+        self.assertEqual(result.results["remote"].metadata["response_format"], "a2a-sse")
+        self.assertEqual(result.results["remote"].metadata["a2a_task_id"], "task-subscribe-1")
+        self.assertEqual(result.results["remote"].metadata["a2a_subscribed_task_id"], "task-subscribe-1")
+        self.assertEqual(result.results["remote"].metadata["a2a_task_state"], "TASK_STATE_COMPLETED")
+        self.assertEqual(server.records[0]["path"], "/tasks/task-subscribe-1:subscribe")
+        self.assertEqual(server.records[0]["headers"]["Accept"], "text/event-stream")
+        self.assertEqual(server.records[0]["headers"]["A2A-Version"], "1.0")
+        self.assertEqual(server.records[0]["payload"]["id"], "task-subscribe-1")
+        event_names = [event.name for event in result.trace_events]
+        self.assertIn("a2a.stream.task", event_names)
+        self.assertIn("a2a.stream.artifactUpdate", event_names)
+        self.assertIn("a2a.stream.statusUpdate", event_names)
+
+    async def test_a2a_runner_subscribe_task_id_can_come_from_task_inputs(self) -> None:
+        server = _TestA2AServer({"/api/tasks/task-input-1:subscribe": _subscribed_input_stream})
+        self.addCleanup(server.close)
+        config = _config(
+            server.url("/api/message:send"),
+            subscribe_task_id="runner-default",
+            task_inputs={"topic": "interoperability", "a2a_task_id": "task-input-1"},
+        )
+
+        result = await SwarmRuntime(registry=build_a2a_registry(config)).run_task(config.task("task"))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.results["remote"].summary, "Task input subscription result")
+        self.assertEqual(result.results["remote"].metadata["a2a_subscribed_task_id"], "task-input-1")
+        self.assertEqual(server.records[0]["path"], "/api/tasks/task-input-1:subscribe")
+
+    async def test_a2a_runner_subscribes_failed_task_to_failed_result(self) -> None:
+        server = _TestA2AServer({"/tasks/task-subscribe-failed:subscribe": _subscribed_failed_stream})
+        self.addCleanup(server.close)
+        config = _config(server.url("/"), subscribe_task_id="task-subscribe-failed")
+
+        result = await SwarmRuntime(registry=build_a2a_registry(config)).run_task(config.task("task"))
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.results["remote"].status, "failed")
+        self.assertEqual(result.results["remote"].summary, "Subscribed task failed")
+        self.assertEqual(result.results["remote"].metadata["a2a_task_state"], "TASK_STATE_FAILED")
+
 
 def _completed_task(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
     return (
@@ -212,6 +263,59 @@ def _failed_stream(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
     )
 
 
+def _subscribed_stream(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
+    return (
+        200,
+        {"Content-Type": "text/event-stream"},
+        _sse(
+            {"task": {"id": "task-subscribe-1", "status": {"state": "TASK_STATE_WORKING"}}},
+            {
+                "artifactUpdate": {
+                    "taskId": "task-subscribe-1",
+                    "artifact": {"name": "final", "parts": [{"text": "Subscribed result"}]},
+                }
+            },
+            {"statusUpdate": {"taskId": "task-subscribe-1", "status": {"state": "TASK_STATE_COMPLETED"}}},
+        ),
+    )
+
+
+def _subscribed_input_stream(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
+    return (
+        200,
+        {"Content-Type": "text/event-stream"},
+        _sse(
+            {"task": {"id": "task-input-1", "status": {"state": "TASK_STATE_WORKING"}}},
+            {
+                "artifactUpdate": {
+                    "taskId": "task-input-1",
+                    "artifact": {"name": "final", "parts": [{"text": "Task input subscription result"}]},
+                }
+            },
+            {"statusUpdate": {"taskId": "task-input-1", "status": {"state": "TASK_STATE_COMPLETED"}}},
+        ),
+    )
+
+
+def _subscribed_failed_stream(_payload: dict[str, Any]) -> tuple[int, dict[str, str], str]:
+    return (
+        200,
+        {"Content-Type": "text/event-stream"},
+        _sse(
+            {"task": {"id": "task-subscribe-failed", "status": {"state": "TASK_STATE_WORKING"}}},
+            {
+                "statusUpdate": {
+                    "taskId": "task-subscribe-failed",
+                    "status": {
+                        "state": "TASK_STATE_FAILED",
+                        "message": {"role": "ROLE_AGENT", "parts": [{"text": "Subscribed task failed"}]},
+                    },
+                }
+            },
+        ),
+    )
+
+
 def _sse(*events: dict[str, Any]) -> str:
     return "".join(f"data: {json.dumps(event)}\n\n" for event in events)
 
@@ -222,6 +326,9 @@ def _config(
     headers: dict[str, str] | None = None,
     version: str = "1.0",
     streaming: bool = False,
+    subscribe_task_id: str | None = None,
+    task_inputs: dict[str, Any] | None = None,
+    task_metadata: dict[str, Any] | None = None,
 ):
     return load_swarm_config(
         {
@@ -235,6 +342,7 @@ def _config(
                         "version": version,
                         "accepted_output_modes": ["text/plain"],
                         "streaming": streaming,
+                        "subscribe_task_id": subscribe_task_id,
                     },
                 }
             },
@@ -246,7 +354,8 @@ def _config(
                     "boundaries": "Read-only.",
                     "output_schema": {"type": "object"},
                     "runner_ids": ["remote"],
-                    "inputs": {"topic": "interoperability"},
+                    "inputs": task_inputs or {"topic": "interoperability"},
+                    "metadata": task_metadata or {},
                 }
             },
         }

@@ -10,7 +10,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import uuid4
 
@@ -27,6 +27,7 @@ class A2ARequestConfig:
     version: str = "1.0"
     accepted_output_modes: list[str] = field(default_factory=lambda: ["text/plain"])
     streaming: bool = False
+    subscribe_task_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +97,25 @@ class A2ARunner:
         timeout = spec.limits.timeout_seconds or self.request.timeout_seconds or 30.0
         payload = _payload_for_a2a(spec=spec, ctx=ctx, runner_id=self.descriptor.id, request=self.request)
         try:
+            subscribe_task_id = _subscribe_task_id_for(spec=spec, request=self.request)
+            if subscribe_task_id:
+                subscribe_request = replace(
+                    self.request,
+                    url=_task_subscribe_url(self.request.url, subscribe_task_id),
+                    streaming=True,
+                )
+                stream_response = await asyncio.to_thread(
+                    _perform_stream_request,
+                    request=subscribe_request,
+                    payload=_subscription_payload(task_id=subscribe_task_id, ctx=ctx, runner_id=self.descriptor.id),
+                    timeout=timeout,
+                )
+                return _result_from_stream_response(
+                    response=stream_response,
+                    runner_id=self.descriptor.id,
+                    run_id=ctx.run_id,
+                    subscribed_task_id=subscribe_task_id,
+                )
             if self.request.streaming:
                 stream_response = await asyncio.to_thread(
                     _perform_stream_request,
@@ -181,6 +201,7 @@ def _request_from_metadata(metadata: dict[str, Any]) -> A2ARequestConfig:
     else:
         raise ValueError("a2a accepted_output_modes must be a string or list")
     streaming = bool(metadata.get("streaming") or metadata.get("stream"))
+    subscribe_task_id = _normalize_optional_string(metadata.get("subscribe_task_id") or metadata.get("a2a_task_id"))
     return A2ARequestConfig(
         url=_message_stream_url(raw_url) if streaming else _message_send_url(raw_url),
         headers={str(key): str(value) for key, value in raw_headers.items()},
@@ -188,6 +209,7 @@ def _request_from_metadata(metadata: dict[str, Any]) -> A2ARequestConfig:
         version=str(metadata.get("version") or "1.0"),
         accepted_output_modes=accepted_modes,
         streaming=streaming,
+        subscribe_task_id=subscribe_task_id,
     )
 
 
@@ -217,6 +239,19 @@ def _payload_for_a2a(*, spec: AgentSpec, ctx: RunContext, runner_id: str, reques
                 "swarm_parent_span_id": ctx.parent_span_id,
             },
         },
+    }
+
+
+def _subscription_payload(*, task_id: str, ctx: RunContext, runner_id: str) -> dict[str, Any]:
+    metadata = {
+        "swarm_run_id": ctx.run_id,
+        "swarm_runner_id": runner_id,
+        "swarm_parent_span_id": ctx.parent_span_id,
+    }
+    return {
+        "id": task_id,
+        "metadata": metadata,
+        "configuration": {"metadata": metadata},
     }
 
 
@@ -316,7 +351,13 @@ def _result_from_response(*, response: _A2AResponse, runner_id: str) -> AgentRes
     return AgentResult(status="completed", summary=str(decoded), metadata=metadata)
 
 
-def _result_from_stream_response(*, response: _A2AStreamResponse, runner_id: str, run_id: str) -> tuple[AgentResult, list[AgentEvent]]:
+def _result_from_stream_response(
+    *,
+    response: _A2AStreamResponse,
+    runner_id: str,
+    run_id: str,
+    subscribed_task_id: str | None = None,
+) -> tuple[AgentResult, list[AgentEvent]]:
     stream_events: list[AgentEvent] = []
     summary_chunks: list[str] = []
     evidence: list[str] = []
@@ -386,6 +427,10 @@ def _result_from_stream_response(*, response: _A2AStreamResponse, runner_id: str
     }
     if task_id:
         metadata["a2a_task_id"] = task_id
+    elif subscribed_task_id:
+        metadata["a2a_task_id"] = subscribed_task_id
+    if subscribed_task_id:
+        metadata["a2a_subscribed_task_id"] = subscribed_task_id
     if latest_state:
         metadata["a2a_task_state"] = latest_state
 
@@ -580,6 +625,21 @@ def _dedupe_join(items: list[str]) -> str:
     return "\n".join(_dedupe([item.strip() for item in items if item.strip()]))
 
 
+def _subscribe_task_id_for(*, spec: AgentSpec, request: A2ARequestConfig) -> str | None:
+    for source in (spec.inputs, spec.metadata):
+        value = _normalize_optional_string(source.get("subscribe_task_id") or source.get("a2a_task_id"))
+        if value:
+            return value
+    return request.subscribe_task_id
+
+
+def _normalize_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
 def _message_send_url(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     path = parsed.path or "/"
@@ -600,6 +660,23 @@ def _message_stream_url(url: str) -> str:
         return urllib.parse.urlunparse(parsed._replace(path=next_path))
     base_path = path.rstrip("/")
     next_path = f"{base_path}/message:stream" if base_path else "/message:stream"
+    return urllib.parse.urlunparse(parsed._replace(path=next_path))
+
+
+def _task_subscribe_url(url: str, task_id: str) -> str:
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path or "/"
+    stripped = path.rstrip("/")
+    if stripped.endswith(":subscribe"):
+        return url
+    if stripped.endswith("/message:send"):
+        base_path = stripped[: -len("/message:send")]
+    elif stripped.endswith("/message:stream"):
+        base_path = stripped[: -len("/message:stream")]
+    else:
+        base_path = stripped
+    encoded_task_id = urllib.parse.quote(task_id, safe="")
+    next_path = f"{base_path}/tasks/{encoded_task_id}:subscribe" if base_path else f"/tasks/{encoded_task_id}:subscribe"
     return urllib.parse.urlunparse(parsed._replace(path=next_path))
 
 

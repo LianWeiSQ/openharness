@@ -13,7 +13,7 @@ Implemented in this slice:
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
-- `A2ARunner`, an HTTP+JSON adapter for Agent2Agent-compatible remote agents, including SSE streaming;
+- `A2ARunner`, an HTTP+JSON adapter for Agent2Agent-compatible remote agents, including SSE streaming and task subscription reconnect;
 - opt-in worker workspace isolation for future write-capable workers;
 - merge-back conflict review for isolated worker outputs;
 - coordinator-level merge approval policy for deciding whether a merge plan can be applied;
@@ -24,10 +24,6 @@ Implemented in this slice:
 - local swarm trace lineage for run, task, runner, and runner-event spans;
 - optional Langfuse export for swarm trace events;
 - tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
-
-Not implemented yet:
-
-- A2A task subscription reconnect support.
 
 ## Configuration Shape
 
@@ -521,6 +517,29 @@ With `streaming: true`, the runner normalizes the endpoint to `POST /message:str
 
 Each stream item becomes an `a2a.stream.*` runner event in the local swarm trace. Streamed artifact text, status messages, and direct messages are folded into the final `AgentResult.summary`; terminal task states still control the final result status.
 
+To reconnect to an already-started remote task, configure a task subscription:
+
+```yaml
+runners:
+  a2a_reconnector:
+    kind: a2a
+    roles: [research]
+    metadata:
+      url: "https://agent.example.com/a2a"
+      subscribe_task_id: "task-123"
+      version: "1.0"
+      timeout_seconds: 60
+```
+
+When `subscribe_task_id` is present, the runner normalizes the endpoint to `POST /tasks/{id}:subscribe`, sends `Accept: text/event-stream`, and parses the same A2A `StreamResponse` event shapes as `message:stream`. A task can override the runner default by setting `inputs.a2a_task_id`, `inputs.subscribe_task_id`, `metadata.a2a_task_id`, or `metadata.subscribe_task_id`.
+
+The final result keeps the same `response_format: a2a-sse` metadata as streaming, plus:
+
+- `a2a_task_id`
+- `a2a_subscribed_task_id`
+- `a2a_task_state`
+- `a2a_stream_events`
+
 ## OpenAgent Adapter
 
 OpenAgent integrates outside the kernel boundary:
@@ -629,6 +648,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add A2A task subscription support for reconnecting to already-started remote tasks.
-2. Add CLI examples for running swarm configs from a file.
-3. Add richer coordinator receipts for Langfuse export and Web inspection.
+1. Add CLI examples for running swarm configs from a file.
+2. Add richer coordinator receipts for Langfuse export and Web inspection.
+3. Add public examples that show one OpenAgent runner plus one external A2A runner in the same YAML config.
