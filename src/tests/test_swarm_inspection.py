@@ -92,6 +92,8 @@ class SwarmInspectionTests(unittest.TestCase):
                 detail = _get_json(f"{base}/runs/run-api")
                 receipt = _get_json(f"{base}/runs/run-api/receipt")
                 trace = _get_json(f"{base}/runs/run-api/trace")
+                root_html, root_headers = _get_text(f"{base}/")
+                ui_html, ui_headers = _get_text(f"{base}/ui")
                 missing_status, missing = _get_json_error(f"{base}/runs/missing")
             finally:
                 server.shutdown()
@@ -103,6 +105,11 @@ class SwarmInspectionTests(unittest.TestCase):
         self.assertEqual(detail["run"]["run_id"], "run-api")
         self.assertEqual(receipt["run_id"], "run-api")
         self.assertEqual(len(trace), 2)
+        self.assertIn("Swarm Inspection", root_html)
+        self.assertIn('fetchJson("/runs")', root_html)
+        self.assertIn("Runner Status", ui_html)
+        self.assertIn("text/html", root_headers["content-type"])
+        self.assertIn("text/html", ui_headers["content-type"])
         self.assertEqual(missing_status, 404)
         self.assertEqual(missing["status"], "not_found")
 
@@ -149,7 +156,13 @@ def _write_handoff(root: Path, run_id: str) -> None:
 
 def _get_json(url: str):
     with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 - local test server.
+        assert "application/json" in response.headers["content-type"]
         return json.loads(response.read().decode("utf-8"))
+
+
+def _get_text(url: str):
+    with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 - local test server.
+        return response.read().decode("utf-8"), {str(key).lower(): str(value) for key, value in response.headers.items()}
 
 
 def _get_json_error(url: str):

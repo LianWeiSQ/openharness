@@ -115,6 +115,9 @@ class _InspectionHandler(BaseHTTPRequestHandler):
     inspection_config: SwarmInspectionConfig
 
     def do_GET(self) -> None:  # noqa: N802
+        if _is_html_route(self.path):
+            self._write_html(200, _inspection_html())
+            return
         try:
             status, payload = self._route()
         except Exception as error:  # noqa: BLE001
@@ -147,8 +150,412 @@ class _InspectionHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _write_html(self, status: int, html: str) -> None:
+        body = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, _format: str, *args: Any) -> None:
         return
+
+
+def _is_html_route(path: str) -> bool:
+    parts = _path_parts(path)
+    return not parts or parts in (["ui"], ["index.html"])
+
+
+def _inspection_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swarm Inspection</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --surface-2: #eef2f6;
+      --text: #17202a;
+      --muted: #647182;
+      --border: #d9e0e8;
+      --accent: #246bfe;
+      --ok: #0f8a5f;
+      --warn: #b7791f;
+      --bad: #c53030;
+      --shadow: 0 10px 28px rgba(20, 32, 48, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.2;
+      font-weight: 680;
+    }
+    button {
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      min-height: calc(100vh - 65px);
+    }
+    aside {
+      border-right: 1px solid var(--border);
+      background: #fbfcfd;
+      padding: 18px;
+      overflow: auto;
+    }
+    .content {
+      padding: 18px;
+      overflow: auto;
+    }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    .run-list {
+      display: grid;
+      gap: 10px;
+    }
+    .run-row {
+      width: 100%;
+      display: grid;
+      gap: 8px;
+      text-align: left;
+      padding: 12px;
+      border-radius: 8px;
+      background: var(--surface);
+      box-shadow: none;
+    }
+    .run-row[aria-selected="true"] {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(36, 107, 254, 0.12);
+    }
+    .row-top, .metrics {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .run-id {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-weight: 650;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 22px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: var(--surface-2);
+      font-size: 12px;
+      font-weight: 620;
+      white-space: nowrap;
+    }
+    .badge.completed { color: var(--ok); background: #e7f7ef; border-color: #bfe8d3; }
+    .badge.failed { color: var(--bad); background: #fdecec; border-color: #f5c2c2; }
+    .badge.partial, .badge.warning { color: var(--warn); background: #fff7e6; border-color: #f3daa6; }
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+      margin-bottom: 14px;
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 15px;
+      line-height: 1.3;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .metric {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fbfcfd;
+      min-width: 0;
+    }
+    .metric strong {
+      display: block;
+      font-size: 22px;
+      line-height: 1.2;
+      margin-bottom: 4px;
+    }
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    a:hover { text-decoration: underline; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 9px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 640;
+      background: #fbfcfd;
+    }
+    pre {
+      margin: 0;
+      max-height: 280px;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #111827;
+      color: #e5edf7;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .empty {
+      padding: 24px;
+      color: var(--muted);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      background: #fbfcfd;
+    }
+    @media (max-width: 780px) {
+      main { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--border); max-height: 45vh; }
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Swarm Inspection</h1>
+      <div class="small muted" id="summary">Loading runs</div>
+    </div>
+    <button type="button" id="refresh">Refresh</button>
+  </header>
+  <main>
+    <aside>
+      <div class="toolbar">
+        <strong>Runs</strong>
+        <span class="small muted" id="run-count">0</span>
+      </div>
+      <div class="run-list" id="run-list"></div>
+    </aside>
+    <section class="content" id="detail">
+      <div class="empty">Select a run.</div>
+    </section>
+  </main>
+  <script>
+    const state = { runs: [], selected: null };
+    const listEl = document.querySelector("#run-list");
+    const detailEl = document.querySelector("#detail");
+    const summaryEl = document.querySelector("#summary");
+    const countEl = document.querySelector("#run-count");
+    document.querySelector("#refresh").addEventListener("click", loadRuns);
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      }[char]));
+    }
+
+    function number(value) {
+      if (value === null || value === undefined || value === "") return "0";
+      if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(4);
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? number(parsed) : escapeHtml(value);
+    }
+
+    function badge(status) {
+      const normalized = String(status || "unknown").toLowerCase();
+      return `<span class="badge ${escapeHtml(normalized)}">${escapeHtml(status || "unknown")}</span>`;
+    }
+
+    async function fetchJson(path) {
+      const response = await fetch(path, { headers: { "Accept": "application/json" } });
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      return await response.json();
+    }
+
+    async function loadRuns() {
+      summaryEl.textContent = "Loading runs";
+      try {
+        const payload = await fetchJson("/runs");
+        state.runs = payload.runs || [];
+        countEl.textContent = String(payload.run_count || state.runs.length);
+        summaryEl.textContent = payload.diagnostics && payload.diagnostics.length
+          ? `${state.runs.length} runs, ${payload.diagnostics.length} diagnostics`
+          : `${state.runs.length} runs`;
+        renderRuns();
+        if (state.runs.length) {
+          const keep = state.runs.find((run) => run.run_id === state.selected);
+          await selectRun(keep ? keep.run_id : state.runs[0].run_id);
+        } else {
+          detailEl.innerHTML = `<div class="empty">No persisted runs found.</div>`;
+        }
+      } catch (error) {
+        summaryEl.textContent = "Failed to load";
+        detailEl.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function renderRuns() {
+      listEl.innerHTML = state.runs.map((run) => `
+        <button class="run-row" type="button" data-run-id="${escapeHtml(run.run_id)}" aria-selected="${run.run_id === state.selected}">
+          <span class="row-top">
+            <span class="run-id">${escapeHtml(run.run_id)}</span>
+            ${badge(run.status)}
+          </span>
+          <span class="small muted">${escapeHtml(run.task_id || "no task")}</span>
+          <span class="metrics small muted">
+            <span>${number(run.runner_count)} runners</span>
+            <span>${number(run.trace_event_count)} events</span>
+          </span>
+        </button>
+      `).join("");
+      listEl.querySelectorAll("[data-run-id]").forEach((button) => {
+        button.addEventListener("click", () => selectRun(button.dataset.runId));
+      });
+    }
+
+    async function selectRun(runId) {
+      if (!runId) return;
+      state.selected = runId;
+      renderRuns();
+      detailEl.innerHTML = `<div class="empty">Loading ${escapeHtml(runId)}</div>`;
+      try {
+        renderDetail(await fetchJson(`/runs/${encodeURIComponent(runId)}`));
+      } catch (error) {
+        detailEl.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`;
+      }
+    }
+
+    function renderDetail(payload) {
+      const run = payload.run || {};
+      const receipt = payload.receipt || {};
+      const usage = run.usage || receipt.usage || {};
+      const links = run.links || {};
+      const runnerSummaries = Array.isArray(receipt.runner_summaries) ? receipt.runner_summaries : [];
+      const diagnostics = payload.diagnostics || [];
+      detailEl.innerHTML = `
+        <section class="panel">
+          <div class="row-top">
+            <h2>${escapeHtml(run.run_id || "Run")}</h2>
+            ${badge(run.status)}
+          </div>
+          <div class="small muted">${escapeHtml(run.task_id || "")}</div>
+          <div class="links" style="margin-top: 12px;">${Object.entries(links).map(([name, href]) => `<a href="${escapeHtml(href)}">${escapeHtml(name)}</a>`).join("")}</div>
+        </section>
+        <section class="panel grid">
+          ${metric("Runners", run.runner_count)}
+          ${metric("Trace Events", run.trace_event_count)}
+          ${metric("Tokens", usage.total_tokens)}
+          ${metric("Cost", usage.cost)}
+        </section>
+        <section class="panel">
+          <h2>Runner Status</h2>
+          ${statusTable(run.runner_status_counts || {})}
+        </section>
+        <section class="panel">
+          <h2>Receipt</h2>
+          ${runnerSummaries.length ? runnerTable(runnerSummaries) : `<div class="empty">No runner summaries.</div>`}
+        </section>
+        <section class="panel">
+          <h2>Diagnostics</h2>
+          ${diagnostics.length ? `<pre>${escapeHtml(JSON.stringify(diagnostics, null, 2))}</pre>` : `<div class="empty">No diagnostics.</div>`}
+        </section>
+      `;
+    }
+
+    function metric(label, value) {
+      return `<div class="metric"><strong>${number(value)}</strong><span class="small muted">${escapeHtml(label)}</span></div>`;
+    }
+
+    function statusTable(counts) {
+      const rows = Object.entries(counts);
+      if (!rows.length) return `<div class="empty">No status counts.</div>`;
+      return `<table><thead><tr><th>Status</th><th>Count</th></tr></thead><tbody>${rows.map(([status, count]) => `<tr><td>${badge(status)}</td><td>${number(count)}</td></tr>`).join("")}</tbody></table>`;
+    }
+
+    function runnerTable(items) {
+      return `<table><thead><tr><th>Runner</th><th>Status</th><th>Summary</th><th>Usage</th></tr></thead><tbody>${items.map((item) => `
+        <tr>
+          <td>${escapeHtml(item.runner_id)}</td>
+          <td>${badge(item.status)}</td>
+          <td>${escapeHtml(item.summary_preview || "")}</td>
+          <td>${number(item.usage && item.usage.total_tokens)} tokens</td>
+        </tr>
+      `).join("")}</tbody></table>`;
+    }
+
+    loadRuns();
+  </script>
+</body>
+</html>
+"""
 
 
 def _run_summary(run_id: str, *, state_root: Path | None, handoff_root: Path | None) -> dict[str, Any]:

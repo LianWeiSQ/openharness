@@ -133,9 +133,9 @@ The command writes JSON to stdout. The compact output includes:
 
 When `--state-dir` is set, the full run state, runner results, and trace JSONL are written under `<state-dir>/<run-id>/`. When `--handoff-dir` is set, the coordinator also writes `<handoff-dir>/<run-id>/team-handoff.json` and `<handoff-dir>/<run-id>/coordinator-receipt.json`.
 
-## Inspection API
+## Inspection UI And API
 
-Persisted swarm runs can be inspected over a local JSON API:
+Persisted swarm runs can be inspected in a local browser view and through JSON endpoints:
 
 ```bash
 openagent-swarm inspect \
@@ -153,6 +153,8 @@ PYTHONPATH=src python -m swarm.cli inspect --state-dir .swarm/state --handoff-di
 
 Endpoints:
 
+- `GET /`
+- `GET /ui`
 - `GET /health`
 - `GET /runs`
 - `GET /runs/{run_id}`
@@ -161,7 +163,7 @@ Endpoints:
 - `GET /runs/{run_id}/receipt`
 - `GET /runs/{run_id}/trace`
 
-`/runs` and `/runs/{run_id}` are compact by default and include diagnostics for malformed artifacts. Full trace events are only returned from `/runs/{run_id}/trace`.
+`/` and `/ui` serve a small browser-facing inspection view that fetches the JSON API, renders persisted runs, and opens run details without a build step or external assets. `/runs` and `/runs/{run_id}` are compact by default and include diagnostics for malformed artifacts. Full trace events are only returned from `/runs/{run_id}/trace`.
 
 ## Worker Workspace Isolation
 

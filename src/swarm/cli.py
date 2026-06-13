@@ -76,7 +76,7 @@ def _inspect_command(args: argparse.Namespace) -> int:
     if not args.state_dir and not args.handoff_dir:
         print(json.dumps({"status": "error", "error": "inspect requires --state-dir or --handoff-dir"}, sort_keys=True), file=sys.stderr)
         return 2
-    print(f"Serving swarm inspection API on http://{args.host}:{args.port}", file=sys.stderr)
+    print(f"Serving swarm inspection UI on http://{args.host}:{args.port}", file=sys.stderr)
     serve_inspection_api(
         SwarmInspectionConfig(state_dir=args.state_dir, handoff_dir=args.handoff_dir),
         host=args.host,
