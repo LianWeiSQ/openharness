@@ -22,6 +22,7 @@ CONTENT_KEY_MARKERS = (
     "summary",
     "text",
 )
+MAX_LABEL_LENGTH = 80
 SAFE_KEYS = {
     "confidence",
     "cost",
@@ -84,24 +85,30 @@ class SwarmLangfuseExporter:
             tags=_string_list(options.get("tags"), default=["openagent", "swarm"]),
         )
 
-    def export(self, events: list[SwarmTraceEvent]) -> SwarmLangfuseExportResult:
+    def export(
+        self,
+        events: list[SwarmTraceEvent],
+        *,
+        receipt: dict[str, Any] | None = None,
+    ) -> SwarmLangfuseExportResult:
         if self._closed:
             return SwarmLangfuseExportResult(enabled=True, trace_id=self.langfuse_trace_id, observations_sent=self._sent)
+        receipt_metadata = swarm_receipt_to_langfuse_metadata(receipt)
         for event in sorted(events, key=lambda item: item.seq):
-            self.record_event(event)
+            self.record_event(event, receipt_metadata=receipt_metadata)
         self.close()
         return SwarmLangfuseExportResult(enabled=True, trace_id=self.langfuse_trace_id, observations_sent=self._sent)
 
-    def record_event(self, event: SwarmTraceEvent) -> None:
+    def record_event(self, event: SwarmTraceEvent, *, receipt_metadata: dict[str, Any] | None = None) -> None:
         if self._closed:
             return
         if _is_swarm_span_start(event):
-            self._start_span(event)
+            self._start_span(event, receipt_metadata=receipt_metadata)
             return
         if _is_swarm_span_finish(event):
-            self._finish_span(event)
+            self._finish_span(event, receipt_metadata=receipt_metadata)
             return
-        self._record_instant_observation(event)
+        self._record_instant_observation(event, receipt_metadata=receipt_metadata)
 
     def close(self) -> None:
         if self._closed:
@@ -124,30 +131,30 @@ class SwarmLangfuseExporter:
             "observations_sent": self._sent,
         }
 
-    def _start_span(self, event: SwarmTraceEvent) -> None:
+    def _start_span(self, event: SwarmTraceEvent, *, receipt_metadata: dict[str, Any] | None = None) -> None:
         key = _event_key(event)
         if key in self._observations:
             return
         observation = self._start_client_observation(event)
-        self._update_observation(observation, event, terminal=False)
+        self._update_observation(observation, event, terminal=False, receipt_metadata=receipt_metadata)
         self._observations[key] = observation
         observation_id = _observation_id(observation)
         if observation_id:
             self._observation_ids[key] = observation_id
         self._sent += 1
 
-    def _finish_span(self, event: SwarmTraceEvent) -> None:
+    def _finish_span(self, event: SwarmTraceEvent, *, receipt_metadata: dict[str, Any] | None = None) -> None:
         key = _event_key(event)
         observation = self._observations.pop(key, None)
         if observation is None:
             observation = self._start_client_observation(event)
             self._sent += 1
-        self._update_observation(observation, event, terminal=True)
+        self._update_observation(observation, event, terminal=True, receipt_metadata=receipt_metadata)
         _safe_end(observation)
 
-    def _record_instant_observation(self, event: SwarmTraceEvent) -> None:
+    def _record_instant_observation(self, event: SwarmTraceEvent, *, receipt_metadata: dict[str, Any] | None = None) -> None:
         observation = self._start_client_observation(event)
-        self._update_observation(observation, event, terminal=True)
+        self._update_observation(observation, event, terminal=True, receipt_metadata=receipt_metadata)
         _safe_end(observation)
         self._sent += 1
 
@@ -164,8 +171,15 @@ class SwarmLangfuseExporter:
         except TypeError:
             return method(name=_observation_name(event), as_type=_observation_type(event))
 
-    def _update_observation(self, observation: Any, event: SwarmTraceEvent, *, terminal: bool) -> None:
-        payload: dict[str, Any] = {"metadata": self._metadata_payload(event)}
+    def _update_observation(
+        self,
+        observation: Any,
+        event: SwarmTraceEvent,
+        *,
+        terminal: bool,
+        receipt_metadata: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"metadata": self._metadata_payload(event, receipt_metadata=receipt_metadata)}
         if terminal:
             payload["level"] = "ERROR" if event.status == "error" else "DEFAULT"
             if event.status == "error":
@@ -178,7 +192,7 @@ class SwarmLangfuseExporter:
             payload["cost_details"] = {"total": cost}
         _safe_update(observation, payload)
 
-    def _metadata_payload(self, event: SwarmTraceEvent) -> dict[str, Any]:
+    def _metadata_payload(self, event: SwarmTraceEvent, *, receipt_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "swarm_event": event.name,
             "swarm_seq": event.seq,
@@ -195,16 +209,63 @@ class SwarmLangfuseExporter:
             payload["swarm_task_id"] = event.task_id
         if event.duration_ms is not None:
             payload["swarm_duration_ms"] = event.duration_ms
+        if receipt_metadata and _is_swarm_run_event(event):
+            payload.update(receipt_metadata)
         for key, value in event.attributes.items():
             if _should_export_attribute(str(key), include_content=self.include_content):
                 payload[f"attr_{_normalize_attr_key(str(key))}"] = value
         return payload
 
 
+def swarm_receipt_to_langfuse_metadata(receipt: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(receipt, dict):
+        return {}
+    metadata: dict[str, Any] = {
+        "swarm_receipt_attached": True,
+    }
+    _add_int(metadata, "swarm_receipt_schema_version", receipt.get("schema_version"))
+    _add_label(metadata, "swarm_receipt_run_status", receipt.get("run_status"))
+    _add_label(metadata, "swarm_receipt_task_role", receipt.get("task_role"))
+    _add_int(metadata, "swarm_receipt_runner_count", receipt.get("runner_count"))
+    _add_int(metadata, "swarm_receipt_trace_event_count", receipt.get("trace_event_count"))
+    _add_int(metadata, "swarm_receipt_trace_error_count", receipt.get("trace_error_count"))
+    _add_bool(metadata, "swarm_receipt_handoff_saved", receipt.get("handoff_saved"))
+    _add_bool(metadata, "swarm_receipt_handoff_has_pending", receipt.get("handoff_has_pending"))
+    _add_int(metadata, "swarm_receipt_pending_runner_count", _list_length(receipt.get("pending_runner_ids")))
+    _add_int(metadata, "swarm_receipt_reusable_runner_count", _list_length(receipt.get("reusable_runner_ids")))
+    _add_bool(metadata, "swarm_receipt_merge_enabled", receipt.get("merge_enabled"))
+    _add_label(metadata, "swarm_receipt_merge_decision", receipt.get("merge_decision"))
+    _add_int(metadata, "swarm_receipt_merge_change_count", receipt.get("merge_change_count"))
+    _add_int(metadata, "swarm_receipt_merge_conflict_count", receipt.get("merge_conflict_count"))
+    _add_int(metadata, "swarm_receipt_merge_applied_count", receipt.get("merge_applied_count"))
+    _add_int(metadata, "swarm_receipt_merge_reason_count", _list_length(receipt.get("merge_reason_codes")))
+    _add_int(metadata, "swarm_receipt_warning_count", _list_length(receipt.get("warnings")))
+    _add_int(metadata, "swarm_receipt_diagnostic_count", _list_length(receipt.get("diagnostics")))
+
+    usage = receipt.get("usage")
+    if isinstance(usage, dict):
+        _add_int(metadata, "swarm_receipt_input_tokens", usage.get("input_tokens"))
+        _add_int(metadata, "swarm_receipt_output_tokens", usage.get("output_tokens"))
+        _add_int(metadata, "swarm_receipt_total_tokens", usage.get("total_tokens"))
+        _add_float(metadata, "swarm_receipt_cost", usage.get("cost"))
+        _add_int(metadata, "swarm_receipt_steps", usage.get("steps"))
+        _add_int(metadata, "swarm_receipt_latency_ms", usage.get("latency_ms"))
+
+    status_counts = receipt.get("runner_status_counts")
+    if isinstance(status_counts, dict):
+        for raw_status, raw_count in sorted(status_counts.items()):
+            status = _safe_label(raw_status)
+            count = _int_value(raw_count)
+            if status and count is not None:
+                metadata[f"swarm_receipt_runner_status_{_normalize_attr_key(status)}"] = count
+    return metadata
+
+
 def export_swarm_trace_to_langfuse(
     events: list[SwarmTraceEvent],
     *,
     options: dict[str, Any] | None = None,
+    receipt: dict[str, Any] | None = None,
 ) -> SwarmLangfuseExportResult:
     options = dict(options or {})
     if not _bool_option(options.get("enabled", False)):
@@ -214,7 +275,7 @@ def export_swarm_trace_to_langfuse(
     diagnostics: list[dict[str, Any]] = []
     try:
         exporter = SwarmLangfuseExporter.from_config(trace_seed=events[0].trace_id, options=options)
-        result = exporter.export(events)
+        result = exporter.export(events, receipt=receipt)
         return SwarmLangfuseExportResult(
             enabled=True,
             trace_id=result.trace_id,
@@ -270,6 +331,10 @@ def _is_swarm_span_finish(event: SwarmTraceEvent) -> bool:
     return event.name.startswith("swarm.") and event.name.endswith(".finished")
 
 
+def _is_swarm_run_event(event: SwarmTraceEvent) -> bool:
+    return event.name.startswith("swarm.run.")
+
+
 def _event_key(event: SwarmTraceEvent) -> str:
     return f"span:{event.span_id}"
 
@@ -309,6 +374,46 @@ def _should_export_attribute(key: str, *, include_content: bool) -> bool:
 
 def _normalize_attr_key(key: str) -> str:
     return "".join(char if char.isalnum() else "_" for char in key).strip("_") or "value"
+
+
+def _safe_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or len(text) > MAX_LABEL_LENGTH:
+        return None
+    if any(marker in text.lower() for marker in CONTENT_KEY_MARKERS):
+        return None
+    return text if all(char.isalnum() or char in {"_", "-", "."} for char in text) else None
+
+
+def _add_label(target: dict[str, Any], key: str, value: Any) -> None:
+    label = _safe_label(value)
+    if label is not None:
+        target[key] = label
+
+
+def _add_int(target: dict[str, Any], key: str, value: Any) -> None:
+    resolved = _int_value(value)
+    if resolved is not None:
+        target[key] = resolved
+
+
+def _add_float(target: dict[str, Any], key: str, value: Any) -> None:
+    resolved = _float_value(value)
+    if resolved is not None:
+        target[key] = resolved
+
+
+def _add_bool(target: dict[str, Any], key: str, value: Any) -> None:
+    if isinstance(value, bool):
+        target[key] = value
+
+
+def _list_length(value: Any) -> int | None:
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    return None
 
 
 def _status_message(attributes: dict[str, Any]) -> str | None:
@@ -412,4 +517,5 @@ __all__ = [
     "SwarmLangfuseExporter",
     "export_swarm_trace_to_langfuse",
     "load_langfuse_client",
+    "swarm_receipt_to_langfuse_metadata",
 ]

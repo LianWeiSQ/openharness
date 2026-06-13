@@ -769,6 +769,17 @@ exported = export_swarm_trace_to_langfuse(
 )
 ```
 
+When using the coordinator workflow, pass the compact receipt as run-level annotations:
+
+```python
+coordinator = await run_swarm_coordinator(...)
+exported = export_swarm_trace_to_langfuse(
+    coordinator.run_result.trace_events,
+    options={"enabled": True, "keys_required": False},
+    receipt=coordinator.receipt.as_dict(),
+)
+```
+
 The exporter maps the local tree into observations:
 
 ```text
@@ -778,7 +789,7 @@ swarm.run        -> agent observation
       runner.*   -> instant span observations
 ```
 
-By default the exporter is metadata-only. It sends run, task, runner, status, duration, usage, cost, and transport metadata. It does not export task context, objectives, prompts, model outputs, tool inputs, runner messages, or summaries unless `include_content=True` is explicitly set.
+By default the exporter is metadata-only. It sends run, task, runner, status, duration, usage, cost, and transport metadata. Receipt annotations add safe run-level metrics such as runner counts, status counts, usage totals, trace counts, handoff counts, and merge counts. It does not export task context, objectives, prompts, model outputs, tool inputs, runner messages, full runner summaries, handoff paths, or arbitrary diagnostics unless `include_content=True` is explicitly set for event attributes.
 
 Export is non-fatal by default. Missing credentials or a missing optional Langfuse dependency produce diagnostics in `SwarmLangfuseExportResult`; `strict=True` raises instead.
 
@@ -797,6 +808,5 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add optional Langfuse annotations that attach coordinator receipt fields as run metadata.
-2. Add richer mixed-runner examples for subprocess/http/a2a plus OpenAgent side by side.
-3. Add a minimal browser page that consumes the inspection API.
+1. Add richer mixed-runner examples for subprocess/http/a2a plus OpenAgent side by side.
+2. Add a minimal browser page that consumes the inspection API.

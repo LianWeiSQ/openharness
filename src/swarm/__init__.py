@@ -23,7 +23,12 @@ from .inspection import (
     write_coordinator_receipt,
 )
 from .isolation import WorkerWorkspace, WorkerWorkspaceConfig, prepare_worker_workspace, resolve_worker_workspace_config
-from .langfuse_exporter import SwarmLangfuseExportResult, SwarmLangfuseExporter, export_swarm_trace_to_langfuse
+from .langfuse_exporter import (
+    SwarmLangfuseExportResult,
+    SwarmLangfuseExporter,
+    export_swarm_trace_to_langfuse,
+    swarm_receipt_to_langfuse_metadata,
+)
 from .merge import MergeApplyResult, MergeChange, MergeConflict, MergePlan, apply_merge_plan, build_merge_plan
 from .merge_policy import (
     MergeApprovalDecision,
@@ -136,6 +141,7 @@ __all__ = [
     "run_swarm_coordinator",
     "serve_inspection_api",
     "swarm_run_result_to_dict",
+    "swarm_receipt_to_langfuse_metadata",
     "task_for_team_handoff_resume",
     "team_handoff_from_dict",
     "write_coordinator_receipt",

@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 from swarm import AgentResult, AgentSpec, RunContext, SwarmRuntime, Usage, build_function_registry, load_swarm_config
-from swarm.langfuse_exporter import SwarmLangfuseExporter, export_swarm_trace_to_langfuse
+from swarm.langfuse_exporter import SwarmLangfuseExporter, export_swarm_trace_to_langfuse, swarm_receipt_to_langfuse_metadata
 
 
 class FakeLangfuseObservation:
@@ -95,6 +95,92 @@ class SwarmLangfuseExporterTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Started alpha", flattened)
         self.assertNotIn("Trace context contains sensitive task details.", flattened)
 
+    async def test_exporter_attaches_safe_receipt_annotations_to_run_only(self) -> None:
+        result = await _swarm_result(summary="secret final answer")
+        client = FakeLangfuseClient()
+        exporter = SwarmLangfuseExporter(
+            client=client,
+            langfuse_trace_id="c" * 32,
+            include_content=False,
+        )
+
+        exporter.export(
+            result.trace_events,
+            receipt={
+                "schema_version": 1,
+                "run_status": "completed",
+                "task_role": "research",
+                "runner_count": 1,
+                "runner_status_counts": {"completed": 1},
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                    "cost": 0.02,
+                    "steps": 2,
+                    "latency_ms": 15,
+                },
+                "trace_event_count": len(result.trace_events),
+                "trace_error_count": 0,
+                "runner_summaries": [{"runner_id": "alpha", "summary_preview": "secret final answer"}],
+                "handoff_saved": True,
+                "handoff_path": "/secret/workspace/team-handoff.json",
+                "handoff_has_pending": False,
+                "pending_runner_ids": ["secret-beta"],
+                "reusable_runner_ids": ["secret-alpha"],
+                "merge_enabled": True,
+                "merge_decision": "approved",
+                "merge_reason_codes": ["auto_approved"],
+                "merge_change_count": 3,
+                "merge_conflict_count": 0,
+                "merge_applied_count": 3,
+                "warnings": ["secret warning text"],
+                "diagnostics": ["secret diagnostic text"],
+            },
+        )
+
+        run = next(item for item in client.started if item.name == "swarm.run langfuse-run")
+        runner = next(item for item in client.started if item.name == "swarm.runner alpha")
+        run_metadata = _merged_updates(run)["metadata"]
+        runner_metadata = _merged_updates(runner)["metadata"]
+        self.assertTrue(run_metadata["swarm_receipt_attached"])
+        self.assertEqual(run_metadata["swarm_receipt_run_status"], "completed")
+        self.assertEqual(run_metadata["swarm_receipt_task_role"], "research")
+        self.assertEqual(run_metadata["swarm_receipt_runner_count"], 1)
+        self.assertEqual(run_metadata["swarm_receipt_runner_status_completed"], 1)
+        self.assertEqual(run_metadata["swarm_receipt_input_tokens"], 7)
+        self.assertEqual(run_metadata["swarm_receipt_output_tokens"], 3)
+        self.assertEqual(run_metadata["swarm_receipt_total_tokens"], 10)
+        self.assertEqual(run_metadata["swarm_receipt_cost"], 0.02)
+        self.assertEqual(run_metadata["swarm_receipt_pending_runner_count"], 1)
+        self.assertEqual(run_metadata["swarm_receipt_reusable_runner_count"], 1)
+        self.assertEqual(run_metadata["swarm_receipt_merge_decision"], "approved")
+        self.assertEqual(run_metadata["swarm_receipt_merge_change_count"], 3)
+        self.assertNotIn("swarm_receipt_attached", runner_metadata)
+
+        flattened = json.dumps([item.updates for item in client.started], ensure_ascii=False)
+        self.assertNotIn("secret final answer", flattened)
+        self.assertNotIn("/secret/workspace", flattened)
+        self.assertNotIn("secret-alpha", flattened)
+        self.assertNotIn("secret warning text", flattened)
+        self.assertNotIn("secret diagnostic text", flattened)
+
+    def test_receipt_metadata_helper_ignores_content_shaped_labels(self) -> None:
+        metadata = swarm_receipt_to_langfuse_metadata(
+            {
+                "run_status": "completed",
+                "task_role": "prompt: leak this",
+                "runner_status_counts": {"completed": 1, "bad status with spaces": 2},
+                "usage": {"total_tokens": "42"},
+            }
+        )
+
+        self.assertEqual(metadata["swarm_receipt_run_status"], "completed")
+        self.assertEqual(metadata["swarm_receipt_total_tokens"], 42)
+        self.assertEqual(metadata["swarm_receipt_runner_status_completed"], 1)
+        self.assertNotIn("swarm_receipt_task_role", metadata)
+        self.assertNotIn("swarm_receipt_runner_status_bad_status_with_spaces", metadata)
+
     async def test_export_helper_is_non_fatal_unless_strict(self) -> None:
         result = await _swarm_result()
         with patch("swarm.langfuse_exporter.load_langfuse_client", side_effect=RuntimeError("missing langfuse")):
@@ -116,6 +202,11 @@ class SwarmLangfuseExporterTests(unittest.IsolatedAsyncioTestCase):
             exported = export_swarm_trace_to_langfuse(
                 result.trace_events,
                 options={"enabled": True, "keys_required": False, "tags": ["custom"]},
+                receipt={
+                    "run_status": "completed",
+                    "runner_count": 1,
+                    "usage": {"total_tokens": 10},
+                },
             )
 
         self.assertEqual(exported.trace_id, "a" * 32)
@@ -123,6 +214,8 @@ class SwarmLangfuseExporterTests(unittest.IsolatedAsyncioTestCase):
         run = next(item for item in client.started if item.name == "swarm.run langfuse-run")
         metadata = _merged_updates(run)["metadata"]
         self.assertEqual(metadata["langfuse_tags"], ["custom"])
+        self.assertEqual(metadata["swarm_receipt_run_status"], "completed")
+        self.assertEqual(metadata["swarm_receipt_total_tokens"], 10)
 
 
 async def _swarm_result(*, summary: str = "safe summary"):
