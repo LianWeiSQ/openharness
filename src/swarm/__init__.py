@@ -14,6 +14,15 @@ from .http_runner import HttpRequestConfig, HttpRunner, build_http_registry
 from .isolation import WorkerWorkspace, WorkerWorkspaceConfig, prepare_worker_workspace, resolve_worker_workspace_config
 from .langfuse_exporter import SwarmLangfuseExportResult, SwarmLangfuseExporter, export_swarm_trace_to_langfuse
 from .merge import MergeApplyResult, MergeChange, MergeConflict, MergePlan, apply_merge_plan, build_merge_plan
+from .merge_policy import (
+    MergeApprovalDecision,
+    MergeApprovalPolicy,
+    MergeApprovalReason,
+    MergeApprovalStatus,
+    evaluate_merge_plan,
+    merge_approval_policy_from_metadata,
+    merge_approval_policy_from_value,
+)
 from .protocol import (
     AgentDescriptor,
     AgentEvent,
@@ -50,6 +59,10 @@ __all__ = [
     "HttpRequestConfig",
     "HttpRunner",
     "MergeApplyResult",
+    "MergeApprovalDecision",
+    "MergeApprovalPolicy",
+    "MergeApprovalReason",
+    "MergeApprovalStatus",
     "MergeChange",
     "MergeConflict",
     "MergePlan",
@@ -78,9 +91,12 @@ __all__ = [
     "build_http_registry",
     "build_merge_plan",
     "build_subprocess_registry",
+    "evaluate_merge_plan",
     "export_swarm_trace_to_langfuse",
     "load_swarm_config",
     "apply_merge_plan",
+    "merge_approval_policy_from_metadata",
+    "merge_approval_policy_from_value",
     "prepare_worker_workspace",
     "resolve_resume_policy",
     "resolve_worker_workspace_config",

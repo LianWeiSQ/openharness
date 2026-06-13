@@ -16,6 +16,7 @@ Implemented in this slice:
 - `A2ARunner`, an HTTP+JSON adapter for Agent2Agent-compatible remote agents;
 - opt-in worker workspace isolation for future write-capable workers;
 - merge-back conflict review for isolated worker outputs;
+- coordinator-level merge approval policy for deciding whether a merge plan can be applied;
 - optional file-backed persistent swarm run state;
 - resumable coordinator policy for reusing completed runner results;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
@@ -24,7 +25,6 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- coordinator-level merge approval policy;
 - streaming A2A support.
 
 ## Configuration Shape
@@ -143,6 +143,59 @@ The merge planner reports:
 `apply_merge_plan(...)` skips conflicts by default. It applies only non-conflicting changes unless `include_conflicts=True` is explicitly set.
 
 If a worker output needs merge-back review, keep isolation `cleanup` disabled until the merge plan has been built and reviewed.
+
+## Merge Approval Policy
+
+Merge approval is a coordinator decision layer above `build_merge_plan(...)`. It is read-only: it evaluates a plan and returns `approved`, `needs_review`, or `rejected`; it does not write files.
+
+```python
+from swarm import apply_merge_plan, build_merge_plan, evaluate_merge_plan
+
+plan = build_merge_plan(result.results)
+decision = evaluate_merge_plan(
+    plan,
+    {
+        "auto_approve": True,
+        "allow_deletions": False,
+        "max_changed_files": 5,
+        "max_total_bytes": 200_000,
+        "protected_paths": ["pyproject.toml", ".github/**"],
+    },
+)
+
+if decision.can_apply:
+    applied = apply_merge_plan(plan)
+```
+
+Task metadata can carry the same policy:
+
+```yaml
+tasks:
+  edit:
+    role: worker
+    objective: Prepare a patch.
+    context: Work from isolated workers.
+    boundaries: Only write inside worker_workspace.
+    output_schema:
+      type: object
+    metadata:
+      merge:
+        approval:
+          auto_approve: true
+          allow_deletions: false
+          max_changed_files: 5
+          protected_paths: ["pyproject.toml", ".github/**"]
+```
+
+The policy blocks or escalates:
+
+- conflicting edits to the same path;
+- source-file deletions when `allow_deletions` is false;
+- protected path matches;
+- changed file count above `max_changed_files`;
+- changed bytes above `max_total_bytes`.
+
+Without `auto_approve`, a non-empty safe plan returns `needs_review`. An empty plan returns `approved`.
 
 ## Persistent State
 
@@ -474,6 +527,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add a higher-level coordinator policy for approving merge plans.
-2. Add streaming A2A support for long-running remote agents.
-3. Add resumable team adapters for multi-session worker handoff.
+1. Add streaming A2A support for long-running remote agents.
+2. Add resumable team adapters for multi-session worker handoff.
+3. Add a coordinator workflow that combines resume, merge approval, and optional apply into one run receipt.
