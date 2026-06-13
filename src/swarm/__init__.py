@@ -9,6 +9,7 @@ Python functions, subprocess agents, HTTP agents, or any other runner.
 
 from .config import RunnerConfig, SwarmConfig, TaskConfig, load_swarm_config
 from .function_runner import FunctionRunner, build_function_registry
+from .http_runner import HttpRequestConfig, HttpRunner, build_http_registry
 from .protocol import (
     AgentDescriptor,
     AgentEvent,
@@ -37,6 +38,8 @@ __all__ = [
     "ArtifactRef",
     "FanoutBudget",
     "FunctionRunner",
+    "HttpRequestConfig",
+    "HttpRunner",
     "RunnerConfig",
     "RunnerRegistry",
     "RunContext",
@@ -51,6 +54,7 @@ __all__ = [
     "TaskConfig",
     "Usage",
     "build_function_registry",
+    "build_http_registry",
     "build_subprocess_registry",
     "load_swarm_config",
 ]

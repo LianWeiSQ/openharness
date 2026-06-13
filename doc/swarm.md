@@ -12,12 +12,13 @@ Implemented in this slice:
 - `SwarmRuntime`, a minimal supervisor that dispatches one task to one or multiple runners;
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
+- `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
-- tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, multi-runner aggregation, trace lineage, failure capture, contract validation, and the OpenAgent boundary.
+- tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, failure capture, contract validation, and the OpenAgent boundary.
 
 Not implemented yet:
 
-- HTTP or A2A runners;
+- A2A runners;
 - persistent team state;
 - write-capable worker isolation;
 - Langfuse export for swarm spans.
@@ -120,6 +121,73 @@ The subprocess may return an `AgentResult`-like JSON object on stdout:
 
 Plain stdout is accepted as a completed summary. Non-zero exit code, startup errors, and timeouts become failed `AgentResult` values.
 
+## HTTP Runner
+
+HTTP runners let the kernel call remote agents without importing their SDKs.
+
+```yaml
+runners:
+  remote_researcher:
+    kind: http
+    roles: [research]
+    metadata:
+      url: "http://127.0.0.1:9000/run"
+      method: POST
+      timeout_seconds: 30
+      headers:
+        Authorization: "Bearer ${TOKEN}"
+```
+
+Build a registry:
+
+```python
+from swarm import SwarmRuntime, build_http_registry, load_swarm_config
+
+config = load_swarm_config("swarm.yaml")
+registry = build_http_registry(config)
+result = await SwarmRuntime(registry=registry).run_task(config.task("compare"))
+```
+
+The HTTP endpoint receives the same JSON protocol as the subprocess runner in the request body:
+
+```json
+{
+  "spec": {
+    "role": "research",
+    "objective": "...",
+    "context": "...",
+    "boundaries": "...",
+    "output_schema": {},
+    "inputs": {},
+    "permissions": "READONLY"
+  },
+  "context": {
+    "run_id": "swarm_...",
+    "parent_span_id": "span_..."
+  },
+  "runner": {
+    "id": "remote_researcher",
+    "kind": "http"
+  }
+}
+```
+
+The endpoint may return an `AgentResult`-like JSON object:
+
+```json
+{
+  "status": "completed",
+  "summary": "remote result",
+  "evidence": ["service:trace-id"],
+  "confidence": 0.8,
+  "usage": {"input_tokens": 10, "output_tokens": 4, "cost": 0.01}
+}
+```
+
+Plain response bodies are accepted as completed summaries. HTTP status errors, request errors, and timeouts become failed `AgentResult` values with diagnostic metadata.
+
+Request headers are sent as HTTP headers. They are not copied into the JSON `runner.metadata` payload, so bearer tokens and API keys are not echoed to the remote agent body.
+
 ## OpenAgent Adapter
 
 OpenAgent integrates outside the kernel boundary:
@@ -198,5 +266,5 @@ Missing fields fail the runner result instead of silently executing a vague task
 ## Next Slices
 
 1. Add Langfuse export for swarm trace events.
-2. Add HTTP/A2A runners for remote non-OpenAgent agents.
+2. Add A2A runners for remote non-OpenAgent agents.
 3. Add file/worktree isolation before write-capable workers.

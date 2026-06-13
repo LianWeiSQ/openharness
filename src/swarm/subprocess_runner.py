@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import SwarmConfig
+from .payload import payload_for_runner
 from .protocol import AgentDescriptor, AgentEvent, AgentResult, AgentSpec, RunContext
 from .registry import RunnerRegistry
 from .results import normalize_result_payload
@@ -75,7 +76,7 @@ class SubprocessRunner:
         return SubprocessRunHandle(events=[started, finished], result=result)
 
     async def _run_process(self, *, spec: AgentSpec, ctx: RunContext) -> AgentResult:
-        payload = _payload_for_subprocess(spec=spec, ctx=ctx, runner=self)
+        payload = payload_for_runner(spec=spec, ctx=ctx, descriptor=self.descriptor)
         timeout = spec.limits.timeout_seconds or self.command.timeout_seconds
         env = os.environ.copy()
         env.update(self.command.env or {})
@@ -189,32 +190,5 @@ def _command_from_metadata(metadata: dict[str, Any]) -> SubprocessCommand:
         env={str(key): str(value) for key, value in env_raw.items()},
         timeout_seconds=float(timeout) if timeout is not None else None,
     )
-
-
-def _payload_for_subprocess(*, spec: AgentSpec, ctx: RunContext, runner: SubprocessRunner) -> dict[str, Any]:
-    return {
-        "spec": {
-            "role": spec.role,
-            "objective": spec.objective,
-            "context": spec.context,
-            "boundaries": spec.boundaries,
-            "output_schema": spec.output_schema,
-            "inputs": spec.inputs,
-            "permissions": spec.permissions,
-            "metadata": spec.metadata,
-        },
-        "context": {
-            "run_id": ctx.run_id,
-            "parent_span_id": ctx.parent_span_id,
-            "metadata": ctx.metadata,
-        },
-        "runner": {
-            "id": runner.descriptor.id,
-            "kind": runner.descriptor.kind,
-            "roles": runner.descriptor.roles,
-            "metadata": runner.descriptor.metadata,
-        },
-    }
-
 
 __all__ = ["SubprocessCommand", "SubprocessRunHandle", "SubprocessRunner", "build_subprocess_registry"]
