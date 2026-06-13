@@ -14,14 +14,14 @@ Implemented in this slice:
 - `SubprocessRunner`, a CLI-agent adapter that talks JSON over stdin/stdout;
 - `HttpRunner`, a remote-agent adapter that talks the same JSON protocol over HTTP;
 - local swarm trace lineage for run, task, runner, and runner-event spans;
-- tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, failure capture, contract validation, and the OpenAgent boundary.
+- optional Langfuse export for swarm trace events;
+- tests proving function dispatch, OpenAgent dispatch, subprocess dispatch, HTTP dispatch, multi-runner aggregation, trace lineage, Langfuse export mapping, failure capture, contract validation, and the OpenAgent boundary.
 
 Not implemented yet:
 
 - A2A runners;
 - persistent team state;
-- write-capable worker isolation;
-- Langfuse export for swarm spans.
+- write-capable worker isolation.
 
 ## Configuration Shape
 
@@ -248,7 +248,38 @@ Each trace event carries:
 - `task_id`
 - `attributes`
 
-This is intentionally local and SDK-free. The next stage can map these events into Langfuse spans without changing runner behavior.
+The trace recorder is intentionally local and SDK-free. Langfuse export lives in a separate optional module and can be called after a run completes.
+
+## Langfuse Export
+
+Swarm trace export is optional. Local `SwarmRunResult.trace_events` remains the source of truth, and Langfuse is an external view.
+
+```python
+from swarm import export_swarm_trace_to_langfuse
+
+exported = export_swarm_trace_to_langfuse(
+    result.trace_events,
+    options={
+        "enabled": True,
+        "keys_required": False,
+        "environment": "local",
+        "tags": ["openagent", "swarm"],
+    },
+)
+```
+
+The exporter maps the local tree into observations:
+
+```text
+swarm.run        -> agent observation
+  swarm.task     -> span observation
+    swarm.runner -> span observation
+      runner.*   -> instant span observations
+```
+
+By default the exporter is metadata-only. It sends run, task, runner, status, duration, usage, cost, and transport metadata. It does not export task context, objectives, prompts, model outputs, tool inputs, runner messages, or summaries unless `include_content=True` is explicitly set.
+
+Export is non-fatal by default. Missing credentials or a missing optional Langfuse dependency produce diagnostics in `SwarmLangfuseExportResult`; `strict=True` raises instead.
 
 ## Design Boundary
 
@@ -265,6 +296,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add Langfuse export for swarm trace events.
-2. Add A2A runners for remote non-OpenAgent agents.
-3. Add file/worktree isolation before write-capable workers.
+1. Add A2A runners for remote non-OpenAgent agents.
+2. Add file/worktree isolation before write-capable workers.
+3. Add persistent team state and resume for long swarm jobs.
