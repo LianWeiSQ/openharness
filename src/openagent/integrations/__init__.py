@@ -1,3 +1,5 @@
 """Optional integrations for external agent harnesses."""
 
-__all__ = []
+from .swarm import OpenAgentRunner
+
+__all__ = ["OpenAgentRunner"]
