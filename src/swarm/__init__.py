@@ -24,6 +24,7 @@ from .protocol import (
 )
 from .registry import RunnerRegistry
 from .runtime import SwarmRunResult, SwarmRuntime
+from .trace import SwarmTraceEvent, SwarmTraceRecorder
 
 __all__ = [
     "AgentDescriptor",
@@ -42,6 +43,8 @@ __all__ = [
     "SwarmConfig",
     "SwarmRunResult",
     "SwarmRuntime",
+    "SwarmTraceEvent",
+    "SwarmTraceRecorder",
     "TaskConfig",
     "Usage",
     "build_function_registry",

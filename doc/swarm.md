@@ -11,14 +11,15 @@ Implemented in this slice:
 - YAML config loading for runners, tasks, limits, and fanout budget;
 - `SwarmRuntime`, a minimal supervisor that dispatches one task to one or multiple runners;
 - `OpenAgentRunner`, an adapter in `openagent.integrations.swarm` that lets OpenAgent act as one runner endpoint;
-- tests proving function dispatch, OpenAgent dispatch, multi-runner aggregation, failure capture, contract validation, and the OpenAgent boundary.
+- local swarm trace lineage for run, task, runner, and runner-event spans;
+- tests proving function dispatch, OpenAgent dispatch, multi-runner aggregation, trace lineage, failure capture, contract validation, and the OpenAgent boundary.
 
 Not implemented yet:
 
 - HTTP, subprocess, or A2A runners;
 - persistent team state;
 - write-capable worker isolation;
-- Langfuse trace lineage for swarm spans.
+- Langfuse export for swarm spans.
 
 ## Configuration Shape
 
@@ -88,6 +89,35 @@ src/swarm                  -X-> openagent
 
 The adapter converts an `AgentSpec` into a bounded OpenAgent subagent instruction, runs an isolated `Session`, and returns a swarm `AgentResult` with summary, usage, session id, trace metadata, and tool-call count.
 
+## Trace Lineage
+
+Every `SwarmRuntime.run_task(...)` result includes `trace_events`.
+
+The local trace tree is:
+
+```text
+swarm.run
+  swarm.task
+    swarm.runner    # one per runner dispatch
+      runner.started / runner.finished
+      openagent.* or function runner events
+```
+
+Each trace event carries:
+
+- `trace_id`
+- `run_id`
+- `span_id`
+- `parent_span_id`
+- `name`
+- `kind`
+- `status`
+- `runner_id`
+- `task_id`
+- `attributes`
+
+This is intentionally local and SDK-free. The next stage can map these events into Langfuse spans without changing runner behavior.
+
 ## Design Boundary
 
 The kernel is meant to standardize how a coordinator reaches agents. OpenAgent is one runner through an adapter, but the kernel must remain usable without OpenAgent installed.
@@ -103,6 +133,6 @@ Missing fields fail the runner result instead of silently executing a vague task
 
 ## Next Slices
 
-1. Add swarm trace lineage and Langfuse span mapping.
+1. Add Langfuse export for swarm trace events.
 2. Add subprocess and HTTP runners for non-OpenAgent agents.
 3. Add file/worktree isolation before write-capable workers.
