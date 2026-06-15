@@ -1,0 +1,76 @@
+name: Engineering Task
+description: Track an OpenAgent engineering task with a consistent public format.
+title: "area: short imperative summary"
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a public-safe issue: no private endpoints, keys, customer data, or company-specific implementation details.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - runtime
+        - context
+        - swarm
+        - docs
+        - eval
+        - tools
+        - sandbox
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One short paragraph describing the outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Why this work matters and what problem it addresses.
+    validations:
+      required: false
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Concrete implementation requirements.
+      value: |
+        - TBD
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of Scope
+      description: Boundaries that keep the task small and reviewable.
+      value: |
+        - TBD
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Observable conditions that mean this issue is done.
+      value: |
+        - TBD
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification
+      description: Commands, tests, scans, or manual checks.
+      value: |
+        ```bash
+        PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p "test_*.py"
+        ```
+    validations:
+      required: true
