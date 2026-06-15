@@ -429,11 +429,22 @@ class AgentLoop:
             "estimated_input_tokens": pack.estimated_input_tokens,
             "items": trace_items,
         }
+        snapshot_metadata = self._record_context_pack_snapshot(diagnostic)
+        if snapshot_metadata is not None:
+            diagnostic["snapshot_path"] = snapshot_metadata.get("snapshot_path")
+            diagnostic["snapshot_schema_version"] = snapshot_metadata.get("schema_version")
         trace_raw = self.session.metadata.get(CONTEXT_PACK_TRACE_METADATA_KEY)
         trace = list(trace_raw) if isinstance(trace_raw, list) else []
         trace.append(diagnostic)
         self.session.metadata[CONTEXT_PACK_TRACE_METADATA_KEY] = trace[-CONTEXT_PACK_TRACE_LIMIT:]
         self.session.metadata[LAST_CONTEXT_PACK_METADATA_KEY] = diagnostic
+        if snapshot_metadata is not None:
+            snapshots_raw = self.session.metadata.get("context_pack_snapshots")
+            snapshots = list(snapshots_raw) if isinstance(snapshots_raw, list) else []
+            snapshots.append(snapshot_metadata)
+            self.session.metadata["context_pack_snapshots"] = snapshots[-CONTEXT_PACK_TRACE_LIMIT:]
+            self.session.metadata["last_context_pack_snapshot"] = snapshot_metadata
+            self._save_session_store_state()
         self._record_observation(
             "context.pack_built",
             kind="context",
@@ -444,7 +455,17 @@ class AgentLoop:
                 "item_count": len(pack.items),
                 "included_count": diagnostic["included_count"],
                 "estimated_input_tokens": pack.estimated_input_tokens,
+                "snapshot_path": snapshot_metadata.get("snapshot_path") if snapshot_metadata else None,
             },
+        )
+
+    def _record_context_pack_snapshot(self, diagnostic: dict[str, Any]) -> dict[str, Any] | None:
+        if self.session_store is None or self._session_store_run_id is None:
+            return None
+        return self.session_store.record_context_pack(
+            session_id=self.session.id,
+            run_id=self._session_store_run_id,
+            snapshot=diagnostic,
         )
 
     def _record_model_usage(self, usage: Usage) -> None:
@@ -792,6 +813,11 @@ class AgentLoop:
             attributes=attributes,
             duration_ms=duration_ms,
         )
+
+    def _save_session_store_state(self) -> None:
+        if self.session_store is None or self._session_store_run_id is None:
+            return
+        self.session_store.save_state(self.session, run_id=self._session_store_run_id)
 
     def _finish_session_store_run(
         self,
@@ -1776,6 +1802,7 @@ class AgentLoop:
                     attributes=step_finished_attributes,
                     duration_ms=step_duration_ms,
                 )
+                self._save_session_store_state()
                 self._log_runtime(
                     "INFO",
                     "Agent step finished",

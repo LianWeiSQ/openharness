@@ -54,6 +54,16 @@ class SessionStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def record_context_pack(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     def finish_run(
         self,
         session: Session,
@@ -215,6 +225,45 @@ class FileSessionStore(SessionStore):
         self._append_jsonl(event_path, payload)
         self._write_run_summary(session_id=session_id, run_id=run_id)
 
+    def record_context_pack(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        step_index = _optional_int(snapshot.get("step_index"))
+        filename = f"context-pack-step-{step_index:04d}.json" if step_index is not None else f"context-pack-{_now_ms()}.json"
+        context_dir = self._context_pack_dir(session_id, run_id)
+        path = context_dir / filename
+        payload = {
+            "schema_version": "openagent.context_pack_snapshot.v1",
+            "session_id": session_id,
+            "run_id": run_id,
+            "timestamp_ms": _now_ms(),
+            **_jsonable(snapshot),
+        }
+        self._write_json(path, payload)
+        metadata = {
+            "schema_version": payload["schema_version"],
+            "session_id": session_id,
+            "run_id": run_id,
+            "step_index": step_index,
+            "snapshot_path": str(path),
+            "context_dir": str(context_dir),
+            "item_count": payload.get("item_count"),
+            "included_count": payload.get("included_count"),
+            "estimated_input_tokens": payload.get("estimated_input_tokens"),
+        }
+        self.record_event(
+            session_id=session_id,
+            run_id=run_id,
+            event="context.pack_snapshot.saved",
+            kind="context",
+            attributes=metadata,
+        )
+        return metadata
+
     def finish_run(
         self,
         session: Session,
@@ -365,6 +414,9 @@ class FileSessionStore(SessionStore):
 
     def _events_path(self, session_id: str, run_id: str) -> Path:
         return self._run_dir(session_id, run_id) / "events.jsonl"
+
+    def _context_pack_dir(self, session_id: str, run_id: str) -> Path:
+        return self._run_dir(session_id, run_id) / "context"
 
     def _summary_path(self, session_id: str, run_id: str) -> Path:
         return self._run_dir(session_id, run_id) / "summary.json"

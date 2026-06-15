@@ -1,4 +1,5 @@
 from .session import Session
+from .resume import load_latest_context_pack_snapshot, resume_session
 from .storage import InMemoryStorage, JsonFileStorage, StorageBase
 from .store import DEFAULT_SESSION_STORE_ROOT, FileSessionStore, SESSION_STORE_METADATA_KEY, SessionStore, load_session_store
 from .todo import TodoItem
@@ -13,5 +14,7 @@ __all__ = [
     "SessionStore",
     "StorageBase",
     "TodoItem",
+    "load_latest_context_pack_snapshot",
     "load_session_store",
+    "resume_session",
 ]

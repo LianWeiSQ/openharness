@@ -9,7 +9,13 @@ from uuid import uuid4
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
-from openagent.core.session import FileSessionStore, SESSION_STORE_METADATA_KEY, Session
+from openagent.core.session import (
+    FileSessionStore,
+    SESSION_STORE_METADATA_KEY,
+    Session,
+    load_latest_context_pack_snapshot,
+    resume_session,
+)
 from openagent.core.types import AgentConfig
 
 from _mock_model import ScriptedLanguageModel
@@ -86,6 +92,7 @@ class SessionStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event_names.count("tool.call.finished"), 2)
         self.assertIn("patch.detected", event_names)
         self.assertEqual(event_names.count("model.usage"), 3)
+        self.assertEqual(event_names.count("context.pack_snapshot.saved"), 3)
         self.assertIn("run.finished", event_names)
 
         summary = json.loads((ledger_path.parent / "summary.json").read_text(encoding="utf-8"))
@@ -95,11 +102,32 @@ class SessionStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["total_input_tokens"], 12)
         self.assertEqual(summary["total_output_tokens"], 15)
 
+        snapshot_meta = session.metadata["last_context_pack_snapshot"]
+        snapshot_path = Path(snapshot_meta["snapshot_path"])
+        self.assertTrue(snapshot_path.exists())
+        self.assertEqual(snapshot_path.parent.name, "context")
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        self.assertEqual(snapshot["schema_version"], "openagent.context_pack_snapshot.v1")
+        self.assertEqual(snapshot["session_id"], session.id)
+        self.assertEqual(snapshot["step_index"], 3)
+        self.assertGreaterEqual(snapshot["item_count"], 1)
+        self.assertIn("items", snapshot)
+
         restored = FileSessionStore(metadata["root_dir"]).load_session(session.id)
         self.assertEqual(restored.id, session.id)
         self.assertEqual([message.role for message in restored.messages], [message.role for message in session.messages])
         self.assertEqual(restored.messages[-1].content, "done")
         self.assertEqual(restored.metadata[SESSION_STORE_METADATA_KEY]["ledger_path"], metadata["ledger_path"])
+        self.assertEqual(restored.metadata["last_context_pack_snapshot"]["snapshot_path"], str(snapshot_path))
+
+        resumed = resume_session(session.id, root_dir=metadata["root_dir"])
+        self.assertEqual(resumed.id, session.id)
+        self.assertEqual(resumed.messages[-1].content, "done")
+        self.assertEqual(resumed.metadata["session_resume"]["store_type"], "FileSessionStore")
+        latest_snapshot = load_latest_context_pack_snapshot(resumed)
+        self.assertIsNotNone(latest_snapshot)
+        assert latest_snapshot is not None
+        self.assertEqual(latest_snapshot["step_index"], 3)
 
 
 if __name__ == "__main__":

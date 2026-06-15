@@ -54,6 +54,20 @@ Provider output is parsed best-effort. If structured parsing fails, OpenAgent ke
 
 This makes context behavior debuggable before changing the exact model input semantics.
 
+## P0 Persistence
+
+When `session_store` is enabled, each step now writes a metadata-only context pack snapshot under the run directory:
+
+```text
+.openagent/sessions/{session_id}/runs/{run_id}/context/context-pack-step-0001.json
+```
+
+The snapshot records item kind, source, priority, token estimate, included/drop status, and budget stage. It intentionally avoids duplicating full prompt text, file content, and tool output. The run ledger also records `context.pack_snapshot.saved`, and `Session.metadata["last_context_pack_snapshot"]` points to the latest snapshot.
+
+Use `resume_session(...)` to restore a persisted `Session`, and `load_latest_context_pack_snapshot(...)` to inspect the latest context pack evidence for that session.
+
+See [`context-persistence-p0.md`](context-persistence-p0.md) for the P0 requirement and acceptance checklist.
+
 ## Design Rule
 
 Add new context sources as explicit `ContextItem`s with priority, source, stability, and metadata. Avoid hiding important state in ad hoc prompt text.
