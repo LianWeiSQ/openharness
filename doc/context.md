@@ -87,6 +87,34 @@ The assets live beside the P0 context pack snapshots:
 
 See [`context-persistence-p1.md`](context-persistence-p1.md) for the P1 requirement and acceptance checklist.
 
+## P2 Session Parts
+
+P2 adds a file-backed session part ledger:
+
+```text
+.openagent/sessions/{session_id}/runs/{run_id}/parts.jsonl
+```
+
+It records the runtime sequence as durable parts:
+
+- `run-start`
+- `step-start`
+- `tool-call`
+- `tool-result`
+- `patch`
+- `usage`
+- `step-finish`
+- `context-pack-reference`
+- `context-assets-reference`
+- `memory-reference`
+- `compaction`
+
+This gives OpenAgent a middle layer between raw messages and low-level events. Messages remain the model-facing conversation projection. Events remain the audit log. Parts become the replayable session timeline for eval reports, Langfuse alignment, Web/CLI inspection, and future database-backed session runtime.
+
+Use `load_session_parts(session)` after `resume_session(...)` to inspect the latest run's part ledger.
+
+See [`context-persistence-p2.md`](context-persistence-p2.md) for the P2 requirement and acceptance checklist.
+
 ## Design Rule
 
 Add new context sources as explicit `ContextItem`s with priority, source, stability, and metadata. Avoid hiding important state in ad hoc prompt text.

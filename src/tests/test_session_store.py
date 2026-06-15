@@ -16,6 +16,7 @@ from openagent.core.session import (
     load_latest_context_assets_snapshot,
     load_latest_context_pack_snapshot,
     load_session_memory,
+    load_session_parts,
     resume_session,
     validate_resume_context_assets,
 )
@@ -108,6 +109,24 @@ class SessionStoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["total_input_tokens"], 12)
         self.assertEqual(summary["total_output_tokens"], 15)
 
+        parts_path = Path(metadata["parts_path"])
+        self.assertTrue(parts_path.exists())
+        parts = [json.loads(line) for line in parts_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        part_types = [part["type"] for part in parts]
+        self.assertIn("run-start", part_types)
+        self.assertEqual(part_types.count("step-start"), 3)
+        self.assertEqual(part_types.count("step-finish"), 3)
+        self.assertEqual(part_types.count("tool-call"), 2)
+        self.assertEqual(part_types.count("tool-result"), 2)
+        self.assertIn("patch", part_types)
+        self.assertEqual(part_types.count("usage"), 3)
+        self.assertEqual(part_types.count("context-pack-reference"), 3)
+        self.assertEqual(part_types.count("context-assets-reference"), 3)
+        self.assertEqual(part_types.count("memory-reference"), 3)
+        self.assertEqual(summary["part_count"], len(parts))
+        self.assertEqual(summary["part_type_counts"]["step-start"], 3)
+        self.assertEqual(summary["part_type_counts"]["tool-result"], 2)
+
         snapshot_meta = session.metadata["last_context_pack_snapshot"]
         snapshot_path = Path(snapshot_meta["snapshot_path"])
         self.assertTrue(snapshot_path.exists())
@@ -157,6 +176,9 @@ class SessionStoreTests(unittest.IsolatedAsyncioTestCase):
         assert latest_assets is not None
         self.assertEqual(latest_assets["files"]["record_count"], 1)
         self.assertIn("answer.txt", load_session_memory(resumed) or "")
+        loaded_parts = load_session_parts(resumed)
+        self.assertEqual(len(loaded_parts), len(parts))
+        self.assertEqual(loaded_parts[-1]["type"], parts[-1]["type"])
 
         (temp / "OPENAGENT.md").write_text("Instruction changed after resume.", encoding="utf-8")
         changed_check = validate_resume_context_assets(resumed)

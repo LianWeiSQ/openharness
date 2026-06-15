@@ -54,6 +54,19 @@ class SessionStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def append_part(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        part_type: str,
+        attributes: dict[str, Any] | None = None,
+        step_index: int | None = None,
+        status: str = "ok",
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     def record_context_pack(
         self,
         *,
@@ -245,6 +258,42 @@ class FileSessionStore(SessionStore):
         }
         self._append_jsonl(event_path, payload)
         self._write_run_summary(session_id=session_id, run_id=run_id)
+
+    def append_part(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        part_type: str,
+        attributes: dict[str, Any] | None = None,
+        step_index: int | None = None,
+        status: str = "ok",
+    ) -> dict[str, Any]:
+        parts_path = self._parts_path(session_id, run_id)
+        payload = {
+            "schema_version": "openagent.session_part.v1",
+            "part_id": new_id("part"),
+            "seq": self._next_seq(parts_path),
+            "type": part_type,
+            "timestamp_ms": _now_ms(),
+            "session_id": session_id,
+            "run_id": run_id,
+            "step_index": step_index,
+            "status": "error" if status == "error" else "ok",
+            "attributes": _jsonable(attributes or {}),
+        }
+        self._append_jsonl(parts_path, payload)
+        self._write_run_summary(session_id=session_id, run_id=run_id)
+        return {
+            "schema_version": payload["schema_version"],
+            "session_id": session_id,
+            "run_id": run_id,
+            "parts_path": str(parts_path),
+            "part_id": payload["part_id"],
+            "seq": payload["seq"],
+            "type": part_type,
+            "step_index": step_index,
+        }
 
     def record_context_pack(
         self,
@@ -439,15 +488,19 @@ class FileSessionStore(SessionStore):
             "transcript_path": str(self._transcript_path(session_id)),
             "state_path": str(self._state_path(session_id)),
             "run_dir": str(self._run_dir(session_id, run_id)),
+            "parts_path": str(self._parts_path(session_id, run_id)),
         }
 
     def _write_run_summary(self, *, session_id: str, run_id: str) -> None:
         events = _read_jsonl(self._events_path(session_id, run_id))
+        parts = _read_jsonl(self._parts_path(session_id, run_id))
         summary = {
             "schema_version": "openagent.run_summary.v1",
             "session_id": session_id,
             "run_id": run_id,
             "event_count": len(events),
+            "part_count": len(parts),
+            "part_type_counts": _count_by_key(parts, "type"),
             "message_count": sum(1 for event in events if event.get("event") == "message.appended"),
             "step_count": sum(1 for event in events if event.get("event") == "step.finished"),
             "tool_call_count": sum(1 for event in events if event.get("event") in {"tool.call.finished", "tool.call.failed"}),
@@ -505,6 +558,9 @@ class FileSessionStore(SessionStore):
 
     def _events_path(self, session_id: str, run_id: str) -> Path:
         return self._run_dir(session_id, run_id) / "events.jsonl"
+
+    def _parts_path(self, session_id: str, run_id: str) -> Path:
+        return self._run_dir(session_id, run_id) / "parts.jsonl"
 
     def _context_pack_dir(self, session_id: str, run_id: str) -> Path:
         return self._run_dir(session_id, run_id) / "context"
@@ -594,6 +650,16 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         if isinstance(item, dict):
             rows.append(item)
     return rows
+
+
+def _count_by_key(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        value = row.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        counts[value] = counts.get(value, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def _jsonable(value: Any) -> Any:

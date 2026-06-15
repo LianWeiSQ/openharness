@@ -118,6 +118,13 @@ def _projection_for_fallback_stage(stage: str) -> str:
     return "unknown"
 
 
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(slots=True)
 class AgentLoopConfig:
     max_steps: int = 50
@@ -487,11 +494,17 @@ class AgentLoop:
     def _record_context_pack_snapshot(self, diagnostic: dict[str, Any]) -> dict[str, Any] | None:
         if self.session_store is None or self._session_store_run_id is None:
             return None
-        return self.session_store.record_context_pack(
+        metadata = self.session_store.record_context_pack(
             session_id=self.session.id,
             run_id=self._session_store_run_id,
             snapshot=diagnostic,
         )
+        self._record_session_part(
+            "context-pack-reference",
+            step_index=_int_or_none(diagnostic.get("step_index")),
+            attributes=metadata,
+        )
+        return metadata
 
     def _record_context_assets_snapshot(
         self,
@@ -507,11 +520,17 @@ class AgentLoop:
             instruction_context=instruction_context,
             file_context_state=file_context_state,
         )
-        return self.session_store.record_context_assets(
+        metadata = self.session_store.record_context_assets(
             session_id=self.session.id,
             run_id=self._session_store_run_id,
             snapshot=snapshot,
         )
+        self._record_session_part(
+            "context-assets-reference",
+            step_index=step_index,
+            attributes=metadata,
+        )
+        return metadata
 
     def _record_model_usage(self, usage: Usage) -> None:
         self.session.metadata["last_model_usage"] = {
@@ -859,6 +878,25 @@ class AgentLoop:
             duration_ms=duration_ms,
         )
 
+    def _record_session_part(
+        self,
+        part_type: str,
+        *,
+        attributes: dict[str, Any] | None = None,
+        step_index: int | None = None,
+        status: str = "ok",
+    ) -> dict[str, Any] | None:
+        if self.session_store is None or self._session_store_run_id is None:
+            return None
+        return self.session_store.append_part(
+            session_id=self.session.id,
+            run_id=self._session_store_run_id,
+            part_type=part_type,
+            attributes=attributes,
+            step_index=step_index,
+            status=status,
+        )
+
     def _save_session_store_state(self) -> None:
         if self.session_store is None or self._session_store_run_id is None:
             return
@@ -881,6 +919,7 @@ class AgentLoop:
             content=content,
             step_index=step_index,
         )
+        self._record_session_part("memory-reference", step_index=step_index, attributes=metadata)
         self.session.metadata[SESSION_MEMORY_METADATA_KEY] = metadata
 
     def _finish_session_store_run(
@@ -1034,6 +1073,15 @@ class AgentLoop:
                 "source": record.get("source"),
                 "format": record.get("format"),
                 "compacted_until": compacted_until,
+            },
+        )
+        self._record_session_part(
+            "compaction",
+            attributes={
+                "source": record.get("source"),
+                "format": record.get("format"),
+                "compacted_until": compacted_until,
+                "updated_at": record.get("updated_at"),
             },
         )
         self._log_runtime(
@@ -1353,6 +1401,7 @@ class AgentLoop:
         }
         self._record_observation("run.started", kind="run", attributes=run_started_attributes)
         self._record_session_store_event("run.input", kind="run", attributes=run_started_attributes)
+        self._record_session_part("run-start", attributes=run_started_attributes)
         self._log_runtime(
             "INFO",
             "Agent run started",
@@ -1390,6 +1439,7 @@ class AgentLoop:
                 }
                 self._record_observation("step.started", kind="step", attributes=step_started_attributes)
                 self._record_session_store_event("step.started", kind="step", attributes=step_started_attributes)
+                self._record_session_part("step-start", step_index=steps, attributes=step_started_attributes)
                 self._log_runtime(
                     "INFO",
                     "Agent step started",
@@ -1628,16 +1678,18 @@ class AgentLoop:
 
                 step_failures: list[ToolFailureHint] = []
                 for call in info_tool_calls:
+                    tool_request_attributes = {
+                        "step_index": steps,
+                        "tool_name": call.name,
+                        "call_id": call.call_id,
+                        "input_preview": self._tool_input_preview(call.input),
+                    }
                     self._record_session_store_event(
                         "tool.call.requested",
                         kind="tool",
-                        attributes={
-                            "step_index": steps,
-                            "tool_name": call.name,
-                            "call_id": call.call_id,
-                            "input_preview": self._tool_input_preview(call.input),
-                        },
+                        attributes=tool_request_attributes,
                     )
+                    self._record_session_part("tool-call", step_index=steps, attributes=tool_request_attributes)
                     if self.doom_loop_detector.record(call):
                         error_message = self._repeated_tool_call_error(call)
                         self._record_session_store_event(
@@ -1761,22 +1813,29 @@ class AgentLoop:
                         line_max_chars=int(context_budget_config["tool_context_line_max_chars"]),
                     )
                     result_metadata = dict(result.metadata or {})
+                    tool_result_attributes = {
+                        "step_index": steps,
+                        "tool_name": call.name,
+                        "call_id": result.call_id,
+                        "tool_source": self._tool_source_for_store(call.name, result_metadata),
+                        "error": bool(result.error),
+                        "error_kind": result_metadata.get("error_kind"),
+                        "output_chars": len(result.output or ""),
+                        "output_path": result_metadata.get("output_path"),
+                        "title": result_metadata.get("title"),
+                    }
                     self._record_session_store_event(
                         "tool.call.failed" if result.error else "tool.call.finished",
                         kind="tool",
                         status="error" if result.error else "ok",
                         duration_ms=tool_duration_ms,
-                        attributes={
-                            "step_index": steps,
-                            "tool_name": call.name,
-                            "call_id": result.call_id,
-                            "tool_source": self._tool_source_for_store(call.name, result_metadata),
-                            "error": bool(result.error),
-                            "error_kind": result_metadata.get("error_kind"),
-                            "output_chars": len(result.output or ""),
-                            "output_path": result_metadata.get("output_path"),
-                            "title": result_metadata.get("title"),
-                        },
+                        attributes=tool_result_attributes,
+                    )
+                    self._record_session_part(
+                        "tool-result",
+                        step_index=steps,
+                        status="error" if result.error else "ok",
+                        attributes={**tool_result_attributes, "duration_ms": tool_duration_ms},
                     )
                     yield {
                         "type": "tool-result",
@@ -1814,6 +1873,7 @@ class AgentLoop:
                         attributes=patch_attributes,
                     )
                     self._record_session_store_event("patch.detected", kind="patch", attributes=patch_attributes)
+                    self._record_session_part("patch", step_index=steps, attributes=patch_attributes)
                     self._log_runtime(
                         "INFO",
                         "Workspace patch detected",
@@ -1831,17 +1891,19 @@ class AgentLoop:
                 finish_reason: FinishReason = info.finish_reason
                 if info_tool_calls and finish_reason == "unknown":
                     finish_reason = "tool_call"
+                usage_attributes = {
+                    "step_index": steps,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost": usage.cost,
+                    "finish_reason": finish_reason,
+                }
                 self._record_session_store_event(
                     "model.usage",
                     kind="model",
-                    attributes={
-                        "step_index": steps,
-                        "input_tokens": usage.input_tokens,
-                        "output_tokens": usage.output_tokens,
-                        "cost": usage.cost,
-                        "finish_reason": finish_reason,
-                    },
+                    attributes=usage_attributes,
                 )
+                self._record_session_part("usage", step_index=steps, attributes=usage_attributes)
                 for warning in step_usage_warnings(runtime_warning_config, usage, step_index=steps):
                     yield self._record_runtime_warning(warning)
                 step_duration_ms = int((time.time() - step_started_at) * 1000)
@@ -1853,6 +1915,7 @@ class AgentLoop:
                     "input_tokens": usage.input_tokens,
                     "output_tokens": usage.output_tokens,
                     "cost": usage.cost,
+                    "duration_ms": step_duration_ms,
                 }
                 self._record_observation(
                     "step.finished",
@@ -1866,6 +1929,7 @@ class AgentLoop:
                     attributes=step_finished_attributes,
                     duration_ms=step_duration_ms,
                 )
+                self._record_session_part("step-finish", step_index=steps, attributes=step_finished_attributes)
                 self._record_session_memory(step_index=steps)
                 self._save_session_store_state()
                 self._log_runtime(

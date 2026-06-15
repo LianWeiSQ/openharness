@@ -3,6 +3,7 @@ from .resume import (
     load_latest_context_assets_snapshot,
     load_latest_context_pack_snapshot,
     load_session_memory,
+    load_session_parts,
     resume_session,
     validate_resume_context_assets,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "load_latest_context_assets_snapshot",
     "load_latest_context_pack_snapshot",
     "load_session_memory",
+    "load_session_parts",
     "load_session_store",
     "resume_session",
     "validate_resume_context_assets",

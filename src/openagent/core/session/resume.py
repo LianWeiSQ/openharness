@@ -8,7 +8,7 @@ from typing import Any
 
 from ..context_assets import LAST_CONTEXT_ASSETS_METADATA_KEY, SESSION_MEMORY_METADATA_KEY
 from .session import Session
-from .store import FileSessionStore, SessionStore, load_session_store
+from .store import SESSION_STORE_METADATA_KEY, FileSessionStore, SessionStore, load_session_store
 
 
 def resume_session(
@@ -75,6 +75,15 @@ def load_session_memory(session: Session) -> str | None:
     return memory_path.read_text(encoding="utf-8")
 
 
+def load_session_parts(session: Session, *, run_id: str | None = None) -> list[dict[str, Any]]:
+    """Read the persisted part ledger for a resumed session/run."""
+
+    parts_path = _session_parts_path(session, run_id=run_id)
+    if parts_path is None or not parts_path.exists():
+        return []
+    return _read_jsonl(parts_path)
+
+
 def validate_resume_context_assets(session: Session) -> dict[str, Any]:
     snapshot = load_latest_context_assets_snapshot(session)
     if snapshot is None:
@@ -118,6 +127,36 @@ def _resume_store(
     if store is None:
         raise ValueError("Session store is disabled; pass root_dir or enable options['session_store'].")
     return store
+
+
+def _session_parts_path(session: Session, *, run_id: str | None) -> Path | None:
+    metadata = session.metadata.get(SESSION_STORE_METADATA_KEY)
+    if not isinstance(metadata, dict):
+        return None
+    if run_id is None:
+        parts_path = metadata.get("parts_path")
+        if isinstance(parts_path, str) and parts_path:
+            return Path(parts_path)
+        run_dir = metadata.get("run_dir")
+        if isinstance(run_dir, str) and run_dir:
+            return Path(run_dir) / "parts.jsonl"
+    root_dir = metadata.get("root_dir")
+    session_id = metadata.get("session_id") or session.id
+    target_run_id = run_id or metadata.get("run_id")
+    if isinstance(root_dir, str) and root_dir and isinstance(target_run_id, str) and target_run_id:
+        return Path(root_dir) / str(session_id) / "runs" / target_run_id / "parts.jsonl"
+    return None
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        item = json.loads(line)
+        if isinstance(item, dict):
+            rows.append(item)
+    return rows
 
 
 def _validate_instruction_assets(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -176,6 +215,7 @@ __all__ = [
     "load_latest_context_assets_snapshot",
     "load_latest_context_pack_snapshot",
     "load_session_memory",
+    "load_session_parts",
     "resume_session",
     "validate_resume_context_assets",
 ]
