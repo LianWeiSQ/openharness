@@ -68,6 +68,25 @@ Use `resume_session(...)` to restore a persisted `Session`, and `load_latest_con
 
 See [`context-persistence-p0.md`](context-persistence-p0.md) for the P0 requirement and acceptance checklist.
 
+## P1 Assets
+
+P1 promotes context sources into resumable assets:
+
+- instruction snapshots record loaded instruction files, scopes, byte counts, truncation state, and content hashes;
+- file context snapshots record read files, hashes, mtimes, previews, and change status;
+- `session-memory.md` provides a lightweight continuation packet for long-running sessions;
+- `resume_session(...)` validates the latest instruction/file assets and reports whether they are unchanged, changed, missing, or unchecked.
+
+The assets live beside the P0 context pack snapshots:
+
+```text
+.openagent/sessions/{session_id}/
+  session-memory.md
+  runs/{run_id}/context/context-assets-step-0001.json
+```
+
+See [`context-persistence-p1.md`](context-persistence-p1.md) for the P1 requirement and acceptance checklist.
+
 ## Design Rule
 
 Add new context sources as explicit `ContextItem`s with priority, source, stability, and metadata. Avoid hiding important state in ad hoc prompt text.

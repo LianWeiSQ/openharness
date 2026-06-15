@@ -64,6 +64,27 @@ class SessionStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def record_context_assets(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def record_session_memory(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        content: str,
+        step_index: int | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     def finish_run(
         self,
         session: Session,
@@ -264,6 +285,76 @@ class FileSessionStore(SessionStore):
         )
         return metadata
 
+    def record_context_assets(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        step_index = _optional_int(snapshot.get("step_index"))
+        filename = f"context-assets-step-{step_index:04d}.json" if step_index is not None else f"context-assets-{_now_ms()}.json"
+        context_dir = self._context_asset_dir(session_id, run_id)
+        path = context_dir / filename
+        payload = {
+            "schema_version": "openagent.context_assets_snapshot.v1",
+            "session_id": session_id,
+            "run_id": run_id,
+            "timestamp_ms": _now_ms(),
+            **_jsonable(snapshot),
+        }
+        self._write_json(path, payload)
+        instructions = payload.get("instructions") if isinstance(payload.get("instructions"), dict) else {}
+        files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+        metadata = {
+            "schema_version": payload["schema_version"],
+            "session_id": session_id,
+            "run_id": run_id,
+            "step_index": step_index,
+            "asset_path": str(path),
+            "asset_dir": str(context_dir),
+            "instruction_count": instructions.get("item_count", 0),
+            "file_record_count": files.get("record_count", 0),
+            "file_changed_count": files.get("changed_count", 0),
+        }
+        self.record_event(
+            session_id=session_id,
+            run_id=run_id,
+            event="context.assets_snapshot.saved",
+            kind="context",
+            attributes=metadata,
+        )
+        return metadata
+
+    def record_session_memory(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        content: str,
+        step_index: int | None = None,
+    ) -> dict[str, Any]:
+        path = self._session_memory_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        metadata = {
+            "schema_version": "openagent.session_memory.v1",
+            "session_id": session_id,
+            "run_id": run_id,
+            "step_index": step_index,
+            "memory_path": str(path),
+            "content_chars": len(content),
+            "updated_at_ms": _now_ms(),
+        }
+        self.record_event(
+            session_id=session_id,
+            run_id=run_id,
+            event="session.memory.updated",
+            kind="memory",
+            attributes=metadata,
+        )
+        return metadata
+
     def finish_run(
         self,
         session: Session,
@@ -417,6 +508,12 @@ class FileSessionStore(SessionStore):
 
     def _context_pack_dir(self, session_id: str, run_id: str) -> Path:
         return self._run_dir(session_id, run_id) / "context"
+
+    def _context_asset_dir(self, session_id: str, run_id: str) -> Path:
+        return self._run_dir(session_id, run_id) / "context"
+
+    def _session_memory_path(self, session_id: str) -> Path:
+        return self._session_dir(session_id) / "session-memory.md"
 
     def _summary_path(self, session_id: str, run_id: str) -> Path:
         return self._run_dir(session_id, run_id) / "summary.json"

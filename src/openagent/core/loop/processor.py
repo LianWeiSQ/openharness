@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Any
 
 from ..agent.base import BaseAgent
+from ..context_assets import (
+    CONTEXT_ASSET_SNAPSHOTS_METADATA_KEY,
+    LAST_CONTEXT_ASSETS_METADATA_KEY,
+    SESSION_MEMORY_METADATA_KEY,
+    build_context_assets_snapshot,
+    render_session_memory,
+)
 from ..context_budget import ContextBudgetConfigError, ContextBudgetResult, check_context_budget, format_context_budget_error, load_context_budget_options
 from ..context_pack import ContextItem, ContextPackBuilder
 from ..context_messages import (
@@ -27,7 +34,7 @@ from ..context_messages import (
 from ..context_state import build_compaction_record
 from ..execution import build_workspace_runtime
 from ..file_context import FileContextState
-from ..instructions import InstructionContextLoader
+from ..instructions import InstructionContext, InstructionContextLoader
 from ..observability import ObservationRecorder
 from ..permission.manager import PermissionAskRequiredError, PermissionDeniedError, PermissionManager
 from ..permission.ruleset import PermissionRuleset
@@ -366,7 +373,7 @@ class AgentLoop:
                 return message.content
         return None
 
-    def _instruction_context_items(self) -> list[ContextItem]:
+    def _load_instruction_context(self) -> InstructionContext | None:
         try:
             instruction_context = InstructionContextLoader(self.session.directory).load()
         except Exception as error:  # noqa: BLE001
@@ -376,7 +383,7 @@ class AgentLoop:
                 "truncated": False,
                 "issues": [f"load_failed:{type(error).__name__}"],
             }
-            return []
+            return None
 
         self.session.metadata["last_instruction_context"] = {
             "item_count": len(instruction_context.items),
@@ -393,7 +400,7 @@ class AgentLoop:
                 for item in instruction_context.items
             ],
         }
-        return instruction_context.to_context_items()
+        return instruction_context
 
     def _file_context_items(self) -> list[ContextItem]:
         return FileContextState.from_metadata(self.session.metadata).to_context_items()
@@ -411,13 +418,16 @@ class AgentLoop:
             for message in messages
             if not bool((message.metadata or {}).get("runtime_context"))
         ]
+        instruction_context = self._load_instruction_context()
+        instruction_items = instruction_context.to_context_items() if instruction_context is not None else []
+        file_context_state = FileContextState.from_metadata(self.session.metadata)
         pack = ContextPackBuilder().build(
             messages=pack_messages,
             metadata=self.session.metadata,
             todos=self.session.todos,
             runtime_context=runtime_context,
             sandbox_metadata=self._sandbox_metadata_for_context_pack(),
-            extra_items=[*self._instruction_context_items(), *self._file_context_items()],
+            extra_items=[*instruction_items, *file_context_state.to_context_items()],
         )
         trace_items = pack.trace_dicts()
         diagnostic = {
@@ -433,6 +443,13 @@ class AgentLoop:
         if snapshot_metadata is not None:
             diagnostic["snapshot_path"] = snapshot_metadata.get("snapshot_path")
             diagnostic["snapshot_schema_version"] = snapshot_metadata.get("schema_version")
+        asset_metadata = self._record_context_assets_snapshot(
+            step_index=step_index,
+            instruction_context=instruction_context,
+            file_context_state=file_context_state,
+        )
+        if asset_metadata is not None:
+            diagnostic["assets_path"] = asset_metadata.get("asset_path")
         trace_raw = self.session.metadata.get(CONTEXT_PACK_TRACE_METADATA_KEY)
         trace = list(trace_raw) if isinstance(trace_raw, list) else []
         trace.append(diagnostic)
@@ -444,6 +461,13 @@ class AgentLoop:
             snapshots.append(snapshot_metadata)
             self.session.metadata["context_pack_snapshots"] = snapshots[-CONTEXT_PACK_TRACE_LIMIT:]
             self.session.metadata["last_context_pack_snapshot"] = snapshot_metadata
+        if asset_metadata is not None:
+            assets_raw = self.session.metadata.get(CONTEXT_ASSET_SNAPSHOTS_METADATA_KEY)
+            assets = list(assets_raw) if isinstance(assets_raw, list) else []
+            assets.append(asset_metadata)
+            self.session.metadata[CONTEXT_ASSET_SNAPSHOTS_METADATA_KEY] = assets[-CONTEXT_PACK_TRACE_LIMIT:]
+            self.session.metadata[LAST_CONTEXT_ASSETS_METADATA_KEY] = asset_metadata
+        if snapshot_metadata is not None or asset_metadata is not None:
             self._save_session_store_state()
         self._record_observation(
             "context.pack_built",
@@ -456,6 +480,7 @@ class AgentLoop:
                 "included_count": diagnostic["included_count"],
                 "estimated_input_tokens": pack.estimated_input_tokens,
                 "snapshot_path": snapshot_metadata.get("snapshot_path") if snapshot_metadata else None,
+                "assets_path": asset_metadata.get("asset_path") if asset_metadata else None,
             },
         )
 
@@ -466,6 +491,26 @@ class AgentLoop:
             session_id=self.session.id,
             run_id=self._session_store_run_id,
             snapshot=diagnostic,
+        )
+
+    def _record_context_assets_snapshot(
+        self,
+        *,
+        step_index: int,
+        instruction_context: InstructionContext | None,
+        file_context_state: FileContextState,
+    ) -> dict[str, Any] | None:
+        if self.session_store is None or self._session_store_run_id is None:
+            return None
+        snapshot = build_context_assets_snapshot(
+            step_index=step_index,
+            instruction_context=instruction_context,
+            file_context_state=file_context_state,
+        )
+        return self.session_store.record_context_assets(
+            session_id=self.session.id,
+            run_id=self._session_store_run_id,
+            snapshot=snapshot,
         )
 
     def _record_model_usage(self, usage: Usage) -> None:
@@ -818,6 +863,25 @@ class AgentLoop:
         if self.session_store is None or self._session_store_run_id is None:
             return
         self.session_store.save_state(self.session, run_id=self._session_store_run_id)
+
+    def _record_session_memory(self, *, step_index: int) -> None:
+        if self.session_store is None or self._session_store_run_id is None:
+            return
+        content = render_session_memory(
+            session_id=self.session.id,
+            workspace=self.session.directory,
+            messages=self.session.messages,
+            todos=self.session.todos,
+            metadata=self.session.metadata,
+            step_index=step_index,
+        )
+        metadata = self.session_store.record_session_memory(
+            session_id=self.session.id,
+            run_id=self._session_store_run_id,
+            content=content,
+            step_index=step_index,
+        )
+        self.session.metadata[SESSION_MEMORY_METADATA_KEY] = metadata
 
     def _finish_session_store_run(
         self,
@@ -1802,6 +1866,7 @@ class AgentLoop:
                     attributes=step_finished_attributes,
                     duration_ms=step_duration_ms,
                 )
+                self._record_session_memory(step_index=steps)
                 self._save_session_store_state()
                 self._log_runtime(
                     "INFO",
