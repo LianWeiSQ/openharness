@@ -1,15 +1,30 @@
-# OpenAgent
+<a id="openagent"></a>
 
-> A hackable Agent Harness runtime with a decoupled Swarm Function Kernel for routing work across OpenAgent and external agents.
+<h1 align="center">OpenAgent</h1>
 
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
-![Status](https://img.shields.io/badge/status-engineering%20preview-orange)
-![Runtime](https://img.shields.io/badge/runtime-agent%20harness-246bfe)
-![License](https://img.shields.io/badge/license-UNLICENSED-lightgrey)
+<p align="center">
+  <strong>Agent Harness Runtime with a decoupled Swarm Function Kernel</strong>
+</p>
+
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-%3E%3D3.10-3776AB?labelColor=4B5563">
+  <img alt="Runtime" src="https://img.shields.io/badge/Runtime-Agent%20Harness-111827?labelColor=4B5563">
+  <img alt="Swarm" src="https://img.shields.io/badge/Swarm-Function%20Kernel-18A999?labelColor=4B5563">
+  <img alt="Latest" src="https://img.shields.io/badge/Latest-v0.1.0-F59E0B?labelColor=4B5563">
+  <img alt="Interfaces" src="https://img.shields.io/badge/Interfaces-Tools%20%7C%20MCP%20%7C%20A2A%20%7C%20Sandbox-246BFE?labelColor=4B5563">
+</p>
+
+<p align="center">
+  <a href="#english">English</a> |
+  <a href="#openagent">中文</a> |
+  <a href="doc/README.md">User Docs</a>
+</p>
 
 OpenAgent 是一个面向 Agent Harness Engineering 的 Python runtime。它关注模型外面的工程系统：工具调用、权限、上下文、执行环境、trace、eval、benchmark、session ledger，以及现在的 **Swarm Function Kernel**。
 
 它不是一个聊天壳，而是一套可以拆开、接入、观察和评测的 Agent 运行时。
+
+<a id="english"></a>
 
 <details>
 <summary>English</summary>
