@@ -756,6 +756,8 @@ The JSON output includes:
 
 The default persisted artifacts are written under `examples/workdir_swarm_course_demo/`, which is ignored by git and safe for repeated class runs. To serve the browser view after a persisted run, copy the generated `demo.inspect_command`, then open the printed local URL.
 
+The course test suite also boots the inspection server against a persisted demo run and verifies `/`, `/runs`, `/runs/{run_id}`, `/runs/{run_id}/receipt`, and `/runs/{run_id}/trace`. That smoke test is the pre-class guardrail for the browser walkthrough.
+
 The same YAML can be switched to a real local OpenAI-compatible gateway:
 
 ```bash

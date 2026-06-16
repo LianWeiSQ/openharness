@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
 from examples.swarm_course_demo import display_inspect_command, real_model_cli_args, run_offline_example, run_real_model_cli
-from swarm.inspection import SwarmInspectionConfig, load_run_detail, load_run_index
+from swarm.inspection import SwarmInspectionConfig, create_inspection_server, load_run_detail, load_run_index
 
 
 class SwarmCourseDemoTests(unittest.IsolatedAsyncioTestCase):
@@ -77,6 +79,41 @@ class SwarmCourseDemoTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(detail["handoff"]["run_id"], "course-persist")
             self.assertEqual(detail["state"]["run_id"], "course-persist")
 
+    async def test_course_demo_persisted_run_serves_inspection_http_routes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            state_dir = tmp / "state"
+            handoff_dir = tmp / "handoff"
+            await run_offline_example(run_id="course-http", persist=True, state_dir=state_dir, handoff_dir=handoff_dir)
+            server = create_inspection_server(SwarmInspectionConfig(state_dir=state_dir, handoff_dir=handoff_dir), port=0)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address
+            base = f"http://{host}:{port}"
+
+            try:
+                health = _get_json(f"{base}/health")
+                runs = _get_json(f"{base}/runs")
+                detail = _get_json(f"{base}/runs/course-http")
+                receipt = _get_json(f"{base}/runs/course-http/receipt")
+                trace = _get_json(f"{base}/runs/course-http/trace")
+                html = _get_text(f"{base}/")
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=1)
+
+        self.assertEqual(health["status"], "ok")
+        self.assertEqual(runs["run_count"], 1)
+        self.assertEqual(runs["runs"][0]["run_id"], "course-http")
+        self.assertEqual(detail["run"]["run_id"], "course-http")
+        self.assertEqual(detail["receipt"]["run_id"], "course-http")
+        self.assertEqual(detail["handoff"]["run_id"], "course-http")
+        self.assertEqual(receipt["runner_status_counts"], {"completed": 2})
+        self.assertGreater(len(trace), 0)
+        self.assertIn("Swarm Inspection", html)
+        self.assertIn("Runner Status", html)
+
     async def test_real_model_command_is_openagent_swarm_binding(self) -> None:
         args = real_model_cli_args(
             config_path=Path("demo.yaml"),
@@ -132,6 +169,18 @@ class SwarmCourseDemoTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/tmp/state", captured["argv"])
         self.assertIn("/tmp/handoff", captured["argv"])
         self.assertIn("--pretty", captured["argv"])
+
+
+def _get_json(url: str):
+    with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 - local test server.
+        assert "application/json" in response.headers["content-type"]
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _get_text(url: str) -> str:
+    with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 - local test server.
+        assert "text/html" in response.headers["content-type"]
+        return response.read().decode("utf-8")
 
 
 if __name__ == "__main__":
