@@ -728,6 +728,43 @@ The CLI can bind OpenAgent runners with `--enable-openagent`. Internally it dyna
 
 For advanced tests or embedded runtimes, use `build_openagent_registry_from_env(...)` with an injected `language_model` to avoid network access while preserving the same YAML binding behavior.
 
+## Course Demo
+
+The course demo is the easiest way to present swarm mode in a class or interview setting. It routes one teaching task to:
+
+- `openagent_teacher`: an OpenAgent runner;
+- `subprocess_checker`: a CLI-style external runner that validates the standard JSON payload path.
+
+The default run is fully offline and uses a scripted OpenAgent model, so it is stable for slides, recordings, and CI:
+
+```bash
+PYTHONPATH=src python src/examples/swarm_course_demo.py
+```
+
+The same YAML can be switched to a real local OpenAI-compatible gateway:
+
+```bash
+export OPENAI_API_KEY=...
+export OPENAI_BASE_URL=http://localhost:8080
+export OPENAI_MODEL=gpt-5.5
+export OPENAI_WIRE_API=responses
+
+PYTHONPATH=src python src/examples/swarm_course_demo.py --real
+```
+
+The real mode delegates to:
+
+```bash
+openagent-swarm run src/examples/swarm_course_demo.yaml \
+  --task lesson_walkthrough \
+  --enable-openagent \
+  --workspace . \
+  --run-id swarm-course-demo-real \
+  --pretty
+```
+
+This demo is intentionally smaller than the all-runners example. It is meant to teach the control flow: YAML task contract, OpenAgent binding, external runner binding, coordinator receipt, and trace count.
+
 ## Mixed OpenAgent + A2A Example
 
 The public mixed-runner example demonstrates one task routed to two different agent endpoints from one YAML config:
