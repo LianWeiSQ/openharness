@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from openagent.integrations.swarm import OpenAgentRunner, build_openagent_registry
+from openagent.integrations.swarm import OpenAgentRunner, build_openagent_registry, build_openagent_registry_from_env
 from swarm import AgentResult, AgentSpec, RunContext, SwarmRuntime
 from swarm.config import RunnerConfig, TaskConfig, load_swarm_config
 from swarm.registry import RunnerRegistry
@@ -213,6 +213,49 @@ class OpenAgentSwarmAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(list(registry.ids()), ["oa-reader"])
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.results["oa-reader"].summary, "yaml builder ok")
+
+    async def test_build_openagent_registry_from_env_accepts_injected_language_model(self) -> None:
+        workspace = self._workspace()
+        config = load_swarm_config(
+            {
+                "runners": {
+                    "oa-cli": {
+                        "kind": "openagent",
+                        "roles": ["research"],
+                        "metadata": {"tools": "readonly"},
+                    }
+                },
+                "tasks": {
+                    "cli": {
+                        "role": "research",
+                        "objective": "Run OpenAgent through CLI binding.",
+                        "context": "No network should be needed.",
+                        "boundaries": "Read-only.",
+                        "output_schema": {"type": "object"},
+                        "runner_ids": ["oa-cli"],
+                    }
+                },
+            }
+        )
+        model = ScriptedLanguageModel(
+            script=[[{"type": "text-delta", "id": "env", "text": "env builder ok"}, {"type": "finish", "finish_reason": "stop", "usage": {}}]]
+        )
+
+        registry = await build_openagent_registry_from_env(
+            config,
+            workspace_root=workspace.path,
+            model_id="gpt-env-test",
+            context_window=12345,
+            max_output=321,
+            language_model=model,
+        )
+        descriptor = registry.require("oa-cli").descriptor
+        result = await SwarmRuntime(registry=registry).run_task(config.task("cli"), run_id="env-yaml")
+
+        self.assertEqual(descriptor.metadata["model_id"], "gpt-env-test")
+        self.assertEqual(descriptor.max_context, 12345)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.results["oa-cli"].summary, "env builder ok")
 
     def test_swarm_package_still_has_no_openagent_imports(self) -> None:
         root = Path(__file__).resolve().parents[1] / "swarm"

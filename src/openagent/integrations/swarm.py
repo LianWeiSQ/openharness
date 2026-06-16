@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import json
+import os
 import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -19,9 +20,10 @@ from ..core.agent.universal import UniversalAgent
 from ..core.loop.processor import AgentLoop
 from ..core.permission.manager import PermissionManager
 from ..core.provider.base import LanguageModel
+from ..core.provider.openai import OpenAIProvider
 from ..core.session.session import Session
 from ..core.tool.toolkit import ToolkitAdapter
-from ..core.types import AgentConfig, Model, PermissionRulesetName
+from ..core.types import AgentConfig, Model, ModelCapabilities, PermissionRulesetName
 
 OpenAgentTools = list[str] | Literal["all", "readonly"]
 ToolkitFactory = Callable[[], ToolkitAdapter]
@@ -294,6 +296,72 @@ def build_openagent_registry(
     return registry
 
 
+async def build_openagent_registry_from_env(
+    config: SwarmConfig,
+    *,
+    workspace_root: str | Path,
+    model_id: str | None = None,
+    context_window: int | None = None,
+    max_output: int | None = None,
+    wire_api: str | None = None,
+    language_model: LanguageModel | None = None,
+    toolkit_factory: ToolkitFactory | None = None,
+    permission_manager_factory: PermissionManagerFactory | None = None,
+) -> RunnerRegistry:
+    """Build OpenAgent swarm runners from YAML config and local provider env.
+
+    This helper is intentionally in the OpenAgent integration package, not in
+    ``src/swarm``. The swarm kernel stays agent-agnostic while the installed
+    ``openagent-swarm`` CLI can opt into real OpenAgent workers.
+    """
+
+    model_metadata = _model_from_env(
+        model_id=model_id,
+        context_window=context_window,
+        max_output=max_output,
+    )
+    resolved_language_model = language_model
+    if resolved_language_model is None:
+        resolved_language_model = await OpenAIProvider(
+            wire_api=wire_api or os.getenv("OPENAGENT_SWARM_WIRE_API") or os.getenv("OPENAI_WIRE_API") or "responses"
+        ).get_language_model(model_metadata)
+    return build_openagent_registry(
+        config,
+        model=resolved_language_model,
+        model_metadata=model_metadata,
+        workspace_root=workspace_root,
+        toolkit_factory=toolkit_factory,
+        permission_manager_factory=permission_manager_factory,
+    )
+
+
+def _model_from_env(
+    *,
+    model_id: str | None = None,
+    context_window: int | None = None,
+    max_output: int | None = None,
+) -> Model:
+    resolved_model = model_id or os.getenv("OPENAGENT_SWARM_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+    return Model(
+        id=resolved_model,
+        provider_id="openai",
+        name=f"OpenAI Compatible/{resolved_model}",
+        context_window=context_window or _env_int("OPENAGENT_SWARM_CONTEXT_WINDOW", _env_int("OPENAI_CONTEXT_WINDOW", 32768)),
+        max_output=max_output or _env_int("OPENAGENT_SWARM_MAX_OUTPUT", _env_int("OPENAI_MAX_OUTPUT", 4096)),
+        capabilities=ModelCapabilities(vision=False, tools=True, streaming=True, reasoning=False),
+    )
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _instruction_for_spec(spec: AgentSpec) -> str:
     payload = {
         "role": spec.role,
@@ -338,4 +406,4 @@ def _default_system_prompt() -> str:
     )
 
 
-__all__ = ["OpenAgentRunner", "OpenAgentRunHandle", "build_openagent_registry"]
+__all__ = ["OpenAgentRunner", "OpenAgentRunHandle", "build_openagent_registry", "build_openagent_registry_from_env"]

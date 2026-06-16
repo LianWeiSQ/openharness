@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -46,6 +47,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--run-id", help="Stable run id. Defaults to a generated swarm_<uuid> id.")
     run.add_argument("--state-dir", help="Optional directory for state.latest.json, runner-results.json, and trace.jsonl.")
     run.add_argument("--handoff-dir", help="Optional directory for team-handoff.json receipts.")
+    run.add_argument("--enable-openagent", action="store_true", help="Allow YAML kind=openagent runners using the installed OpenAgent integration.")
+    run.add_argument("--workspace", default=".", help="Workspace root for enabled OpenAgent runners. Defaults to current directory.")
+    run.add_argument("--model", default=None, help="Model id for enabled OpenAgent runners. Defaults to OPENAGENT_SWARM_MODEL or OPENAI_MODEL.")
+    run.add_argument("--wire-api", choices=["chat", "responses"], default=None, help="Wire API for enabled OpenAgent runners.")
+    run.add_argument("--context-window", type=int, default=None, help="Context window for enabled OpenAgent runner metadata.")
+    run.add_argument("--max-output", type=int, default=None, help="Max output for enabled OpenAgent runner metadata.")
     run.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
 
     inspect = subparsers.add_parser("inspect", help="Serve a local JSON API over persisted swarm runs.")
@@ -89,7 +96,7 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, Any]:
     config_path = Path(args.config)
     config = load_swarm_config(config_path)
     task = config.task(str(args.task))
-    registry = build_cli_registry(config=config, task=task)
+    registry = await build_cli_registry(config=config, task=task, args=args)
     run_id = str(args.run_id or f"swarm_{uuid4().hex}")
     state_store = FileSwarmStateStore(args.state_dir) if args.state_dir else None
     runtime = SwarmRuntime(registry=registry, fanout_budget=config.fanout_budget, state_store=state_store)
@@ -114,16 +121,18 @@ async def _run_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return _payload_for_result(result=result, run_id=run_id, state_dir=args.state_dir, receipt=None)
 
 
-def build_cli_registry(*, config: SwarmConfig, task: TaskConfig) -> RunnerRegistry:
-    unsupported = _unsupported_runner_ids_for_task(config=config, task=task)
+async def build_cli_registry(*, config: SwarmConfig, task: TaskConfig, args: argparse.Namespace) -> RunnerRegistry:
+    supported_kinds = _supported_runner_kinds(enable_openagent=bool(getattr(args, "enable_openagent", False)))
+    unsupported = _unsupported_runner_ids_for_task(config=config, task=task, supported_kinds=supported_kinds)
     if unsupported:
         joined = ", ".join(sorted(unsupported))
+        hint = " Pass --enable-openagent to allow kind=openagent runners." if _runner_ids_include_kind(config=config, runner_ids=unsupported, kind="openagent") else ""
         raise ValueError(
             f"task {task.id!r} references runner(s) not supported by the config-only CLI: {joined}. "
-            "Supported CLI runner kinds are: a2a, http, subprocess."
+            f"Supported CLI runner kinds are: {', '.join(sorted(supported_kinds))}.{hint}"
         )
 
-    selected_config = _selected_config_for_task(config=config, task=task)
+    selected_config = _selected_config_for_task(config=config, task=task, supported_kinds=supported_kinds)
     registry = RunnerRegistry()
     for partial in (
         build_subprocess_registry(selected_config),
@@ -132,31 +141,60 @@ def build_cli_registry(*, config: SwarmConfig, task: TaskConfig) -> RunnerRegist
     ):
         for runner in partial.all():
             registry.register(runner)
+    if getattr(args, "enable_openagent", False):
+        openagent_registry = await _build_openagent_registry_from_cli(config=selected_config, args=args)
+        for runner in openagent_registry.all():
+            registry.register(runner)
     if not list(registry.ids()):
-        raise ValueError("no CLI-supported runners are configured; use kind a2a, http, or subprocess")
+        raise ValueError(f"no CLI-supported runners are configured; use kind {', '.join(sorted(supported_kinds))}")
     return registry
 
 
-def _unsupported_runner_ids_for_task(*, config: SwarmConfig, task: TaskConfig) -> list[str]:
+def _supported_runner_kinds(*, enable_openagent: bool) -> set[str]:
+    supported = set(CONFIG_ONLY_RUNNER_KINDS)
+    if enable_openagent:
+        supported.add("openagent")
+    return supported
+
+
+def _unsupported_runner_ids_for_task(*, config: SwarmConfig, task: TaskConfig, supported_kinds: set[str]) -> list[str]:
     kinds_by_id = {runner.id: runner.kind for runner in config.runners}
     selected = list(task.runner_ids)
-    return [runner_id for runner_id in selected if kinds_by_id.get(runner_id) not in CONFIG_ONLY_RUNNER_KINDS]
+    return [runner_id for runner_id in selected if kinds_by_id.get(runner_id) not in supported_kinds]
 
 
-def _selected_config_for_task(*, config: SwarmConfig, task: TaskConfig) -> SwarmConfig:
+def _selected_config_for_task(*, config: SwarmConfig, task: TaskConfig, supported_kinds: set[str]) -> SwarmConfig:
     if task.runner_ids:
         selected_ids = set(task.runner_ids)
     else:
         selected_ids = {
             runner.id
             for runner in config.runners
-            if runner.kind in CONFIG_ONLY_RUNNER_KINDS and (task.role in runner.roles or "*" in runner.roles)
+            if runner.kind in supported_kinds and (task.role in runner.roles or "*" in runner.roles)
         }
     return SwarmConfig(
         runners=[runner for runner in config.runners if runner.id in selected_ids],
         tasks=[task],
         fanout_budget=config.fanout_budget,
     )
+
+
+async def _build_openagent_registry_from_cli(*, config: SwarmConfig, args: argparse.Namespace) -> RunnerRegistry:
+    module = importlib.import_module("openagent.integrations.swarm")
+    builder = getattr(module, "build_openagent_registry_from_env")
+    return await builder(
+        config,
+        workspace_root=getattr(args, "workspace", "."),
+        model_id=getattr(args, "model", None),
+        context_window=getattr(args, "context_window", None),
+        max_output=getattr(args, "max_output", None),
+        wire_api=getattr(args, "wire_api", None),
+    )
+
+
+def _runner_ids_include_kind(*, config: SwarmConfig, runner_ids: list[str], kind: str) -> bool:
+    kinds_by_id = {runner.id: runner.kind for runner in config.runners}
+    return any(kinds_by_id.get(runner_id) == kind for runner_id in runner_ids)
 
 
 def _payload_for_result(

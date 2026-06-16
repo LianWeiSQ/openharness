@@ -76,13 +76,30 @@ The module form works without installing console scripts:
 PYTHONPATH=src python -m swarm.cli run swarm.yaml --task compare --run-id compare-demo --pretty
 ```
 
-The config-only CLI supports runner kinds that do not require in-process Python handler binding:
+By default the config-only CLI supports runner kinds that do not require in-process Python handler binding:
 
 - `subprocess`
 - `http`
 - `a2a`
 
 It intentionally does not auto-import `function` handlers. Function runners remain library-first because code must explicitly bind handler names to Python callables.
+
+`openagent` runners are opt-in from the CLI. This keeps `src/swarm/` independent from OpenAgent while still allowing an installed OpenAgent package to bind YAML-configured workers:
+
+```bash
+OPENAI_API_KEY=... \
+OPENAI_BASE_URL=http://localhost:8080 \
+OPENAI_MODEL=gpt-5.5 \
+OPENAI_WIRE_API=responses \
+openagent-swarm run swarm.yaml \
+  --task compare \
+  --enable-openagent \
+  --workspace . \
+  --run-id compare-openagent \
+  --pretty
+```
+
+OpenAgent CLI binding uses `OPENAGENT_SWARM_MODEL`, `OPENAI_MODEL`, `OPENAGENT_SWARM_CONTEXT_WINDOW`, `OPENAI_CONTEXT_WINDOW`, `OPENAGENT_SWARM_MAX_OUTPUT`, and `OPENAI_MAX_OUTPUT` for model metadata. `--model`, `--wire-api`, `--context-window`, and `--max-output` can override those values for one run.
 
 Example subprocess YAML:
 
@@ -707,7 +724,9 @@ for partial in (
         registry.register(runner)
 ```
 
-The config-only CLI does not auto-bind OpenAgent runners because an OpenAgent runner needs a real `LanguageModel`, model metadata, and workspace root. Use Python binding for mixed OpenAgent/non-OpenAgent registries.
+The CLI can bind OpenAgent runners with `--enable-openagent`. Internally it dynamically loads `openagent.integrations.swarm`, builds an OpenAI-compatible language model from environment variables, and registers only the OpenAgent runners selected by the task. Without `--enable-openagent`, `kind: openagent` is rejected with a clear error so the swarm kernel remains safe to use without OpenAgent installed.
+
+For advanced tests or embedded runtimes, use `build_openagent_registry_from_env(...)` with an injected `language_model` to avoid network access while preserving the same YAML binding behavior.
 
 ## Mixed OpenAgent + A2A Example
 

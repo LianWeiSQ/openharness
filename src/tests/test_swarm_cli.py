@@ -7,8 +7,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from swarm import AgentDescriptor, AgentResult
 from swarm import cli as swarm_cli
+from swarm.function_runner import FunctionRunner
+from swarm.registry import RunnerRegistry
 
 
 class SwarmCliTests(unittest.TestCase):
@@ -125,6 +129,99 @@ tasks:
         error = json.loads(stderr)
         self.assertEqual(error["status"], "error")
         self.assertIn("not supported by the config-only CLI", error["error"])
+
+    def test_cli_rejects_openagent_runner_without_enable_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config = Path(raw_tmp) / "swarm.yaml"
+            config.write_text(
+                """
+runners:
+  oa:
+    kind: openagent
+    roles: [worker]
+tasks:
+  demo:
+    role: worker
+    objective: Run demo.
+    context: Test.
+    boundaries: Read-only.
+    output_schema:
+      type: object
+    runner_ids: [oa]
+""",
+                encoding="utf-8",
+            )
+
+            code, stdout, stderr = _run_cli(["run", str(config), "--task", "demo"])
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        error = json.loads(stderr)
+        self.assertIn("--enable-openagent", error["error"])
+
+    def test_cli_can_enable_openagent_runner_binding(self) -> None:
+        captured: dict[str, object] = {}
+
+        async def fake_openagent_registry(*, config, args):
+            captured["runner_ids"] = [runner.id for runner in config.runners]
+            captured["workspace"] = args.workspace
+            captured["model"] = args.model
+            registry = RunnerRegistry()
+            registry.register(
+                FunctionRunner(
+                    descriptor=AgentDescriptor(id="oa", roles=["worker"], kind="openagent", supports_streaming=True),
+                    handler=lambda _spec, _ctx: AgentResult(status="completed", summary="openagent cli bound"),
+                )
+            )
+            return registry
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            tmp = Path(raw_tmp)
+            config = tmp / "swarm.yaml"
+            config.write_text(
+                """
+runners:
+  oa:
+    kind: openagent
+    roles: [worker]
+  unused_http:
+    kind: http
+    roles: [other]
+    metadata: {}
+tasks:
+  demo:
+    role: worker
+    objective: Run demo.
+    context: Test.
+    boundaries: Read-only.
+    output_schema:
+      type: object
+    runner_ids: [oa]
+""",
+                encoding="utf-8",
+            )
+
+            with patch.object(swarm_cli, "_build_openagent_registry_from_cli", fake_openagent_registry):
+                code, stdout, stderr = _run_cli(
+                    [
+                        "run",
+                        str(config),
+                        "--task",
+                        "demo",
+                        "--enable-openagent",
+                        "--workspace",
+                        str(tmp),
+                        "--model",
+                        "gpt-test",
+                    ]
+                )
+
+        self.assertEqual(code, 0, stderr)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["results"]["oa"]["summary"], "openagent cli bound")
+        self.assertEqual(captured["runner_ids"], ["oa"])
+        self.assertEqual(captured["workspace"], str(tmp))
+        self.assertEqual(captured["model"], "gpt-test")
 
 
 def _run_cli(argv: list[str]) -> tuple[int, str, str]:
