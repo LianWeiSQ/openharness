@@ -741,6 +741,21 @@ The default run is fully offline and uses a scripted OpenAgent model, so it is s
 PYTHONPATH=src python src/examples/swarm_course_demo.py
 ```
 
+For a live walkthrough, persist the run artifacts and open the inspection view:
+
+```bash
+PYTHONPATH=src python src/examples/swarm_course_demo.py --persist
+```
+
+The JSON output includes:
+
+- `demo.persistence.state_path`: persisted `state.latest.json`;
+- `demo.persistence.handoff_path`: persisted `team-handoff.json`;
+- `demo.persistence.receipt_path`: persisted `coordinator-receipt.json`;
+- `demo.inspect_command`: a copyable `openagent-swarm inspect ...` command.
+
+The default persisted artifacts are written under `examples/workdir_swarm_course_demo/`, which is ignored by git and safe for repeated class runs. To serve the browser view after a persisted run, copy the generated `demo.inspect_command`, then open the printed local URL.
+
 The same YAML can be switched to a real local OpenAI-compatible gateway:
 
 ```bash
@@ -751,6 +766,8 @@ export OPENAI_WIRE_API=responses
 
 PYTHONPATH=src python src/examples/swarm_course_demo.py --real
 ```
+
+Real mode can also persist artifacts by passing `--state-dir` and `--handoff-dir`; it delegates those flags to `openagent-swarm run`.
 
 The real mode delegates to:
 
