@@ -728,62 +728,6 @@ The CLI can bind OpenAgent runners with `--enable-openagent`. Internally it dyna
 
 For advanced tests or embedded runtimes, use `build_openagent_registry_from_env(...)` with an injected `language_model` to avoid network access while preserving the same YAML binding behavior.
 
-## Course Demo
-
-The course demo is the easiest way to present swarm mode in a class or interview setting. It routes one teaching task to:
-
-- `openagent_teacher`: an OpenAgent runner;
-- `subprocess_checker`: a CLI-style external runner that validates the standard JSON payload path.
-
-The default run is fully offline and uses a scripted OpenAgent model, so it is stable for slides, recordings, and CI:
-
-```bash
-PYTHONPATH=src python src/examples/swarm_course_demo.py
-```
-
-For a live walkthrough, persist the run artifacts and open the inspection view:
-
-```bash
-PYTHONPATH=src python src/examples/swarm_course_demo.py --persist
-```
-
-The JSON output includes:
-
-- `demo.persistence.state_path`: persisted `state.latest.json`;
-- `demo.persistence.handoff_path`: persisted `team-handoff.json`;
-- `demo.persistence.receipt_path`: persisted `coordinator-receipt.json`;
-- `demo.inspect_command`: a copyable `openagent-swarm inspect ...` command.
-
-The default persisted artifacts are written under `examples/workdir_swarm_course_demo/`, which is ignored by git and safe for repeated class runs. To serve the browser view after a persisted run, copy the generated `demo.inspect_command`, then open the printed local URL.
-
-The course test suite also boots the inspection server against a persisted demo run and verifies `/`, `/runs`, `/runs/{run_id}`, `/runs/{run_id}/receipt`, and `/runs/{run_id}/trace`. That smoke test is the pre-class guardrail for the browser walkthrough.
-
-The same YAML can be switched to a real local OpenAI-compatible gateway:
-
-```bash
-export OPENAI_API_KEY=...
-export OPENAI_BASE_URL=http://localhost:8080
-export OPENAI_MODEL=gpt-5.5
-export OPENAI_WIRE_API=responses
-
-PYTHONPATH=src python src/examples/swarm_course_demo.py --real
-```
-
-Real mode can also persist artifacts by passing `--state-dir` and `--handoff-dir`; it delegates those flags to `openagent-swarm run`.
-
-The real mode delegates to:
-
-```bash
-openagent-swarm run src/examples/swarm_course_demo.yaml \
-  --task lesson_walkthrough \
-  --enable-openagent \
-  --workspace . \
-  --run-id swarm-course-demo-real \
-  --pretty
-```
-
-This demo is intentionally smaller than the all-runners example. It is meant to teach the control flow: YAML task contract, OpenAgent binding, external runner binding, coordinator receipt, and trace count.
-
 ## Mixed OpenAgent + A2A Example
 
 The public mixed-runner example demonstrates one task routed to two different agent endpoints from one YAML config:
