@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import shutil
 import sys
 import urllib.error
@@ -67,6 +68,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(run_stats_command(args))
     if command == "command":
         raise SystemExit(run_custom_command(args))
+    if command == "config":
+        raise SystemExit(run_config_command(args))
     if command == "auth":
         raise SystemExit(run_auth_command(args))
     if command == "tui":
@@ -196,6 +199,29 @@ def build_parser() -> argparse.ArgumentParser:
     command_render.add_argument("arguments", nargs="*", help="command arguments")
     command_render.add_argument("--no-shell", action="store_true", help="do not execute !`shell` blocks")
     command_render.add_argument("--format", choices=["text", "json"], default="text", help="output format")
+
+    config = subparsers.add_parser("config", help="inspect and initialize local CLI configuration")
+    config_subparsers = config.add_subparsers(dest="config_command", required=True)
+
+    config_init = config_subparsers.add_parser("init", help="create a local .openagent/openagent.env file")
+    config_init.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path, default current directory")
+    config_init.add_argument("--path", default=None, help="env file path, default <workspace>/.openagent/openagent.env")
+    config_init.add_argument("--api-key", default=None, help="optional OpenAI-compatible API key to write")
+    config_init.add_argument("--base-url", default=DEFAULT_BASE_URL, help=f"OpenAI-compatible base URL, default {DEFAULT_BASE_URL}")
+    config_init.add_argument("--model", default=DEFAULT_MODEL, help=f"model id, default {DEFAULT_MODEL}")
+    config_init.add_argument("--wire-api", choices=["chat", "responses"], default=DEFAULT_WIRE_API, help=f"wire API, default {DEFAULT_WIRE_API}")
+    config_init.add_argument("--max-steps", default=DEFAULT_MAX_STEPS, help=f"AgentLoop max steps, default {DEFAULT_MAX_STEPS}")
+    config_init.add_argument("--with-server-token", action="store_true", help="generate OPENAGENT_SERVER_TOKEN for secured App Bridge access")
+    config_init.add_argument("--force", action="store_true", help="overwrite an existing env file")
+    config_init.add_argument("--format", choices=["text", "json"], default="text", help="output format")
+
+    config_show = config_subparsers.add_parser("show", help="show resolved local CLI configuration")
+    add_common_model_options(config_show)
+    config_show.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path, default current directory")
+    config_show.add_argument("--session-root", default=None, help="session store root")
+    config_show.add_argument("--server-url", default=None, help=f"App Bridge URL, default OPENAGENT_SERVER_URL or {DEFAULT_SERVER_URL}")
+    add_server_auth_options(config_show, role="client")
+    config_show.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
     auth = subparsers.add_parser("auth", help="manage provider credentials")
     auth_subparsers = auth.add_subparsers(dest="auth_command", required=True)
@@ -792,6 +818,155 @@ def run_custom_command(args: argparse.Namespace, *, stdout: object | None = None
         return 0
     print(f"Unknown command action: {action}", file=err)
     return 2
+
+
+def run_config_command(args: argparse.Namespace, *, stdout: object | None = None, stderr: object | None = None) -> int:
+    out = stdout or sys.stdout
+    err = stderr or sys.stderr
+    command = str(getattr(args, "config_command", ""))
+    if command == "init":
+        try:
+            payload = init_local_config(args)
+        except FileExistsError as error:
+            print(str(error), file=err)
+            return 1
+        if getattr(args, "format", "text") == "json":
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_config_init_result(payload, stdout=out)
+        return 0
+    if command == "show":
+        workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
+        config_path = getattr(args, "config", None)
+        if not config_path and (workspace / ".openagent" / "openagent.env").exists():
+            config_path = str(workspace / ".openagent" / "openagent.env")
+        load_local_env(config_path)
+        load_auth_env(getattr(args, "auth_file", None))
+        apply_model_env(args)
+        payload = collect_config_snapshot(args)
+        if getattr(args, "format", "table") == "json":
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_config_table(payload, stdout=out)
+        return 0
+    print(f"Unknown config command: {command}", file=err)
+    return 2
+
+
+def init_local_config(args: argparse.Namespace) -> dict[str, object]:
+    workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
+    path = resolve_config_output_path(args, workspace=workspace)
+    if path.exists() and not bool(getattr(args, "force", False)):
+        raise FileExistsError(f"Config file already exists: {path}. Re-run with --force to overwrite.")
+    server_token = secrets.token_urlsafe(24) if bool(getattr(args, "with_server_token", False)) else None
+    lines = [
+        "# OpenAgent local configuration",
+        "# Keep this file private. It is ignored by git when stored under .openagent/.",
+    ]
+    api_key = str(getattr(args, "api_key", None) or "")
+    lines.append(f"OPENAI_API_KEY={api_key}")
+    lines.append(f"OPENAI_BASE_URL={getattr(args, 'base_url', DEFAULT_BASE_URL)}")
+    lines.append(f"OPENAI_MODEL={getattr(args, 'model', DEFAULT_MODEL)}")
+    lines.append(f"OPENAI_WIRE_API={getattr(args, 'wire_api', DEFAULT_WIRE_API)}")
+    lines.append(f"OPENAGENT_APP_MAX_STEPS={getattr(args, 'max_steps', DEFAULT_MAX_STEPS)}")
+    if server_token:
+        lines.append(f"{DEFAULT_SERVER_TOKEN_ENV}={server_token}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    return {
+        "created": True,
+        "path": str(path),
+        "workspace": str(workspace),
+        "api_key_written": bool(api_key),
+        "server_token_written": bool(server_token),
+        "mode": oct(path.stat().st_mode & 0o777),
+        "next": [
+            "openagent doctor",
+            "openagent",
+        ],
+    }
+
+
+def resolve_config_output_path(args: argparse.Namespace, *, workspace: Path) -> Path:
+    raw_path = getattr(args, "path", None) or getattr(args, "config", None)
+    if raw_path:
+        path = Path(str(raw_path)).expanduser()
+        return path if path.is_absolute() else (workspace / path).resolve()
+    return workspace / ".openagent" / "openagent.env"
+
+
+def collect_config_snapshot(args: argparse.Namespace) -> dict[str, object]:
+    workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
+    session_root = resolve_session_store_root(args)
+    auth_file = resolve_auth_file(getattr(args, "auth_file", None))
+    env_file = resolve_loaded_env_file(getattr(args, "config", None), workspace=workspace)
+    return {
+        "workspace": str(workspace),
+        "env_file": str(env_file) if env_file else None,
+        "auth_file": str(auth_file),
+        "session_root": str(session_root),
+        "openai": {
+            "base_url": os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL,
+            "model": os.getenv("OPENAI_MODEL") or DEFAULT_MODEL,
+            "wire_api": os.getenv("OPENAI_WIRE_API") or DEFAULT_WIRE_API,
+            "api_key": env_secret_state("OPENAI_API_KEY"),
+            "max_steps": os.getenv("OPENAGENT_APP_MAX_STEPS") or DEFAULT_MAX_STEPS,
+        },
+        "app_bridge": {
+            "server_url": normalize_server_url(str(getattr(args, "server_url", None) or os.getenv("OPENAGENT_SERVER_URL") or DEFAULT_SERVER_URL)),
+            "server_token": "set" if resolve_server_token(args, token_attr="server_token", token_env_attr="server_token_env") else "missing",
+            "server_token_env": str(getattr(args, "server_token_env", DEFAULT_SERVER_TOKEN_ENV) or DEFAULT_SERVER_TOKEN_ENV),
+        },
+    }
+
+
+def resolve_loaded_env_file(path: str | None, *, workspace: Path | None = None) -> Path | None:
+    workspace_path = workspace or Path.cwd()
+    candidates = [Path(path).expanduser()] if path else [
+        workspace_path / ".openagent" / "openagent.env",
+        Path.cwd() / ".openagent" / "openagent.env",
+        Path.home() / ".openagent" / "openagent.env",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def env_secret_state(name: str) -> str:
+    return "set" if os.getenv(name) else "missing"
+
+
+def print_config_init_result(payload: dict[str, object], *, stdout: object) -> None:
+    print(f"created: {payload.get('path')}", file=stdout)
+    print(f"mode: {payload.get('mode')}", file=stdout)
+    print(f"api_key_written: {payload.get('api_key_written')}", file=stdout)
+    print(f"server_token_written: {payload.get('server_token_written')}", file=stdout)
+    print("next:", file=stdout)
+    for item in payload.get("next", []):  # type: ignore[union-attr]
+        print(f"  {item}", file=stdout)
+
+
+def print_config_table(payload: dict[str, object], *, stdout: object) -> None:
+    openai = payload.get("openai") if isinstance(payload.get("openai"), dict) else {}
+    app_bridge = payload.get("app_bridge") if isinstance(payload.get("app_bridge"), dict) else {}
+    rows = [
+        ["key", "value"],
+        ["workspace", str(payload.get("workspace") or "")],
+        ["env_file", str(payload.get("env_file") or "")],
+        ["auth_file", str(payload.get("auth_file") or "")],
+        ["session_root", str(payload.get("session_root") or "")],
+        ["openai.base_url", str(openai.get("base_url") or "")],
+        ["openai.model", str(openai.get("model") or "")],
+        ["openai.wire_api", str(openai.get("wire_api") or "")],
+        ["openai.api_key", str(openai.get("api_key") or "")],
+        ["openai.max_steps", str(openai.get("max_steps") or "")],
+        ["app_bridge.server_url", str(app_bridge.get("server_url") or "")],
+        ["app_bridge.server_token", str(app_bridge.get("server_token") or "")],
+        ["app_bridge.server_token_env", str(app_bridge.get("server_token_env") or "")],
+    ]
+    print_table(rows, stdout=stdout)
 
 
 def run_auth_command(

@@ -50,15 +50,13 @@ Use `openagent doctor` to check whether your local gateway is reachable.
 Optional private local config:
 
 ```bash
-mkdir -p .openagent
-cat > .openagent/openagent.env <<'EOF'
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=http://localhost:8080
-OPENAI_MODEL=gpt-5.5
-OPENAI_WIRE_API=responses
-OPENAGENT_APP_MAX_STEPS=30
-EOF
-chmod 600 .openagent/openagent.env
+openagent config init \
+  --api-key "$OPENAI_API_KEY" \
+  --base-url http://localhost:8080 \
+  --model gpt-5.5 \
+  --wire-api responses
+
+openagent config show
 ```
 
 ```bash

@@ -63,10 +63,13 @@ python -m pip install -e .
 Configure the OpenAI-compatible provider:
 
 ```bash
-export OPENAI_API_KEY="..."
-export OPENAI_BASE_URL="http://localhost:8080/v1"
-export OPENAI_MODEL="gpt-5.5"
-export OPENAI_WIRE_API="responses"
+openagent config init \
+  --api-key "$OPENAI_API_KEY" \
+  --base-url http://localhost:8080/v1 \
+  --model gpt-5.5 \
+  --wire-api responses
+
+openagent config show
 ```
 
 Start the app bridge:

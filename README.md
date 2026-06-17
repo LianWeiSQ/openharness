@@ -256,18 +256,17 @@ openagent run --command review "the current branch"
 /review the current branch
 ```
 
-可选：把本机私有配置放进 `.openagent/openagent.env`，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
+可选：初始化本机私有配置，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
 
 ```bash
-mkdir -p .openagent
-cat > .openagent/openagent.env <<'EOF'
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=http://localhost:8080
-OPENAI_MODEL=gpt-5.5
-OPENAI_WIRE_API=responses
-OPENAGENT_APP_MAX_STEPS=30
-EOF
-chmod 600 .openagent/openagent.env
+openagent config init \
+  --api-key "$OPENAI_API_KEY" \
+  --base-url http://localhost:8080 \
+  --model gpt-5.5 \
+  --wire-api responses \
+  --with-server-token
+
+openagent config show
 ```
 
 启动浏览器控制台：

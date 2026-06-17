@@ -22,6 +22,7 @@ from openagent.cli.main import (
     load_local_env,
     run_auth_command,
     run_client_command,
+    run_config_command,
     run_models_command,
     run_custom_command,
     run_non_interactive,
@@ -461,6 +462,88 @@ Create component $1 for $ARGUMENTS.
         self.assertEqual([event["method"] for event in events], ["item/agentMessage/delta", "turn/completed"])
         self.assertEqual(server.records[0]["path"], "/api/sessions/session_existing/turns")
         self.assertEqual(server.records[0]["payload"]["input"], "continue please")
+
+    def test_config_init_creates_private_env_file(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            args = parser.parse_args(
+                [
+                    "config",
+                    "init",
+                    "--workspace",
+                    raw_tmp,
+                    "--api-key",
+                    "test-secret",
+                    "--with-server-token",
+                    "--format",
+                    "json",
+                ]
+            )
+            stdout = io.StringIO()
+
+            exit_code = run_config_command(args, stdout=stdout, stderr=io.StringIO())
+
+            env_path = (Path(raw_tmp) / ".openagent" / "openagent.env").resolve()
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["path"], str(env_path))
+            self.assertEqual(payload["api_key_written"], True)
+            self.assertEqual(payload["server_token_written"], True)
+            self.assertEqual(stat.S_IMODE(env_path.stat().st_mode), 0o600)
+            content = env_path.read_text(encoding="utf-8")
+            self.assertIn("OPENAI_MODEL=gpt-5.5", content)
+            self.assertIn("OPENAI_API_KEY=test-secret", content)
+            self.assertIn("OPENAGENT_SERVER_TOKEN=", content)
+
+    def test_config_init_rejects_existing_file_without_force(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            env_dir = Path(raw_tmp) / ".openagent"
+            env_dir.mkdir()
+            env_path = env_dir / "openagent.env"
+            env_path.write_text("OPENAI_MODEL=existing\n", encoding="utf-8")
+            args = parser.parse_args(["config", "init", "--workspace", raw_tmp])
+            stderr = io.StringIO()
+
+            exit_code = run_config_command(args, stdout=io.StringIO(), stderr=stderr)
+
+            self.assertEqual(exit_code, 1)
+            self.assertIn("already exists", stderr.getvalue())
+            self.assertEqual(env_path.read_text(encoding="utf-8"), "OPENAI_MODEL=existing\n")
+
+    def test_config_show_reports_resolved_values_without_secrets(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            env_dir = Path(raw_tmp) / ".openagent"
+            env_dir.mkdir()
+            (env_dir / "openagent.env").write_text(
+                "\n".join(
+                    [
+                        "OPENAI_API_KEY=private-key",
+                        "OPENAI_BASE_URL=http://localhost:9999",
+                        "OPENAI_MODEL=gpt-config",
+                        "OPENAI_WIRE_API=responses",
+                        "OPENAGENT_APP_MAX_STEPS=44",
+                        "OPENAGENT_SERVER_TOKEN=server-token",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = parser.parse_args(["config", "show", "--workspace", raw_tmp, "--format", "json"])
+            stdout = io.StringIO()
+
+            with patch.dict(os.environ, {}, clear=True):
+                exit_code = run_config_command(args, stdout=stdout, stderr=io.StringIO())
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["openai"]["base_url"], "http://localhost:9999")
+            self.assertEqual(payload["openai"]["model"], "gpt-config")
+            self.assertEqual(payload["openai"]["api_key"], "set")
+            self.assertEqual(payload["app_bridge"]["server_token"], "set")
+            self.assertNotIn("private-key", stdout.getvalue())
+            self.assertNotIn("server-token", stdout.getvalue())
 
 
 class FakeTurn:
