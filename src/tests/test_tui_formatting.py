@@ -392,6 +392,39 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertEqual(state.status, "command not found")
         self.assertIn("slash command not found", "\n".join(line.text for line in state.timeline))
 
+    def test_tui_file_picker_inserts_file_mention(self) -> None:
+        workspace = self._make_temp_dir()
+        (workspace / "README.md").write_text("hello", encoding="utf-8")
+        (workspace / "src").mkdir()
+        (workspace / "src" / "main.py").write_text("print('hi')", encoding="utf-8")
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "review "
+
+        for char in "@read":
+            self.assertFalse(_handle_key(ord(char), state))
+
+        self.assertTrue(state.file_picker_open)
+        self.assertEqual(state.selected_file_mention(), "README.md")
+        self.assertFalse(_handle_key(9, state))  # Tab inserts selected file.
+
+        self.assertFalse(state.file_picker_open)
+        self.assertEqual(state.input_buffer, "review @README.md ")
+        self.assertEqual(state.status, "inserted @README.md")
+
+    def test_tui_plain_prompt_expands_file_mentions(self) -> None:
+        workspace = self._make_temp_dir()
+        (workspace / "README.md").write_text("file context", encoding="utf-8")
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "review @README.md"
+
+        self.assertTrue(state.submit())
+
+        self.assertIn("Attached file:", runtime.last_user_text or "")
+        self.assertIn("file context", runtime.last_user_text or "")
+        self.assertIn("> review @README.md", "\n".join(line.text for line in state.timeline))
+
     def test_tui_submit_runs_openagent_loop_and_tool_event(self) -> None:
         workspace = self._make_temp_dir()
         (workspace / "sample.txt").write_text("hello", encoding="utf-8")

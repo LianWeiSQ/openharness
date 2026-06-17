@@ -132,6 +132,8 @@ Inside the TUI, type:
 
 Built-in commands are handled locally by the TUI. `/sessions` lists recent persisted sessions, `/resume <id-or-prefix>` switches to a previous session and renders the latest transcript messages when available, and `/status` shows the current session/turn state. `/commands` lists both built-in commands and project/global command files. `/name args...` renders a custom command template and submits the rendered prompt to the active session.
 
+For file context, type `@` in the composer to open the file picker. Continue typing to filter workspace files, choose a result, and the TUI inserts `@path`. On submit, `@path` mentions are expanded into bounded file attachments before the prompt reaches the AgentLoop.
+
 ## Controls
 
 | Key | Action |
@@ -144,6 +146,15 @@ Built-in commands are handled locally by the TUI. `/sessions` lists recent persi
 | `Ctrl-C` | request cooperative turn interrupt when running, quit when idle; terminal signal fallback exits cleanly |
 | `Esc` | quit when idle and input is empty |
 | `Ctrl-D` | quit |
+
+When the file picker is open:
+
+| Key | Action |
+| --- | --- |
+| `Up` / `Down` | move file selection |
+| `PageUp` / `PageDown` | jump selection |
+| `Enter` / `Tab` | insert selected `@path` |
+| `Esc` | close picker |
 
 When a tool approval overlay is active:
 
@@ -176,7 +187,7 @@ When the session picker is open:
 | Session resume | Supported | Runtime can load sessions; TUI supports `/sessions`, `/resume <id-or-prefix>`, and an interactive `Ctrl-R` session picker |
 | Interrupt | Partial | `Ctrl-C` calls App Bridge interrupt and emits `turn/interrupted`; blocking provider/tool calls still stop at the next event boundary |
 | Slash commands | Partial | Built-ins cover help/session/status/new/clear/custom command listing; custom command routing works; interactive picker UI is not complete |
-| Mention/file search popup | Not complete | Needs indexed file search and popup UI |
+| Mention/file search popup | Partial | Composer `@` opens a workspace file picker and expands selected `@path` mentions into file attachments on submit; no persistent index yet |
 | Approval overlay | Supported | `PLAN_ONLY` or ask rules emit `turn/approval_requested`; TUI can allow/deny with keyboard and App Bridge exposes the same response protocol |
 | MCP elicitation forms | Not complete | Needs typed question/elicitation UI |
 | Image attachment rows | Not complete | Needs multimodal message support |

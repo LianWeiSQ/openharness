@@ -87,6 +87,25 @@ def _handle_key(key: int, state: TuiState) -> bool:
         if key == curses.KEY_NPAGE:
             state.move_session_picker(5)
             return False
+    if state.file_picker_open:
+        if key in {10, 13, 9}:  # Enter or Tab
+            state.select_file_mention()
+            return False
+        if key in {27}:  # Esc
+            state.close_file_picker()
+            return False
+        if key == curses.KEY_UP:
+            state.move_file_picker(-1)
+            return False
+        if key == curses.KEY_DOWN:
+            state.move_file_picker(1)
+            return False
+        if key == curses.KEY_PPAGE:
+            state.move_file_picker(-5)
+            return False
+        if key == curses.KEY_NPAGE:
+            state.move_file_picker(5)
+            return False
     if key in {14}:  # Ctrl-N
         state.new_session()
         return False
@@ -98,9 +117,11 @@ def _handle_key(key: int, state: TuiState) -> bool:
         return False
     if key in {10, 13}:
         state.submit()
+        state.close_file_picker(update_status=False)
         return False
     if key in {curses.KEY_BACKSPACE, 127, 8}:
         state.input_buffer = state.input_buffer[:-1]
+        state.refresh_file_picker()
         return False
     if key == curses.KEY_PPAGE:
         state.scroll += 8
@@ -112,6 +133,7 @@ def _handle_key(key: int, state: TuiState) -> bool:
         return False
     if 32 <= key <= 126:
         state.input_buffer += chr(key)
+        state.refresh_file_picker()
     return False
 
 
@@ -124,7 +146,9 @@ def _render(stdscr, state: TuiState) -> None:
         return
 
     header_h = 3
-    input_h = 4
+    input_h = 8 if state.file_picker_open else 4
+    if state.active_approval is not None:
+        input_h = 4
     body_h = max(1, height - header_h - input_h - 1)
     side_w = 28 if width >= 112 else 0
     detail_w = 34 if width >= 132 else 0
@@ -240,7 +264,6 @@ def _render_details(stdscr, state: TuiState, y: int, x: int, width: int, height:
 
 
 def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: int) -> None:
-    del height
     _hline(stdscr, y, x, width)
     if state.active_approval is not None:
         approval = state.active_approval
@@ -255,6 +278,8 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
     input_w = max(1, width - input_x - 1)
     value = state.input_buffer[-input_w:]
     _addstr(stdscr, y + 1, input_x, value, curses.color_pair(3))
+    if state.file_picker_open:
+        _render_file_picker(stdscr, state, y + 2, x + 1, width - 2, max(0, height - 3))
     try:
         stdscr.move(y + 1, min(input_x + len(value), width - 2))
     except curses.error:
@@ -265,6 +290,8 @@ def _render_footer(stdscr, state: TuiState, y: int, width: int) -> None:
     controls = "Enter send | /help | /sessions | /resume <id> | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll | Ctrl-C/Esc/Ctrl-D quit"
     if state.active_approval is not None:
         controls = "approval required: a/y allow | d/n/Esc deny | Ctrl-C deny + interrupt"
+    elif state.file_picker_open:
+        controls = "file picker: Up/Down move | Enter/Tab insert | Esc close"
     elif state.session_picker_open:
         controls = "session picker: Up/Down or j/k move | Enter resume | Esc close | PageUp/PageDown jump"
     if state.is_running:
@@ -296,6 +323,17 @@ def _line_color(line: TimelineLine) -> int:
         "status": curses.color_pair(1) | (curses.A_BOLD if line.important else 0),
         "user": curses.color_pair(1) | curses.A_BOLD,
     }.get(line.kind, curses.color_pair(2))
+
+
+def _render_file_picker(stdscr, state: TuiState, y: int, x: int, width: int, height: int) -> None:
+    if height <= 0:
+        return
+    title = f"Files @{state.file_picker_query}"
+    _addstr(stdscr, y, x, title[:width], curses.color_pair(6) | curses.A_BOLD)
+    for idx, path in enumerate(state.file_picker_matches[: max(0, height - 1)]):
+        marker = ">" if idx == state.file_picker_index else " "
+        attr = curses.color_pair(1) | curses.A_BOLD if idx == state.file_picker_index else curses.color_pair(3)
+        _addstr(stdscr, y + idx + 1, x, f"{marker} @{path}"[:width], attr)
 
 
 def _init_colors() -> None:

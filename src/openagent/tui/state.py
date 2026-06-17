@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from openagent.app_server.runtime import OpenAgentAppRuntime, TurnRecord
-from openagent.cli.custom_commands import discover_commands, render_command, resolve_command
+from openagent.cli.custom_commands import discover_commands, inject_file_references, render_command, resolve_command
 
 from .formatting import TimelineLine, format_event
 
@@ -34,6 +36,10 @@ class TuiState:
     session_picker_index: int = 0
     session_picker_sessions: list[dict[str, object]] = field(default_factory=list)
     active_approval: dict[str, Any] | None = None
+    file_picker_open: bool = False
+    file_picker_index: int = 0
+    file_picker_query: str = ""
+    file_picker_matches: list[str] = field(default_factory=list)
 
     def ensure_session(self) -> str:
         if self.session_id:
@@ -65,7 +71,8 @@ class TuiState:
 
     def _prepare_submission(self, raw_text: str) -> tuple[str, str, bool]:
         if not raw_text or not raw_text.startswith("/") or raw_text.startswith("//"):
-            return raw_text[1:] if raw_text.startswith("//") else raw_text, raw_text, False
+            text = raw_text[1:] if raw_text.startswith("//") else raw_text
+            return inject_file_references(text, workspace=self._workspace()), raw_text, False
         command_line = raw_text[1:].strip()
         if not command_line:
             self._show_help()
@@ -201,6 +208,104 @@ class TuiState:
         self._resume_session_id(session_id)
         self.session_picker_open = False
         return True
+
+    def refresh_file_picker(self) -> None:
+        span = self._active_file_mention_span()
+        if span is None:
+            self.close_file_picker(update_status=False)
+            return
+        _, _, query = span
+        if query != self.file_picker_query:
+            self.file_picker_index = 0
+        self.file_picker_query = query
+        self.file_picker_matches = self._search_file_mentions(query)
+        self.file_picker_open = bool(self.file_picker_matches)
+        if self.file_picker_index >= len(self.file_picker_matches):
+            self.file_picker_index = max(0, len(self.file_picker_matches) - 1)
+        if self.file_picker_open:
+            self.status = "file picker"
+
+    def close_file_picker(self, *, update_status: bool = True) -> None:
+        self.file_picker_open = False
+        self.file_picker_index = 0
+        self.file_picker_query = ""
+        self.file_picker_matches = []
+        if update_status:
+            self.status = "file picker closed"
+
+    def move_file_picker(self, delta: int) -> None:
+        if not self.file_picker_open:
+            return
+        count = len(self.file_picker_matches)
+        if count == 0:
+            self.close_file_picker()
+            return
+        self.file_picker_index = max(0, min(count - 1, self.file_picker_index + delta))
+        self.status = f"selected @{self.file_picker_matches[self.file_picker_index]}"
+
+    def selected_file_mention(self) -> str | None:
+        if not self.file_picker_matches:
+            return None
+        index = max(0, min(len(self.file_picker_matches) - 1, self.file_picker_index))
+        return self.file_picker_matches[index]
+
+    def select_file_mention(self) -> bool:
+        selected = self.selected_file_mention()
+        span = self._active_file_mention_span()
+        if selected is None or span is None:
+            self.close_file_picker()
+            return False
+        start, end, _query = span
+        self.input_buffer = self.input_buffer[:start] + "@" + selected + " " + self.input_buffer[end:]
+        self.close_file_picker(update_status=False)
+        self.status = f"inserted @{selected}"
+        return True
+
+    def _active_file_mention_span(self) -> tuple[int, int, str] | None:
+        match = re.search(r"(?<!\S)@([A-Za-z0-9_./~+-]*)$", self.input_buffer)
+        if not match:
+            return None
+        return match.start(), match.end(), match.group(1)
+
+    def _search_file_mentions(self, query: str, *, limit: int = 30) -> list[str]:
+        workspace = self._workspace()
+        query_lower = query.lower()
+        skip_dirs = {
+            ".git",
+            ".hg",
+            ".svn",
+            ".openagent",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+            "build",
+            "dist",
+            "node_modules",
+        }
+        matches: list[str] = []
+        visited = 0
+        for root, dirs, files in os.walk(workspace):
+            dirs[:] = [name for name in dirs if name not in skip_dirs and not name.startswith(".tox")]
+            for filename in files:
+                if filename.startswith(".DS_Store"):
+                    continue
+                path = Path(root) / filename
+                try:
+                    rel = path.relative_to(workspace).as_posix()
+                except ValueError:
+                    continue
+                visited += 1
+                if visited > 5000:
+                    break
+                rel_lower = rel.lower()
+                name_lower = filename.lower()
+                if not query_lower or query_lower in rel_lower or name_lower.startswith(query_lower):
+                    matches.append(rel)
+            if visited > 5000:
+                break
+        return sorted(matches, key=lambda item: _file_match_score(item, query_lower))[:limit]
 
     def _current_session_picker_index(self) -> int:
         if self.session_id:
@@ -342,6 +447,7 @@ class TuiState:
         self.next_event_index = 0
         self.input_buffer = ""
         self.active_approval = None
+        self.close_file_picker(update_status=False)
         self.timeline.clear()
         self.status = "new session"
         return self.session_id
@@ -349,6 +455,7 @@ class TuiState:
     def clear(self) -> None:
         self.timeline.clear()
         self.scroll = 0
+        self.close_file_picker(update_status=False)
         self.status = "cleared"
 
     def poll_events(self) -> None:
@@ -418,3 +525,17 @@ class TuiState:
         self.active_approval = None
         self.status = f"approval {action} sent"
         return True
+
+
+def _file_match_score(path: str, query: str) -> tuple[int, int, str]:
+    lowered = path.lower()
+    name = Path(path).name.lower()
+    if query and lowered.startswith(query):
+        rank = 0
+    elif query and name.startswith(query):
+        rank = 1
+    elif query and query in lowered:
+        rank = 2
+    else:
+        rank = 3
+    return rank, len(path), path
