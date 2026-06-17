@@ -22,6 +22,7 @@ from openagent.cli.main import (
     run_models_command,
     run_custom_command,
     run_non_interactive,
+    run_serve,
     run_session_command,
     run_stats_command,
 )
@@ -360,6 +361,42 @@ Create component $1 for $ARGUMENTS.
                 load_auth_env(str(auth_file))
                 self.assertEqual(os.environ["OPENAI_API_KEY"], "stdin-secret")
                 self.assertEqual(os.environ["OPENAI_MODEL"], "gpt-stdin")
+
+    def test_serve_command_passes_app_bridge_options(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "serve",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "9999",
+                "--workspace",
+                "/tmp/workspace",
+                "--session-root",
+                "/tmp/sessions",
+                "--headless",
+            ]
+        )
+        calls: list[dict[str, object]] = []
+
+        def fake_serve(**kwargs: object) -> None:
+            calls.append(kwargs)
+
+        run_serve(args, serve_fn=fake_serve)
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "host": "0.0.0.0",
+                    "port": 9999,
+                    "workspace": "/tmp/workspace",
+                    "session_store_root": "/tmp/sessions",
+                    "serve_static": False,
+                }
+            ],
+        )
 
 
 class FakeTurn:

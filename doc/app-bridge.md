@@ -72,7 +72,7 @@ export OPENAI_WIRE_API="responses"
 Start the app bridge:
 
 ```bash
-openagent-app --host 127.0.0.1 --port 8787 --workspace .
+openagent serve --host 127.0.0.1 --port 8787 --workspace .
 ```
 
 Then open:
@@ -87,6 +87,14 @@ Equivalent module form:
 PYTHONPATH=src python -m openagent.app_server.server --host 127.0.0.1 --port 8787
 ```
 
+For Desktop, IDE, or other non-browser clients, run the same App Bridge as a headless API/SSE service:
+
+```bash
+openagent serve --host 127.0.0.1 --port 8787 --workspace . --headless
+```
+
+`--session-root` can pin session ledger storage for clients that need stable resume paths.
+
 ## Runtime Defaults
 
 The bridge reads:
@@ -100,6 +108,15 @@ The bridge reads:
 | `OPENAGENT_APP_PERMISSION` | `FULL` | Permission ruleset |
 | `OPENAGENT_APP_TOOLS` | `all` | Tool allowlist |
 | `OPENAGENT_TRACE_ROOT` | `.openagent/traces` | Local trace root |
+
+## CLI Entrypoints
+
+| Command | Purpose |
+| --- | --- |
+| `openagent web` | Start the bundled browser console |
+| `openagent serve` | Start the App Bridge HTTP server |
+| `openagent serve --headless` | Start API/SSE endpoints without the static console |
+| `openagent-app` | Lower-level compatibility entrypoint for the same server |
 
 ## Non-goals
 

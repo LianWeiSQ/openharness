@@ -16,6 +16,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
     runtime: OpenAgentAppRuntime
+    serve_static: bool = True
 
     server_version = "OpenAgentAppServer/0.1"
 
@@ -29,7 +30,7 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         try:
             if path == "/api/health":
-                self._send_json({"ok": True, "service": "openagent-app-server"})
+                self._send_json({"ok": True, "service": "openagent-app-server", "ui_enabled": self.serve_static})
             elif path == "/api/models":
                 self._send_json({"models": self.runtime.list_models()})
             elif path == "/api/sessions":
@@ -45,6 +46,8 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 last_sequence = _query_int(query, "last_sequence", 0)
                 self._stream_turn_events(turn_id, last_sequence=last_sequence)
+            elif not self.serve_static:
+                self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
             else:
                 self._serve_static(path)
         except KeyError as error:
@@ -149,11 +152,35 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-def serve(*, host: str, port: int, workspace: str | Path | None = None) -> ThreadingHTTPServer:
-    runtime = OpenAgentAppRuntime(workspace=workspace)
-    OpenAgentAppRequestHandler.runtime = runtime
-    httpd = ThreadingHTTPServer((host, port), OpenAgentAppRequestHandler)
-    print(f"OpenAgent app server listening on http://{host}:{port}")  # noqa: T201
+def create_server(
+    *,
+    host: str,
+    port: int,
+    workspace: str | Path | None = None,
+    session_store_root: str | Path | None = None,
+    serve_static: bool = True,
+) -> ThreadingHTTPServer:
+    runtime = OpenAgentAppRuntime(workspace=workspace, session_store_root=session_store_root)
+
+    class Handler(OpenAgentAppRequestHandler):
+        pass
+
+    Handler.runtime = runtime
+    Handler.serve_static = serve_static
+    return ThreadingHTTPServer((host, port), Handler)
+
+
+def serve(
+    *,
+    host: str,
+    port: int,
+    workspace: str | Path | None = None,
+    session_store_root: str | Path | None = None,
+    serve_static: bool = True,
+) -> ThreadingHTTPServer:
+    httpd = create_server(host=host, port=port, workspace=workspace, session_store_root=session_store_root, serve_static=serve_static)
+    mode = "console" if serve_static else "headless"
+    print(f"OpenAgent app bridge ({mode}) listening on http://{host}:{port}")  # noqa: T201
     httpd.serve_forever()
     return httpd
 
@@ -163,8 +190,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--workspace", default=None)
+    parser.add_argument("--session-root", default=None)
+    parser.add_argument("--headless", action="store_true", help="serve API/SSE endpoints without the static console")
     args = parser.parse_args(argv)
-    serve(host=args.host, port=args.port, workspace=args.workspace)
+    serve(host=args.host, port=args.port, workspace=args.workspace, session_store_root=args.session_root, serve_static=not args.headless)
 
 
 def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:

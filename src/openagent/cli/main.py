@@ -7,6 +7,7 @@ import shutil
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,10 @@ def main(argv: list[str] | None = None) -> None:
         apply_model_env(args)
         ok = doctor(verbose=True)
         raise SystemExit(0 if ok else 2)
+    if command == "serve":
+        apply_model_env(args)
+        run_serve(args)
+        return
     if command == "web":
         apply_model_env(args)
         run_web(args)
@@ -101,11 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_model_options(tui)
     add_tui_options(tui)
 
+    serve_parser = subparsers.add_parser("serve", help="start the local App Bridge HTTP server")
+    add_common_model_options(serve_parser)
+    add_server_options(serve_parser)
+    serve_parser.add_argument("--headless", action="store_true", help="serve API/SSE endpoints without the static console")
+
     web = subparsers.add_parser("web", help="start the browser console")
     add_common_model_options(web)
-    web.add_argument("--host", default="127.0.0.1")
-    web.add_argument("--port", type=int, default=8787)
-    web.add_argument("--workspace", default=None)
+    add_server_options(web)
 
     run = subparsers.add_parser("run", help="run a prompt without launching the TUI")
     add_common_model_options(run)
@@ -209,6 +217,13 @@ def add_tui_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--skip-doctor", action="store_true", help="start TUI without checking the local model gateway first")
 
 
+def add_server_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8787)
+    parser.add_argument("--workspace", default=None)
+    parser.add_argument("--session-root", default=None)
+
+
 def add_session_store_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path used to resolve the default session root")
     parser.add_argument("--session-root", default=None, help="session store root, default OPENAGENT_SESSION_ROOT or .openagent/sessions")
@@ -245,12 +260,19 @@ def run_tui(args: argparse.Namespace) -> None:
 
 
 def run_web(args: argparse.Namespace) -> None:
+    run_serve(args)
+
+
+def run_serve(args: argparse.Namespace, *, serve_fn: Callable[..., object] | None = None) -> None:
     from openagent.app_server.server import serve
 
-    serve(
+    fn = serve_fn or serve
+    fn(
         host=str(getattr(args, "host", "127.0.0.1")),
         port=int(getattr(args, "port", 8787)),
         workspace=getattr(args, "workspace", None),
+        session_store_root=getattr(args, "session_root", None),
+        serve_static=not bool(getattr(args, "headless", False)),
     )
 
 

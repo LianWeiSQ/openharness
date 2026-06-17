@@ -276,6 +276,14 @@ chmod 600 .openagent/openagent.env
 openagent web --host 127.0.0.1 --port 8787 --workspace .
 ```
 
+只启动 App Bridge HTTP API/SSE 服务，供 Desktop、IDE 或外部客户端接入：
+
+```bash
+openagent serve --host 127.0.0.1 --port 8787 --workspace . --headless
+```
+
+去掉 `--headless` 时，`serve` 会同时提供静态控制台页面。
+
 ```bash
 python -m pip install -e .
 
@@ -284,7 +292,7 @@ export OPENAI_BASE_URL="http://localhost:8080/v1"
 export OPENAI_MODEL="gpt-5.5"
 export OPENAI_WIRE_API="responses"
 
-openagent-app --host 127.0.0.1 --port 8787 --workspace .
+openagent serve --host 127.0.0.1 --port 8787 --workspace .
 ```
 
 然后打开：
