@@ -13,6 +13,7 @@ from openagent.core.agent.universal import UniversalAgent
 from openagent.core.id import new_id
 from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
+from openagent.core.permission.rule import PermissionAction
 from openagent.core.provider.base import LanguageModel
 from openagent.core.provider.openai import OpenAIProvider
 from openagent.core.session.session import Session
@@ -22,6 +23,35 @@ from openagent.core.types import AgentConfig, Model, StreamEvent
 from .protocol import AppEvent, lifecycle_event, stream_event_to_app_event
 
 LanguageModelFactory = Callable[[Model], LanguageModel | Awaitable[LanguageModel]]
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalRequest:
+    request_id: str
+    session_id: str
+    turn_id: str
+    tool_name: str
+    tool_input: dict[str, Any]
+    call_id: str | None = None
+    created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "tool_name": self.tool_name,
+            "tool_input": self.tool_input,
+            "call_id": self.call_id,
+            "created_at_ms": self.created_at_ms,
+        }
+
+
+@dataclass(slots=True)
+class _PendingApproval:
+    request: ApprovalRequest
+    loop: asyncio.AbstractEventLoop
+    future: asyncio.Future[PermissionAction]
 
 
 @dataclass(slots=True)
@@ -36,6 +66,7 @@ class TurnRecord:
     trace: dict[str, Any] | None = None
     interrupt_requested: bool = False
     events: list[AppEvent] = field(default_factory=list)
+    _pending_approvals: dict[str, _PendingApproval] = field(default_factory=dict, repr=False)
     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
 
     def append(self, event: AppEvent) -> None:
@@ -70,6 +101,7 @@ class TurnRecord:
             return True
 
     def request_interrupt(self) -> AppEvent | None:
+        approvals_to_resolve: list[_PendingApproval] = []
         with self._condition:
             if self.status in {"completed", "failed", "interrupted"}:
                 return None
@@ -85,12 +117,101 @@ class TurnRecord:
                 status=self.status,
             )
             self.events.append(event)
+            approvals_to_resolve = list(self._pending_approvals.values())
+            self._pending_approvals.clear()
+            for pending in approvals_to_resolve:
+                self.events.append(
+                    self._approval_resolved_event(
+                        pending=pending,
+                        action=PermissionAction.DENY,
+                        status=self.status,
+                        reason="interrupt",
+                    )
+                )
             self._condition.notify_all()
-            return event
+        for pending in approvals_to_resolve:
+            self._set_approval_result(pending, PermissionAction.DENY)
+        return event
 
     def is_interrupt_requested(self) -> bool:
         with self._condition:
             return self.interrupt_requested
+
+    async def request_approval(self, tool_call: dict[str, Any]) -> PermissionAction:
+        request = ApprovalRequest(
+            request_id=new_id("approval"),
+            session_id=self.session_id,
+            turn_id=self.id,
+            tool_name=str(tool_call.get("name") or tool_call.get("tool") or "tool"),
+            tool_input=dict(tool_call.get("input") or {}),
+            call_id=str(tool_call.get("call_id") or "") or None,
+        )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[PermissionAction] = loop.create_future()
+        with self._condition:
+            if self.interrupt_requested or self.status in {"completed", "failed", "interrupted"}:
+                return PermissionAction.DENY
+            self._pending_approvals[request.request_id] = _PendingApproval(request=request, loop=loop, future=future)
+            self.status = "waiting_approval"
+            self.events.append(
+                lifecycle_event(
+                    sequence=len(self.events) + 1,
+                    method="turn/approval_requested",
+                    thread_id=self.session_id,
+                    turn_id=self.id,
+                    status=self.status,
+                    approval=request.to_dict(),
+                )
+            )
+            self._condition.notify_all()
+        try:
+            return await future
+        finally:
+            with self._condition:
+                self._pending_approvals.pop(request.request_id, None)
+
+    def resolve_approval(self, request_id: str, action: PermissionAction) -> dict[str, Any]:
+        if action not in {PermissionAction.ALLOW, PermissionAction.DENY}:
+            raise ValueError("approval action must be allow or deny")
+        with self._condition:
+            pending = self._pending_approvals.pop(request_id, None)
+            if pending is None:
+                raise KeyError(f"Unknown approval request: {request_id}")
+            self.status = "running"
+            event = self._approval_resolved_event(pending=pending, action=action, status=self.status)
+            self.events.append(event)
+            self._condition.notify_all()
+
+        self._set_approval_result(pending, action)
+        return event.to_dict()
+
+    def _approval_resolved_event(
+        self,
+        *,
+        pending: _PendingApproval,
+        action: PermissionAction,
+        status: str,
+        reason: str | None = None,
+    ) -> AppEvent:
+        approval = {**pending.request.to_dict(), "action": action.value}
+        if reason:
+            approval["reason"] = reason
+        return lifecycle_event(
+            sequence=len(self.events) + 1,
+            method="turn/approval_resolved",
+            thread_id=self.session_id,
+            turn_id=self.id,
+            status=status,
+            approval=approval,
+        )
+
+    @staticmethod
+    def _set_approval_result(pending: _PendingApproval, action: PermissionAction) -> None:
+        def _resolve() -> None:
+            if not pending.future.done():
+                pending.future.set_result(action)
+
+        pending.loop.call_soon_threadsafe(_resolve)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +224,7 @@ class TurnRecord:
             "trace": self.trace,
             "event_count": len(self.events),
             "interrupt_requested": self.interrupt_requested,
+            "pending_approval_count": len(self._pending_approvals),
         }
 
 
@@ -185,6 +307,11 @@ class OpenAgentAppRuntime:
         turn.request_interrupt()
         return turn.to_dict()
 
+    def respond_approval(self, turn_id: str, request_id: str, action: str) -> dict[str, Any]:
+        turn = self.get_turn(turn_id)
+        normalized = PermissionAction(str(action).strip().lower())
+        return turn.resolve_approval(request_id, normalized)
+
     def _run_turn_thread(self, turn_id: str) -> None:
         try:
             asyncio.run(self._run_turn(turn_id))
@@ -222,7 +349,8 @@ class OpenAgentAppRuntime:
         language_model = await self._language_model(model_metadata)
         agent_config = self._agent_config(model_metadata)
         agent = UniversalAgent(config=agent_config, model=language_model, system_prompt="")
-        loop = AgentLoop(agent=agent, session=session, permission_manager=PermissionManager())
+        permission_manager = PermissionManager(ask_user_func=turn.request_approval)
+        loop = AgentLoop(agent=agent, session=session, permission_manager=permission_manager)
         text_chunks: list[str] = []
         saw_error = False
 

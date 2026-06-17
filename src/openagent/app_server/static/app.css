@@ -281,6 +281,51 @@ textarea:focus {
   margin-top: 12px;
 }
 
+.approval-panel {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  border: 1px solid #ebc56d;
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+  padding: 12px;
+}
+
+.approval-panel[hidden] {
+  display: none;
+}
+
+.approval-title {
+  margin-bottom: 6px;
+  color: var(--warning);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.approval-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.approval-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.ghost-button.danger {
+  border-color: #f1a5a5;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .timeline-wrap {
   min-height: 0;
   padding: 16px;

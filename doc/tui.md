@@ -145,6 +145,14 @@ Built-in commands are handled locally by the TUI. `/sessions` lists recent persi
 | `Esc` | quit when idle and input is empty |
 | `Ctrl-D` | quit |
 
+When a tool approval overlay is active:
+
+| Key | Action |
+| --- | --- |
+| `a` / `y` | approve the pending tool call |
+| `d` / `n` / `Esc` | deny the pending tool call |
+| `Ctrl-C` | deny the pending tool call and request turn interruption |
+
 When the session picker is open:
 
 | Key | Action |
@@ -169,7 +177,7 @@ When the session picker is open:
 | Interrupt | Partial | `Ctrl-C` calls App Bridge interrupt and emits `turn/interrupted`; blocking provider/tool calls still stop at the next event boundary |
 | Slash commands | Partial | Built-ins cover help/session/status/new/clear/custom command listing; custom command routing works; interactive picker UI is not complete |
 | Mention/file search popup | Not complete | Needs indexed file search and popup UI |
-| Approval overlay | Not complete | Needs App Bridge approval request/response protocol |
+| Approval overlay | Supported | `PLAN_ONLY` or ask rules emit `turn/approval_requested`; TUI can allow/deny with keyboard and App Bridge exposes the same response protocol |
 | MCP elicitation forms | Not complete | Needs typed question/elicitation UI |
 | Image attachment rows | Not complete | Needs multimodal message support |
 | TUI snapshot tests | Not complete | Current tests cover formatter/state, not terminal render snapshots |

@@ -1,6 +1,7 @@
 const state = {
   activeSessionId: null,
   activeTurnId: null,
+  pendingApproval: null,
   source: null,
   textNodes: new Map(),
 };
@@ -13,6 +14,10 @@ const els = {
   prompt: document.querySelector("#prompt-input"),
   run: document.querySelector("#run-turn"),
   newSession: document.querySelector("#new-session"),
+  approvalPanel: document.querySelector("#approval-panel"),
+  approvalBody: document.querySelector("#approval-body"),
+  approvalAllow: document.querySelector("#approval-allow"),
+  approvalDeny: document.querySelector("#approval-deny"),
   timeline: document.querySelector("#timeline"),
   clear: document.querySelector("#clear-events"),
   turnState: document.querySelector("#turn-state"),
@@ -36,6 +41,10 @@ const eventNames = [
   "item/patch/detected",
   "item/question/requested",
   "turn/error",
+  "turn/interrupt_requested",
+  "turn/interrupted",
+  "turn/approval_requested",
+  "turn/approval_resolved",
   "turn/completed",
   "turn/failed",
 ];
@@ -47,6 +56,8 @@ async function boot() {
   els.newSession.addEventListener("click", createSession);
   els.run.addEventListener("click", runTurn);
   els.clear.addEventListener("click", clearTimeline);
+  els.approvalAllow.addEventListener("click", () => respondApproval("allow"));
+  els.approvalDeny.addEventListener("click", () => respondApproval("deny"));
 }
 
 async function refreshHealth() {
@@ -118,6 +129,7 @@ async function runTurn() {
   }
 
   clearTimeline();
+  clearApproval();
   els.run.disabled = true;
   els.turnState.textContent = "starting";
   els.finalAnswer.textContent = "-";
@@ -164,7 +176,22 @@ function handleAppEvent(appEvent) {
     els.turnState.textContent = method === "turn/completed" ? "completed" : "failed";
     els.finalAnswer.textContent = params.final_answer || "-";
     els.detailTrace.textContent = traceLabel(params.trace);
+    clearApproval();
     if (state.source) state.source.close();
+  }
+  if (method === "turn/interrupted") {
+    els.run.disabled = false;
+    els.turnState.textContent = "interrupted";
+    els.finalAnswer.textContent = params.final_answer || "-";
+    els.detailTrace.textContent = traceLabel(params.trace);
+    clearApproval();
+    if (state.source) state.source.close();
+  }
+  if (method === "turn/approval_requested") {
+    showApproval(params.approval);
+  }
+  if (method === "turn/approval_resolved") {
+    clearApproval();
   }
 
   const severity = method.includes("warning") ? "warning" : method.includes("failed") || method.includes("error") ? "error" : "";
@@ -228,7 +255,54 @@ function summarizeParams(params) {
   if (event.type === "error") {
     return event.error || "Unknown error";
   }
+  if (params.approval) {
+    return approvalSummary(params.approval);
+  }
   return JSON.stringify(params, null, 2);
+}
+
+function showApproval(approval) {
+  if (!approval) return;
+  state.pendingApproval = approval;
+  els.approvalBody.textContent = approvalSummary(approval);
+  els.approvalPanel.hidden = false;
+  els.turnState.textContent = "waiting approval";
+}
+
+function clearApproval() {
+  state.pendingApproval = null;
+  els.approvalBody.textContent = "-";
+  els.approvalPanel.hidden = true;
+}
+
+async function respondApproval(action) {
+  const approval = state.pendingApproval;
+  if (!approval?.turn_id || !approval?.request_id) return;
+  els.approvalAllow.disabled = true;
+  els.approvalDeny.disabled = true;
+  try {
+    await postJSON(
+      `/api/turns/${encodeURIComponent(approval.turn_id)}/approvals/${encodeURIComponent(approval.request_id)}`,
+      { action },
+    );
+    els.turnState.textContent = `approval ${action} sent`;
+  } catch (error) {
+    addEventRow("turn/approval_failed", error.message, "error");
+  } finally {
+    els.approvalAllow.disabled = false;
+    els.approvalDeny.disabled = false;
+  }
+}
+
+function approvalSummary(approval) {
+  return [
+    `tool: ${approval.tool_name || "tool"}`,
+    `request: ${approval.request_id || "-"}`,
+    approval.call_id ? `call: ${approval.call_id}` : null,
+    `input: ${JSON.stringify(approval.tool_input || {}, null, 2)}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function clearTimeline() {

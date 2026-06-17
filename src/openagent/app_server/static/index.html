@@ -42,6 +42,16 @@
 
         <section class="composer">
           <textarea id="prompt-input" rows="4" placeholder="输入一个真实任务，例如：查看当前项目结构并总结 OpenAgent 的核心模块。"></textarea>
+          <div id="approval-panel" class="approval-panel" hidden>
+            <div>
+              <div class="approval-title">Tool approval required</div>
+              <pre id="approval-body" class="approval-body">-</pre>
+            </div>
+            <div class="approval-actions">
+              <button id="approval-deny" class="ghost-button danger" type="button">Deny</button>
+              <button id="approval-allow" class="run-button" type="button">Allow</button>
+            </div>
+          </div>
           <div class="composer-actions">
             <div id="turn-state" class="turn-state">idle</div>
             <button id="run-turn" class="run-button" type="button">

@@ -40,6 +40,7 @@ Implemented endpoints:
 | `POST /api/sessions/{session_id}/turns` | Start a turn |
 | `GET /api/turns/{turn_id}/events` | Stream turn events through SSE |
 | `POST /api/turns/{turn_id}/interrupt` | Request cooperative turn interruption |
+| `POST /api/turns/{turn_id}/approvals/{approval_id}` | Resolve a pending tool approval with `{"action":"allow"}` or `{"action":"deny"}` |
 
 The event stream uses Codex-like method names:
 
@@ -54,8 +55,26 @@ The event stream uses Codex-like method names:
 - `turn/failed`
 - `turn/interrupt_requested`
 - `turn/interrupted`
+- `turn/approval_requested`
+- `turn/approval_resolved`
 
 Interrupt is cooperative: the running turn is marked as interrupting immediately, and the background OpenAgent loop stops at the next model/tool event boundary. A blocking provider request or tool process may still need to return control before the final `turn/interrupted` event is emitted.
+
+Approvals are driven by the existing permission system. When `OPENAGENT_APP_PERMISSION=PLAN_ONLY` or a custom ask rule requires confirmation, the loop pauses and emits `turn/approval_requested` with:
+
+```json
+{
+  "approval": {
+    "request_id": "approval_...",
+    "turn_id": "turn_...",
+    "tool_name": "write",
+    "tool_input": {"file_path": "example.txt"},
+    "call_id": "call_..."
+  }
+}
+```
+
+Clients resume the loop by posting `allow` or `deny` to the approval endpoint. If the turn is interrupted while waiting for approval, pending approvals are resolved as `deny` with reason `interrupt` so the background run can unwind cleanly.
 
 ## Run Locally
 

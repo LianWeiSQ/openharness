@@ -79,6 +79,10 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 turn_id = path.removeprefix("/api/turns/").removesuffix("/interrupt").strip("/")
                 turn = self.runtime.interrupt_turn(turn_id)
                 self._send_json({"turn": turn})
+            elif path.startswith("/api/turns/") and "/approvals/" in path:
+                turn_id, request_id = _parse_turn_approval_path(path)
+                event = self.runtime.respond_approval(turn_id, request_id, str(payload.get("action") or ""))
+                self._send_json({"event": event})
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
         except ValueError as error:
@@ -237,6 +241,14 @@ def main(argv: list[str] | None = None) -> None:
 
 def _is_api_path(path: str) -> bool:
     return path.startswith("/api/")
+
+
+def _parse_turn_approval_path(path: str) -> tuple[str, str]:
+    raw = path.removeprefix("/api/turns/")
+    turn_id, marker, request_id = raw.partition("/approvals/")
+    if not turn_id or marker != "/approvals/" or not request_id.strip("/"):
+        raise ValueError("approval path must be /api/turns/{turn_id}/approvals/{request_id}")
+    return turn_id.strip("/"), request_id.strip("/")
 
 
 def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:

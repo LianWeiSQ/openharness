@@ -38,6 +38,19 @@ def format_event(event: AppEvent) -> list[TimelineLine]:
         return [TimelineLine("status", f"turn started: {short_id(str(params.get('turn_id') or ''))}", True)]
     if method == "turn/interrupt_requested":
         return [TimelineLine("warning", "interrupt requested", True)]
+    if method == "turn/approval_requested":
+        approval = params.get("approval") if isinstance(params.get("approval"), dict) else {}
+        tool_name = str(approval.get("tool_name") or "tool")
+        tool_input = _compact_json(approval.get("tool_input") or {})
+        return [TimelineLine("warning", f"approval required: {tool_name} {tool_input}", True)]
+    if method == "turn/approval_resolved":
+        approval = params.get("approval") if isinstance(params.get("approval"), dict) else {}
+        tool_name = str(approval.get("tool_name") or "tool")
+        action = str(approval.get("action") or "-")
+        reason = str(approval.get("reason") or "").strip()
+        suffix = f" ({reason})" if reason else ""
+        kind = "warning" if action == "deny" else "status"
+        return [TimelineLine(kind, f"approval {action}: {tool_name}{suffix}", True)]
     if method in {"turn/completed", "turn/failed", "turn/interrupted"}:
         default_status = "interrupted" if method.endswith("interrupted") else ("failed" if method.endswith("failed") else "completed")
         status = str(params.get("status") or default_status)

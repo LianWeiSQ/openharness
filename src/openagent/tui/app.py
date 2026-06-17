@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import curses
+import json
 import os
 import textwrap
 import time
 from pathlib import Path
+from typing import Any
 
 from openagent.app_server.runtime import OpenAgentAppRuntime
 
@@ -45,6 +47,18 @@ def _run(stdscr, state: TuiState) -> None:
 
 
 def _handle_key(key: int, state: TuiState) -> bool:
+    if state.active_approval is not None:
+        if key in {ord("a"), ord("A"), ord("y"), ord("Y")}:
+            state.respond_approval("allow")
+            return False
+        if key in {ord("d"), ord("D"), ord("n"), ord("N"), 27}:
+            state.respond_approval("deny")
+            return False
+        if key in {3}:  # Ctrl-C
+            state.respond_approval("deny")
+            state.request_interrupt()
+            return False
+        return False
     if key in {3}:  # Ctrl-C
         if state.is_running:
             state.request_interrupt()
@@ -205,6 +219,16 @@ def _render_details(stdscr, state: TuiState, y: int, x: int, width: int, height:
                 return
             _addstr(stdscr, row_y, x + 2, part, curses.color_pair(3))
             row_y += 1
+    if state.active_approval and row_y < y + height - 4:
+        row_y += 1
+        _addstr(stdscr, row_y, x + 2, "Approval", curses.color_pair(6) | curses.A_BOLD)
+        row_y += 1
+        approval_lines = _approval_lines(state.active_approval)
+        for line in approval_lines:
+            if row_y >= y + height:
+                return
+            _addstr(stdscr, row_y, x + 2, line[: max(8, width - 4)], curses.color_pair(3))
+            row_y += 1
     if turn and turn.final_answer and row_y < y + height - 2:
         _addstr(stdscr, row_y + 1, x + 2, "Final", curses.color_pair(2))
         row_y += 2
@@ -218,6 +242,13 @@ def _render_details(stdscr, state: TuiState, y: int, x: int, width: int, height:
 def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: int) -> None:
     del height
     _hline(stdscr, y, x, width)
+    if state.active_approval is not None:
+        approval = state.active_approval
+        title = f"Approval: {approval.get('tool_name') or 'tool'}"
+        body = _compact_json(approval.get("tool_input") or {})
+        _addstr(stdscr, y + 1, x + 1, title[: max(0, width - 2)], curses.color_pair(6) | curses.A_BOLD)
+        _addstr(stdscr, y + 2, x + 1, body[: max(0, width - 2)], curses.color_pair(3))
+        return
     prompt = "Task"
     _addstr(stdscr, y + 1, x + 1, prompt, curses.color_pair(1) | curses.A_BOLD)
     input_x = x + len(prompt) + 3
@@ -232,7 +263,9 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
 
 def _render_footer(stdscr, state: TuiState, y: int, width: int) -> None:
     controls = "Enter send | /help | /sessions | /resume <id> | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll | Ctrl-C/Esc/Ctrl-D quit"
-    if state.session_picker_open:
+    if state.active_approval is not None:
+        controls = "approval required: a/y allow | d/n/Esc deny | Ctrl-C deny + interrupt"
+    elif state.session_picker_open:
         controls = "session picker: Up/Down or j/k move | Enter resume | Esc close | PageUp/PageDown jump"
     if state.is_running:
         controls = "running... " + controls
@@ -291,3 +324,22 @@ def _addstr(stdscr, y: int, x: int, value: str, attr: int = 0) -> None:
         stdscr.addstr(y, x, value, attr)
     except curses.error:
         pass
+
+
+def _approval_lines(approval: dict[str, Any]) -> list[str]:
+    lines = [
+        f"tool: {approval.get('tool_name') or 'tool'}",
+        f"request: {short_id(str(approval.get('request_id') or ''))}",
+    ]
+    call_id = approval.get("call_id")
+    if call_id:
+        lines.append(f"call: {short_id(str(call_id))}")
+    lines.append(_compact_json(approval.get("tool_input") or {}))
+    return lines
+
+
+def _compact_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        return str(value)

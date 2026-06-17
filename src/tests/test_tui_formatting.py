@@ -58,6 +58,16 @@ class InterruptRuntime(DummyRuntime):
         return {"id": turn_id, "status": "interrupting"}
 
 
+class ApprovalRuntime(InterruptRuntime):
+    def __init__(self, *, workspace: Path) -> None:
+        super().__init__(workspace=workspace)
+        self.approvals: list[tuple[str, str, str]] = []
+
+    def respond_approval(self, turn_id: str, request_id: str, action: str):
+        self.approvals.append((turn_id, request_id, action))
+        return {"method": "turn/approval_resolved"}
+
+
 class SessionRuntime(DummyRuntime):
     def __init__(self, *, workspace: Path) -> None:
         super().__init__(workspace=workspace)
@@ -137,6 +147,39 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("interrupt requested", requested[0].text)
         self.assertEqual(interrupted[0].kind, "status")
         self.assertEqual(interrupted[0].text, "turn interrupted")
+
+    def test_formats_approval_events(self) -> None:
+        requested = format_event(
+            AppEvent(
+                sequence=1,
+                method="turn/approval_requested",
+                params={
+                    "approval": {
+                        "request_id": "approval_1",
+                        "tool_name": "write",
+                        "tool_input": {"file_path": "a.txt"},
+                    }
+                },
+            )
+        )
+        resolved = format_event(
+            AppEvent(
+                sequence=2,
+                method="turn/approval_resolved",
+                params={
+                    "approval": {
+                        "request_id": "approval_1",
+                        "tool_name": "write",
+                        "action": "deny",
+                    }
+                },
+            )
+        )
+
+        self.assertEqual(requested[0].kind, "warning")
+        self.assertIn("approval required: write", requested[0].text)
+        self.assertEqual(resolved[0].kind, "warning")
+        self.assertEqual(resolved[0].text, "approval deny: write")
 
     def test_helpers(self) -> None:
         self.assertEqual(short_id("abcdef", keep=10), "abcdef")
@@ -247,6 +290,56 @@ class TuiFormattingTests(unittest.TestCase):
 
         state.request_interrupt()
 
+        self.assertEqual(runtime.interrupted_turn_ids, ["turn_live"])
+        self.assertEqual(state.status, "interrupting")
+
+    def test_tui_approval_keyboard_calls_runtime(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = ApprovalRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.active_turn = CapturingTurn(
+            status="waiting_approval",
+            id="turn_live",
+            events=[
+                AppEvent(
+                    sequence=1,
+                    method="turn/approval_requested",
+                    params={
+                        "approval": {
+                            "request_id": "approval_1",
+                            "turn_id": "turn_live",
+                            "tool_name": "write",
+                            "tool_input": {"file_path": "a.txt"},
+                        }
+                    },
+                )
+            ],
+        )
+
+        state.poll_events()
+        self.assertEqual(state.status, "approval required")
+        self.assertEqual(state.active_approval["request_id"], "approval_1")
+        self.assertFalse(_handle_key(ord("a"), state))
+
+        self.assertEqual(runtime.approvals, [("turn_live", "approval_1", "allow")])
+        self.assertIsNone(state.active_approval)
+        self.assertEqual(state.status, "approval allow sent")
+
+    def test_tui_approval_ctrl_c_denies_and_interrupts(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = ApprovalRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.active_turn = CapturingTurn(status="waiting_approval", id="turn_live")
+        state.active_approval = {
+            "request_id": "approval_1",
+            "turn_id": "turn_live",
+            "tool_name": "write",
+            "tool_input": {"file_path": "a.txt"},
+        }
+
+        self.assertFalse(_handle_key(3, state))
+
+        self.assertEqual(runtime.approvals, [("turn_live", "approval_1", "deny")])
         self.assertEqual(runtime.interrupted_turn_ids, ["turn_live"])
         self.assertEqual(state.status, "interrupting")
 

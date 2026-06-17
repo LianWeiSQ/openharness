@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from openagent.app_server.runtime import OpenAgentAppRuntime, TurnRecord
 from openagent.cli.custom_commands import discover_commands, render_command, resolve_command
@@ -32,6 +33,7 @@ class TuiState:
     session_picker_open: bool = False
     session_picker_index: int = 0
     session_picker_sessions: list[dict[str, object]] = field(default_factory=list)
+    active_approval: dict[str, Any] | None = None
 
     def ensure_session(self) -> str:
         if self.session_id:
@@ -339,6 +341,7 @@ class TuiState:
         self.active_turn = None
         self.next_event_index = 0
         self.input_buffer = ""
+        self.active_approval = None
         self.timeline.clear()
         self.status = "new session"
         return self.session_id
@@ -355,8 +358,27 @@ class TuiState:
         while self.next_event_index < len(turn.events):
             event = turn.events[self.next_event_index]
             self.timeline.extend(format_event(event))
+            self._apply_control_event(event)
             self.next_event_index += 1
-        self.status = turn.status
+        if turn.status in {"completed", "failed", "interrupted"}:
+            self.active_approval = None
+        self.status = "approval required" if self.active_approval is not None else turn.status
+
+    def _apply_control_event(self, event: AppEvent) -> None:
+        if event.method == "turn/approval_requested":
+            approval = event.params.get("approval")
+            if isinstance(approval, dict):
+                self.active_approval = dict(approval)
+            return
+        if event.method == "turn/approval_resolved":
+            approval = event.params.get("approval")
+            if not isinstance(approval, dict):
+                self.active_approval = None
+                return
+            request_id = str(approval.get("request_id") or "")
+            active_id = str((self.active_approval or {}).get("request_id") or "")
+            if not request_id or request_id == active_id:
+                self.active_approval = None
 
     def request_interrupt(self) -> None:
         turn = self.active_turn
@@ -370,3 +392,29 @@ class TuiState:
             return
         interrupt_turn(turn.id)
         self.status = "interrupting"
+
+    def respond_approval(self, action: str) -> bool:
+        approval = self.active_approval
+        if approval is None:
+            self.status = "no approval"
+            return False
+        request_id = str(approval.get("request_id") or "")
+        turn_id = str(approval.get("turn_id") or getattr(self.active_turn, "id", "") or "")
+        if not request_id or not turn_id:
+            self.timeline.append(TimelineLine("error", "approval request is missing an id", important=True))
+            self.status = "approval invalid"
+            return False
+        respond_approval = getattr(self.runtime, "respond_approval", None)
+        if not callable(respond_approval):
+            self.timeline.append(TimelineLine("warning", "approval is not supported by this runtime", important=True))
+            self.status = "approval unsupported"
+            return False
+        try:
+            respond_approval(turn_id, request_id, action)
+        except Exception as error:  # noqa: BLE001 - approval failures should stay visible in the TUI.
+            self.timeline.append(TimelineLine("error", f"approval failed: {error}", important=True))
+            self.status = "approval failed"
+            return False
+        self.active_approval = None
+        self.status = f"approval {action} sent"
+        return True
