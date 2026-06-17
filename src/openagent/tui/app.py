@@ -191,7 +191,7 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
 
 
 def _render_footer(stdscr, state: TuiState, y: int, width: int) -> None:
-    controls = "Enter send | /commands list | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll | Ctrl-C/Esc/Ctrl-D quit"
+    controls = "Enter send | /help | /sessions | /resume <id> | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll | Ctrl-C/Esc/Ctrl-D quit"
     if state.is_running:
         controls = "running... " + controls
     _addstr(stdscr, y, 0, controls[: width - 1], curses.color_pair(2))

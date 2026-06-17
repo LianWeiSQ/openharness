@@ -122,11 +122,15 @@ openagent run --command review "the current branch"
 Inside the TUI, type:
 
 ```text
+/help
+/sessions
+/resume session_abc123
+/status
 /commands
 /review the current branch
 ```
 
-`/commands` lists project/global command files. `/name args...` renders the command template and submits the rendered prompt to the active session.
+Built-in commands are handled locally by the TUI. `/sessions` lists recent persisted sessions, `/resume <id-or-prefix>` switches to a previous session and renders the latest transcript messages when available, and `/status` shows the current session/turn state. `/commands` lists both built-in commands and project/global command files. `/name args...` renders a custom command template and submits the rendered prompt to the active session.
 
 ## Controls
 
@@ -151,9 +155,9 @@ Inside the TUI, type:
 | Runtime warnings | Supported | Renders `runtime/warning` |
 | Patch events | Supported | Renders `item/patch/detected` |
 | Trace id/run id display | Supported | Reads trace metadata after turn completion |
-| Session resume | Partial | Runtime can load sessions, but TUI does not yet provide picker navigation |
+| Session resume | Partial | Runtime can load sessions and TUI supports `/sessions` plus `/resume <id-or-prefix>`; picker navigation is still pending |
 | Interrupt | Not complete | UI shows intent, but `AgentLoop` has no cooperative cancellation token yet |
-| Slash commands | Partial | Custom command routing and `/commands` listing are supported; interactive picker UI is not complete |
+| Slash commands | Partial | Built-ins cover help/session/status/new/clear/custom command listing; custom command routing works; interactive picker UI is not complete |
 | Mention/file search popup | Not complete | Needs indexed file search and popup UI |
 | Approval overlay | Not complete | Needs App Bridge approval request/response protocol |
 | MCP elicitation forms | Not complete | Needs typed question/elicitation UI |

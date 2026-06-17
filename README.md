@@ -252,9 +252,14 @@ openagent run --command review "the current branch"
 在 TUI 里也可以直接输入 slash command：
 
 ```text
+/help
+/sessions
+/resume session_abc123
 /commands
 /review the current branch
 ```
+
+`/sessions` 和 `/resume` 让终端界面可以直接切回历史 session；`/commands` 会同时列出内置命令和项目里的自定义命令。
 
 可选：初始化本机私有配置，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
 

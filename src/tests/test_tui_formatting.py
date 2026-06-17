@@ -46,6 +46,32 @@ class CapturingRuntime(DummyRuntime):
         return CapturingTurn()
 
 
+class SessionRuntime(DummyRuntime):
+    def __init__(self, *, workspace: Path) -> None:
+        super().__init__(workspace=workspace)
+        self.resumed: list[str] = []
+        self.sessions = [
+            {"id": "session_alpha123", "status": "completed", "message_count": 2},
+            {"id": "session_beta456", "status": "idle", "message_count": 1},
+        ]
+        self.messages = {
+            "session_alpha123": [
+                {"role": "user", "content": "old task"},
+                {"role": "assistant", "content": "old answer"},
+            ]
+        }
+
+    def list_sessions(self):
+        return list(self.sessions)
+
+    def resume_session(self, session_id: str):
+        self.resumed.append(session_id)
+        return {"id": session_id}
+
+    def get_session(self, session_id: str):
+        return {"id": session_id, "messages": self.messages.get(session_id, [])}
+
+
 class TuiFormattingTests(unittest.TestCase):
     def _make_temp_dir(self) -> Path:
         tmp_root = Path("openagent/tests/workdir")
@@ -115,9 +141,60 @@ class TuiFormattingTests(unittest.TestCase):
             self.assertFalse(state.submit())
 
         timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("/sessions - list recent sessions", timeline_text)
         self.assertIn("/review - Review changes", timeline_text)
         self.assertEqual(state.status, "commands listed")
         self.assertEqual(state.input_buffer, "")
+
+    def test_tui_builtin_help_and_status_are_local(self) -> None:
+        workspace = self._make_temp_dir()
+        state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
+        state.session_id = "session_live"
+        state.input_buffer = "/help"
+
+        self.assertFalse(state.submit())
+        self.assertEqual(state.status, "help listed")
+        self.assertIn("/resume <id>", "\n".join(line.text for line in state.timeline))
+
+        state.input_buffer = "/status"
+        self.assertFalse(state.submit())
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("session: session_live", timeline_text)
+        self.assertIn(f"workspace: {workspace}", timeline_text)
+
+    def test_tui_sessions_and_resume_by_prefix(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SessionRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "/sessions"
+
+        self.assertFalse(state.submit())
+        self.assertEqual(state.status, "sessions listed")
+        self.assertIn("session_alpha123", "\n".join(line.text for line in state.timeline))
+
+        state.input_buffer = "/resume session_alpha"
+        self.assertFalse(state.submit())
+
+        self.assertEqual(state.session_id, "session_alpha123")
+        self.assertEqual(runtime.resumed, ["session_alpha123"])
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("> old task", timeline_text)
+        self.assertIn("old answer", timeline_text)
+        self.assertIn("resumed session: session_alpha123", timeline_text)
+
+    def test_tui_resume_reports_ambiguous_prefix(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SessionRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "/resume session_"
+
+        self.assertFalse(state.submit())
+
+        self.assertEqual(state.status, "session ambiguous")
+        self.assertEqual(runtime.resumed, [])
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("session prefix is ambiguous", timeline_text)
+        self.assertIn("session_alpha123", timeline_text)
 
     def test_tui_slash_command_renders_and_submits(self) -> None:
         workspace = self._make_temp_dir()
