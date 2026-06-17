@@ -6,8 +6,9 @@ import os
 import shutil
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,6 +19,7 @@ DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_WIRE_API = "responses"
 DEFAULT_MAX_STEPS = "30"
+DEFAULT_SERVER_URL = "http://127.0.0.1:8787"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,8 @@ def main(argv: list[str] | None = None) -> None:
         apply_model_env(args)
         run_web(args)
         return
+    if command == "client":
+        raise SystemExit(run_client_command(args))
     if command == "run":
         apply_model_env(args)
         if not args.skip_doctor and not doctor(verbose=True):
@@ -114,6 +118,19 @@ def build_parser() -> argparse.ArgumentParser:
     web = subparsers.add_parser("web", help="start the browser console")
     add_common_model_options(web)
     add_server_options(web)
+
+    client = subparsers.add_parser("client", help="send a prompt to a running App Bridge server")
+    client.add_argument("message", nargs="*", help="prompt text")
+    client.add_argument("--server-url", default=None, help=f"App Bridge URL, default OPENAGENT_SERVER_URL or {DEFAULT_SERVER_URL}")
+    client.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path for local files and command rendering")
+    client.add_argument("--session", "-s", default=None, help="session id to continue on the server")
+    client.add_argument("--continue", "-c", dest="continue_last", action="store_true", help="continue the most recent server session")
+    client.add_argument("--file", "-f", action="append", default=[], help="file to attach to the prompt; can be used more than once")
+    client.add_argument("--command", dest="custom_command", default=None, help="custom command name from .openagent/commands or ~/.config/openagent/commands")
+    client.add_argument("--command-dir", action="append", default=[], help="extra custom command directory; can be used more than once")
+    client.add_argument("--no-command-shell", action="store_true", help="render custom command without executing !`shell` blocks")
+    client.add_argument("--format", choices=["text", "json"], default="text", help="output format")
+    client.add_argument("--verbose", action="store_true", help="show non-answer runtime events in text mode")
 
     run = subparsers.add_parser("run", help="run a prompt without launching the TUI")
     add_common_model_options(run)
@@ -317,6 +334,59 @@ def run_non_interactive(
     return emit_turn_events(turn, output_format=str(getattr(args, "format", "text")), verbose=bool(getattr(args, "verbose", False)), stdout=out, stderr=err)
 
 
+def run_client_command(
+    args: argparse.Namespace,
+    *,
+    stdout: object | None = None,
+    stderr: object | None = None,
+    stdin: object | None = None,
+) -> int:
+    out = stdout or sys.stdout
+    err = stderr or sys.stderr
+    source = stdin or sys.stdin
+    server_url = normalize_server_url(str(getattr(args, "server_url", None) or os.getenv("OPENAGENT_SERVER_URL") or DEFAULT_SERVER_URL))
+    workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
+    prompt_text = command_text_from_args(args, stdin=source)
+    if getattr(args, "custom_command", None):
+        try:
+            command = resolve_command(str(args.custom_command), workspace=workspace, extra_dirs=getattr(args, "command_dir", []))
+        except FileNotFoundError as error:
+            print(str(error), file=err)
+            return 1
+        prompt_text = render_command(
+            command,
+            list(getattr(args, "message", []) or []),
+            workspace=workspace,
+            allow_shell=not bool(getattr(args, "no_command_shell", False)),
+        )
+    prompt = build_run_prompt(prompt_text, files=getattr(args, "file", []), workspace=workspace)
+    if not prompt:
+        print("openagent client requires a prompt argument or stdin input.", file=err)
+        return 2
+
+    try:
+        session = select_client_session(server_url, args, workspace=workspace)
+        session_id = str(session.get("id") or "")
+        if not session_id:
+            raise AppBridgeClientError("server returned a session without an id")
+        turn_payload = app_bridge_post_json(server_url, f"/api/sessions/{quote_path(session_id)}/turns", {"input": prompt})
+        turn = turn_payload.get("turn") if isinstance(turn_payload.get("turn"), dict) else {}
+        turn_id = str(turn.get("id") or "")
+        if not turn_id:
+            raise AppBridgeClientError("server returned a turn without an id")
+        return emit_app_bridge_events(
+            server_url,
+            turn_id,
+            output_format=str(getattr(args, "format", "text")),
+            verbose=bool(getattr(args, "verbose", False)),
+            stdout=out,
+            stderr=err,
+        )
+    except AppBridgeClientError as error:
+        print(f"OpenAgent client failed: {error}", file=err)
+        return 1
+
+
 def command_text_from_args(args: argparse.Namespace, *, stdin: object | None = None) -> str:
     message = " ".join(str(part) for part in getattr(args, "message", [])).strip()
     if message:
@@ -348,6 +418,28 @@ def select_run_session(runtime: object, args: argparse.Namespace, *, workspace: 
         if sessions:
             return runtime.resume_session(str(sessions[0]["id"]))  # type: ignore[attr-defined,no-any-return]
     return runtime.start_session(cwd=workspace)  # type: ignore[attr-defined,no-any-return]
+
+
+def select_client_session(server_url: str, args: argparse.Namespace, *, workspace: Path) -> dict[str, object]:
+    session_id = getattr(args, "session", None)
+    if session_id:
+        payload = app_bridge_get_json(server_url, f"/api/sessions/{quote_path(str(session_id))}")
+        session = payload.get("session")
+        if isinstance(session, dict):
+            return session
+        raise AppBridgeClientError("server returned an invalid session payload")
+    if getattr(args, "continue_last", False):
+        payload = app_bridge_get_json(server_url, "/api/sessions")
+        sessions = payload.get("sessions")
+        if isinstance(sessions, list) and sessions:
+            first = sessions[0]
+            if isinstance(first, dict):
+                return first
+    payload = app_bridge_post_json(server_url, "/api/sessions", {"cwd": str(workspace)})
+    session = payload.get("session")
+    if isinstance(session, dict):
+        return session
+    raise AppBridgeClientError("server returned an invalid session payload")
 
 
 def emit_turn_events(
@@ -386,8 +478,8 @@ def emit_turn_events(
 
 
 def emit_text_event(event: object, *, verbose: bool, stdout: object, stderr: object) -> bool:
-    method = str(getattr(event, "method", ""))
-    params = getattr(event, "params", {}) or {}
+    method = event_method(event)
+    params = event_params(event)
     payload = params.get("event") if isinstance(params, dict) else {}
     if method == "item/agentMessage/delta" and isinstance(payload, dict):
         print(str(payload.get("text") or ""), end="", flush=True, file=stdout)
@@ -399,6 +491,151 @@ def emit_text_event(event: object, *, verbose: bool, stdout: object, stderr: obj
     if verbose:
         print(f"[{method}]", file=stderr)
     return False
+
+
+def emit_app_bridge_events(
+    server_url: str,
+    turn_id: str,
+    *,
+    output_format: str,
+    verbose: bool,
+    stdout: object,
+    stderr: object,
+) -> int:
+    printed_answer = False
+    status = "failed"
+    final_answer = ""
+    for event in stream_app_bridge_events(server_url, turn_id):
+        if output_format == "json":
+            print(json.dumps(event, ensure_ascii=False, sort_keys=True), file=stdout)
+        else:
+            printed_answer = emit_text_event(event, verbose=verbose, stdout=stdout, stderr=stderr) or printed_answer
+        method = event_method(event)
+        params = event_params(event)
+        if method in {"turn/completed", "turn/failed"}:
+            status = str(params.get("status") or ("completed" if method == "turn/completed" else "failed"))
+            final_answer = str(params.get("final_answer") or "")
+    if output_format == "text":
+        if printed_answer:
+            print(file=stdout)
+        elif final_answer:
+            print(final_answer, file=stdout)
+        if status != "completed":
+            print(f"OpenAgent client turn failed: {status}", file=stderr)
+    return 0 if status == "completed" else 1
+
+
+def event_method(event: object) -> str:
+    if isinstance(event, dict):
+        return str(event.get("method") or "")
+    return str(getattr(event, "method", ""))
+
+
+def event_params(event: object) -> dict[str, object]:
+    if isinstance(event, dict):
+        params = event.get("params")
+    else:
+        params = getattr(event, "params", {})
+    return params if isinstance(params, dict) else {}
+
+
+class AppBridgeClientError(Exception):
+    pass
+
+
+def app_bridge_get_json(server_url: str, path: str) -> dict[str, object]:
+    return app_bridge_request_json("GET", server_url, path)
+
+
+def app_bridge_post_json(server_url: str, path: str, payload: dict[str, object]) -> dict[str, object]:
+    return app_bridge_request_json("POST", server_url, path, payload=payload)
+
+
+def app_bridge_request_json(
+    method: str,
+    server_url: str,
+    path: str,
+    *,
+    payload: dict[str, object] | None = None,
+    timeout_s: float = 15.0,
+) -> dict[str, object]:
+    data = None
+    headers = {"Accept": "application/json"}
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url=join_server_url(server_url, path), data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310 - user-selected local/remote App Bridge URL.
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        raise AppBridgeClientError(format_http_error(method, path, error)) from error
+    except urllib.error.URLError as error:
+        raise AppBridgeClientError(str(error.reason)) from error
+    value = json.loads(raw or "{}")
+    if not isinstance(value, dict):
+        raise AppBridgeClientError(f"{method} {path} returned non-object JSON")
+    if "error" in value:
+        raise AppBridgeClientError(str(value["error"]))
+    return value
+
+
+def stream_app_bridge_events(server_url: str, turn_id: str) -> Iterator[dict[str, object]]:
+    request = urllib.request.Request(url=join_server_url(server_url, f"/api/turns/{quote_path(turn_id)}/events"), headers={"Accept": "text/event-stream"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - user-selected local/remote App Bridge URL.
+            yield from parse_sse_response(response)
+    except urllib.error.HTTPError as error:
+        raise AppBridgeClientError(format_http_error("GET", f"/api/turns/{turn_id}/events", error)) from error
+    except urllib.error.URLError as error:
+        raise AppBridgeClientError(str(error.reason)) from error
+
+
+def parse_sse_response(response: object) -> Iterator[dict[str, object]]:
+    data_lines: list[str] = []
+    for raw_line in response:  # type: ignore[operator]
+        line = raw_line.decode("utf-8").rstrip("\r\n")
+        if not line:
+            if data_lines:
+                yield parse_sse_data("\n".join(data_lines))
+                data_lines = []
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line.removeprefix("data:").lstrip())
+    if data_lines:
+        yield parse_sse_data("\n".join(data_lines))
+
+
+def parse_sse_data(data: str) -> dict[str, object]:
+    value = json.loads(data)
+    if not isinstance(value, dict):
+        raise AppBridgeClientError("SSE event data was not a JSON object")
+    return value
+
+
+def format_http_error(method: str, path: str, error: urllib.error.HTTPError) -> str:
+    try:
+        raw = error.read().decode("utf-8")
+        payload = json.loads(raw)
+        if isinstance(payload, dict) and payload.get("error"):
+            return f"{method} {path} returned HTTP {error.code}: {payload['error']}"
+    except Exception:  # noqa: BLE001 - best-effort error formatting.
+        pass
+    return f"{method} {path} returned HTTP {error.code}"
+
+
+def normalize_server_url(value: str) -> str:
+    return value.rstrip("/")
+
+
+def join_server_url(server_url: str, path: str) -> str:
+    return normalize_server_url(server_url) + "/" + path.lstrip("/")
+
+
+def quote_path(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
 
 
 def run_session_command(args: argparse.Namespace, *, stdout: object | None = None, stderr: object | None = None) -> int:

@@ -284,6 +284,13 @@ openagent serve --host 127.0.0.1 --port 8787 --workspace . --headless
 
 去掉 `--headless` 时，`serve` 会同时提供静态控制台页面。
 
+连接已经启动的 App Bridge，从命令行发起一次远端 turn：
+
+```bash
+openagent client --server-url http://127.0.0.1:8787 "summarize this repository"
+openagent client --server-url http://127.0.0.1:8787 --continue "continue the latest server session"
+```
+
 ```bash
 python -m pip install -e .
 

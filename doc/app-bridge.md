@@ -95,6 +95,20 @@ openagent serve --host 127.0.0.1 --port 8787 --workspace . --headless
 
 `--session-root` can pin session ledger storage for clients that need stable resume paths.
 
+Send a one-shot turn to an already running App Bridge:
+
+```bash
+openagent client --server-url http://127.0.0.1:8787 "summarize this repository"
+openagent client --server-url http://127.0.0.1:8787 --continue "continue the latest server session"
+openagent client --server-url http://127.0.0.1:8787 --format json "stream events as JSON"
+```
+
+`openagent client` uses the App Bridge protocol directly:
+
+1. `POST /api/sessions` or `GET /api/sessions` for session selection.
+2. `POST /api/sessions/{session_id}/turns` to start a turn.
+3. `GET /api/turns/{turn_id}/events` to consume the SSE stream.
+
 ## Runtime Defaults
 
 The bridge reads:
@@ -116,6 +130,7 @@ The bridge reads:
 | `openagent web` | Start the bundled browser console |
 | `openagent serve` | Start the App Bridge HTTP server |
 | `openagent serve --headless` | Start API/SSE endpoints without the static console |
+| `openagent client` | Send a turn to an already running App Bridge |
 | `openagent-app` | Lower-level compatibility entrypoint for the same server |
 
 ## Non-goals
@@ -161,6 +176,7 @@ Useful scripting flags:
 openagent run --file README.md --format json "review the attached file"
 openagent run --continue "continue the last session"
 openagent run --session session_abc123 "resume this session"
+openagent client --server-url http://127.0.0.1:8787 --file README.md "review through the running server"
 ```
 
 The same CLI also exposes local session management and usage inspection:

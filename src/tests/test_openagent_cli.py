@@ -5,7 +5,9 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +21,7 @@ from openagent.cli.main import (
     candidate_model_urls,
     load_local_env,
     run_auth_command,
+    run_client_command,
     run_models_command,
     run_custom_command,
     run_non_interactive,
@@ -398,6 +401,39 @@ Create component $1 for $ARGUMENTS.
             ],
         )
 
+    def test_client_command_sends_prompt_to_running_app_bridge(self) -> None:
+        parser = build_parser()
+        server = FakeAppBridgeServer()
+        self.addCleanup(server.close)
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            expected_workspace = str(Path(raw_tmp).resolve())
+            args = parser.parse_args(["client", "--server-url", server.url, "--workspace", raw_tmp, "hello", "bridge"])
+            stdout = io.StringIO()
+
+            exit_code = run_client_command(args, stdout=stdout, stderr=io.StringIO(), stdin=FakeStdin("", is_tty=True))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stdout.getvalue(), "hello from server\n")
+        self.assertEqual(server.records[0]["path"], "/api/sessions")
+        self.assertEqual(server.records[0]["payload"]["cwd"], expected_workspace)
+        self.assertEqual(server.records[1]["path"], "/api/sessions/session_new/turns")
+        self.assertEqual(server.records[1]["payload"]["input"], "hello bridge")
+
+    def test_client_command_can_continue_latest_server_session_and_emit_json(self) -> None:
+        parser = build_parser()
+        server = FakeAppBridgeServer()
+        self.addCleanup(server.close)
+        args = parser.parse_args(["client", "--server-url", server.url, "--continue", "--format", "json", "continue", "please"])
+        stdout = io.StringIO()
+
+        exit_code = run_client_command(args, stdout=stdout, stderr=io.StringIO(), stdin=FakeStdin("", is_tty=True))
+
+        self.assertEqual(exit_code, 0)
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["method"] for event in events], ["item/agentMessage/delta", "turn/completed"])
+        self.assertEqual(server.records[0]["path"], "/api/sessions/session_existing/turns")
+        self.assertEqual(server.records[0]["payload"]["input"], "continue please")
+
 
 class FakeTurn:
     def __init__(self) -> None:
@@ -484,6 +520,77 @@ class FakeModelRuntime:
                 "max_output": 4096,
             }
         ]
+
+
+class FakeAppBridgeServer:
+    def __init__(self) -> None:
+        self.records: list[dict[str, object]] = []
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                if self.path == "/api/sessions":
+                    self._send_json({"sessions": [{"id": "session_existing"}]})
+                    return
+                if self.path == "/api/sessions/session_existing":
+                    self._send_json({"session": {"id": "session_existing"}})
+                    return
+                if self.path == "/api/turns/turn_1/events":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    self.wfile.write(
+                        (
+                            'id: 1\n'
+                            'event: item/agentMessage/delta\n'
+                            'data: {"sequence": 1, "method": "item/agentMessage/delta", "params": {"event": {"text": "hello from server"}}}\n\n'
+                            'id: 2\n'
+                            'event: turn/completed\n'
+                            'data: {"sequence": 2, "method": "turn/completed", "params": {"status": "completed", "final_answer": "hello from server"}}\n\n'
+                        ).encode("utf-8")
+                    )
+                    return
+                self._send_json({"error": "not found"}, status=404)
+
+            def do_POST(self) -> None:  # noqa: N802
+                payload = self._read_json()
+                owner.records.append({"method": "POST", "path": self.path, "payload": payload})
+                if self.path == "/api/sessions":
+                    self._send_json({"session": {"id": "session_new"}}, status=201)
+                    return
+                if self.path in {"/api/sessions/session_new/turns", "/api/sessions/session_existing/turns"}:
+                    self._send_json({"turn": {"id": "turn_1"}}, status=201)
+                    return
+                self._send_json({"error": "not found"}, status=404)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return
+
+            def _read_json(self) -> dict[str, object]:
+                raw_len = int(self.headers.get("Content-Length") or "0")
+                if raw_len <= 0:
+                    return {}
+                value = json.loads(self.rfile.read(raw_len).decode("utf-8"))
+                return value if isinstance(value, dict) else {}
+
+            def _send_json(self, payload: dict[str, object], *, status: int = 200) -> None:
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        self.url = f"http://{host}:{port}"
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
 
 
 def create_persisted_session(root: Path) -> Session:
