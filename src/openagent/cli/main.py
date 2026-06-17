@@ -10,6 +10,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from openagent.cli.auth import list_providers, load_auth_env, login_provider, logout_provider, resolve_auth_file
 from openagent.cli.custom_commands import discover_commands, render_command, resolve_command
 
 DEFAULT_BASE_URL = "http://localhost:8080"
@@ -31,6 +32,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     command = args.command or "tui"
     load_local_env(getattr(args, "config", None))
+    load_auth_env(getattr(args, "auth_file", None))
 
     if command == "doctor":
         apply_model_env(args)
@@ -55,6 +57,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(run_stats_command(args))
     if command == "command":
         raise SystemExit(run_custom_command(args))
+    if command == "auth":
+        raise SystemExit(run_auth_command(args))
     if command == "tui":
         apply_model_env(args)
         if not args.skip_doctor and not doctor(verbose=True):
@@ -164,6 +168,26 @@ def build_parser() -> argparse.ArgumentParser:
     command_render.add_argument("--no-shell", action="store_true", help="do not execute !`shell` blocks")
     command_render.add_argument("--format", choices=["text", "json"], default="text", help="output format")
 
+    auth = subparsers.add_parser("auth", help="manage provider credentials")
+    auth_subparsers = auth.add_subparsers(dest="auth_command", required=True)
+
+    auth_login = auth_subparsers.add_parser("login", help="store OpenAI-compatible provider credentials")
+    add_auth_options(auth_login)
+    auth_login.add_argument("--provider", "-p", default="openai", help="provider id, currently openai")
+    auth_login.add_argument("--api-key", default=None, help="API key to store")
+    auth_login.add_argument("--api-key-stdin", action="store_true", help="read API key from stdin")
+    auth_login.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
+    auth_login.add_argument("--model", default=None, help="default model id")
+    auth_login.add_argument("--wire-api", choices=["chat", "responses"], default=None, help="wire API")
+
+    auth_list = auth_subparsers.add_parser("list", aliases=["ls"], help="list authenticated providers")
+    add_auth_options(auth_list)
+    auth_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    auth_logout = auth_subparsers.add_parser("logout", help="remove stored provider credentials")
+    add_auth_options(auth_logout)
+    auth_logout.add_argument("--provider", "-p", default="openai", help="provider id, currently openai")
+
     doctor_parser = subparsers.add_parser("doctor", help="check local model gateway configuration")
     add_common_model_options(doctor_parser)
     return parser
@@ -171,6 +195,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_common_model_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", default=None, help="env file; default .openagent/openagent.env then ~/.openagent/openagent.env")
+    parser.add_argument("--auth-file", default=None, help="auth file; default OPENAGENT_AUTH_FILE or ~/.config/openagent/auth.json")
     parser.add_argument("--base-url", default=None, help=f"OpenAI-compatible base URL, default {DEFAULT_BASE_URL}")
     parser.add_argument("--model", default=None, help=f"model id, default {DEFAULT_MODEL}")
     parser.add_argument("--wire-api", choices=["chat", "responses"], default=None, help=f"wire API, default {DEFAULT_WIRE_API}")
@@ -192,6 +217,10 @@ def add_session_store_options(parser: argparse.ArgumentParser) -> None:
 def add_command_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path, default current directory")
     parser.add_argument("--command-dir", action="append", default=[], help="extra custom command directory; can be used more than once")
+
+
+def add_auth_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--auth-file", default=None, help="auth file; default OPENAGENT_AUTH_FILE or ~/.config/openagent/auth.json")
 
 
 def apply_model_env(args: argparse.Namespace, *, defaults: OpenAgentCliDefaults = OpenAgentCliDefaults()) -> None:
@@ -473,6 +502,55 @@ def run_custom_command(args: argparse.Namespace, *, stdout: object | None = None
     return 2
 
 
+def run_auth_command(
+    args: argparse.Namespace,
+    *,
+    stdout: object | None = None,
+    stderr: object | None = None,
+    stdin: object | None = None,
+) -> int:
+    out = stdout or sys.stdout
+    err = stderr or sys.stderr
+    source = stdin or sys.stdin
+    command = str(getattr(args, "auth_command", ""))
+    auth_file = getattr(args, "auth_file", None)
+    if command == "login":
+        api_key = getattr(args, "api_key", None)
+        if getattr(args, "api_key_stdin", False):
+            api_key = str(source.read()).strip()
+        try:
+            result = login_provider(
+                provider=str(getattr(args, "provider", "openai")),
+                api_key=api_key,
+                base_url=getattr(args, "base_url", None),
+                model=getattr(args, "model", None),
+                wire_api=getattr(args, "wire_api", None),
+                path=auth_file,
+            )
+        except ValueError as error:
+            print(str(error), file=err)
+            return 2
+        print(json.dumps({"status": "logged_in", **result}, ensure_ascii=False, sort_keys=True), file=out)
+        return 0
+    if command in {"list", "ls"}:
+        providers = list_providers(auth_file)
+        if getattr(args, "format", "table") == "json":
+            print(json.dumps({"auth_file": str(resolve_auth_file(auth_file)), "providers": providers}, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_auth_table(providers, stdout=out)
+        return 0
+    if command == "logout":
+        try:
+            result = logout_provider(provider=str(getattr(args, "provider", "openai")), path=auth_file)
+        except ValueError as error:
+            print(str(error), file=err)
+            return 2
+        print(json.dumps({"status": "logged_out", **result}, ensure_ascii=False, sort_keys=True), file=out)
+        return 0
+    print(f"Unknown auth command: {command}", file=err)
+    return 2
+
+
 def resolve_session_store_root(args: argparse.Namespace) -> Path:
     workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
     root = Path(str(getattr(args, "session_root", None) or os.getenv("OPENAGENT_SESSION_ROOT") or ".openagent/sessions")).expanduser()
@@ -664,6 +742,24 @@ def print_command_detail(payload: dict[str, object], *, stdout: object) -> None:
         print(f"model: {payload.get('model')}", file=stdout)
     print("", file=stdout)
     print(str(payload.get("template") or ""), file=stdout)
+
+
+def print_auth_table(rows: list[dict[str, object]], *, stdout: object) -> None:
+    if not rows:
+        print("No authenticated providers found.", file=stdout)
+        return
+    table = [["provider", "api_key", "base_url", "model", "wire_api"]]
+    for row in rows:
+        table.append(
+            [
+                str(row.get("provider") or ""),
+                str(row.get("api_key") or ""),
+                str(row.get("base_url") or ""),
+                str(row.get("model") or ""),
+                str(row.get("wire_api") or ""),
+            ]
+        )
+    print_table(table, stdout=stdout)
 
 
 def print_table(rows: list[list[str]], *, stdout: object) -> None:

@@ -94,6 +94,14 @@ openagent stats
 openagent models
 ```
 
+For local provider credentials:
+
+```bash
+openagent auth login --api-key "$OPENAI_API_KEY" --base-url http://localhost:8080 --model gpt-5.5 --wire-api responses
+openagent auth list
+openagent auth logout
+```
+
 Custom command files can be rendered or run from the CLI today:
 
 ```bash

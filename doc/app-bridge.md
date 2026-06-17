@@ -159,6 +159,23 @@ openagent stats
 
 These commands read the same file-backed session store used by the App Bridge runtime. By default the store is resolved from `OPENAGENT_SESSION_ROOT` or `.openagent/sessions` under the selected workspace.
 
+## Provider Auth
+
+`openagent auth` stores local OpenAI-compatible credentials in `~/.config/openagent/auth.json` by default. The file is written with `0600` permissions. Values from real environment variables and `.openagent/openagent.env` still take precedence; auth file values are only used when the corresponding environment variable is missing.
+
+```bash
+openagent auth login \
+  --api-key "$OPENAI_API_KEY" \
+  --base-url http://localhost:8080 \
+  --model gpt-5.5 \
+  --wire-api responses
+
+openagent auth list
+openagent auth logout
+```
+
+For tests or isolated local setups, pass `--auth-file /path/to/auth.json`.
+
 ## Custom Commands
 
 Custom command files mirror the OpenCode command-file workflow. Place markdown files in:

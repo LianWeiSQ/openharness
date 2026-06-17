@@ -216,6 +216,19 @@ openagent models --format json
 openagent stats --format json
 ```
 
+保存本地 OpenAI-compatible 凭据，后续 `openagent` / `openagent run` / `openagent doctor` 会自动读取：
+
+```bash
+openagent auth login \
+  --api-key "$OPENAI_API_KEY" \
+  --base-url http://localhost:8080 \
+  --model gpt-5.5 \
+  --wire-api responses
+
+openagent auth list
+openagent auth logout
+```
+
 定义可复用命令，适合把高频 prompt 固化成项目资产：
 
 ```bash

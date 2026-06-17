@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ from openagent.cli.main import (
     build_parser,
     candidate_model_urls,
     load_local_env,
+    run_auth_command,
     run_models_command,
     run_custom_command,
     run_non_interactive,
@@ -24,6 +26,7 @@ from openagent.cli.main import (
     run_stats_command,
 )
 from openagent.app_server.protocol import AppEvent
+from openagent.cli.auth import load_auth_env
 from openagent.core.session.session import Session
 from openagent.core.session.store import FileSessionStore
 from openagent.core.types import ChatMessage
@@ -295,6 +298,68 @@ Create component $1 for $ARGUMENTS.
 
         self.assertEqual(exit_code, 1)
         self.assertIn("Command not found", stderr.getvalue())
+
+    def test_auth_login_list_env_and_logout(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            login_args = parser.parse_args(
+                [
+                    "auth",
+                    "login",
+                    "--auth-file",
+                    str(auth_file),
+                    "--api-key",
+                    "test-secret",
+                    "--base-url",
+                    "http://localhost:8080",
+                    "--model",
+                    "gpt-auth",
+                    "--wire-api",
+                    "responses",
+                ]
+            )
+            login_stdout = io.StringIO()
+
+            self.assertEqual(run_auth_command(login_args, stdout=login_stdout, stderr=io.StringIO()), 0)
+            login_payload = json.loads(login_stdout.getvalue())
+            self.assertEqual(login_payload["status"], "logged_in")
+            self.assertEqual(login_payload["record"]["api_key"], "test****cret")
+            self.assertEqual(stat.S_IMODE(auth_file.stat().st_mode), 0o600)
+
+            list_stdout = io.StringIO()
+            list_args = parser.parse_args(["auth", "list", "--auth-file", str(auth_file), "--format", "json"])
+            self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            listed = json.loads(list_stdout.getvalue())
+            self.assertEqual(listed["providers"][0]["model"], "gpt-auth")
+            self.assertNotIn("test-secret", list_stdout.getvalue())
+
+            with patch.dict(os.environ, {}, clear=True):
+                loaded = load_auth_env(str(auth_file))
+                self.assertEqual(loaded, auth_file)
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "test-secret")
+                self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://localhost:8080")
+                self.assertEqual(os.environ["OPENAI_MODEL"], "gpt-auth")
+                self.assertEqual(os.environ["OPENAI_WIRE_API"], "responses")
+
+            logout_stdout = io.StringIO()
+            logout_args = parser.parse_args(["auth", "logout", "--auth-file", str(auth_file)])
+            self.assertEqual(run_auth_command(logout_args, stdout=logout_stdout, stderr=io.StringIO()), 0)
+            self.assertEqual(json.loads(logout_stdout.getvalue())["removed"], True)
+
+    def test_auth_login_can_read_key_from_stdin(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            args = parser.parse_args(["auth", "login", "--auth-file", str(auth_file), "--api-key-stdin", "--model", "gpt-stdin"])
+            stdout = io.StringIO()
+
+            self.assertEqual(run_auth_command(args, stdin=FakeStdin("stdin-secret\n"), stdout=stdout, stderr=io.StringIO()), 0)
+
+            with patch.dict(os.environ, {}, clear=True):
+                load_auth_env(str(auth_file))
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "stdin-secret")
+                self.assertEqual(os.environ["OPENAI_MODEL"], "gpt-stdin")
 
 
 class FakeTurn:
