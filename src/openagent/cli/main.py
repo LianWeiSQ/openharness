@@ -20,6 +20,7 @@ DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_WIRE_API = "responses"
 DEFAULT_MAX_STEPS = "30"
 DEFAULT_SERVER_URL = "http://127.0.0.1:8787"
+DEFAULT_SERVER_TOKEN_ENV = "OPENAGENT_SERVER_TOKEN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,14 +115,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_model_options(serve_parser)
     add_server_options(serve_parser)
     serve_parser.add_argument("--headless", action="store_true", help="serve API/SSE endpoints without the static console")
+    add_server_auth_options(serve_parser, role="server")
 
     web = subparsers.add_parser("web", help="start the browser console")
     add_common_model_options(web)
     add_server_options(web)
+    add_server_auth_options(web, role="server")
 
     client = subparsers.add_parser("client", help="send a prompt to a running App Bridge server")
     client.add_argument("message", nargs="*", help="prompt text")
     client.add_argument("--server-url", default=None, help=f"App Bridge URL, default OPENAGENT_SERVER_URL or {DEFAULT_SERVER_URL}")
+    add_server_auth_options(client, role="client")
     client.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path for local files and command rendering")
     client.add_argument("--session", "-s", default=None, help="session id to continue on the server")
     client.add_argument("--continue", "-c", dest="continue_last", action="store_true", help="continue the most recent server session")
@@ -241,6 +245,15 @@ def add_server_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--session-root", default=None)
 
 
+def add_server_auth_options(parser: argparse.ArgumentParser, *, role: str) -> None:
+    if role == "client":
+        parser.add_argument("--server-token", default=None, help=f"Bearer token for the App Bridge server; default {DEFAULT_SERVER_TOKEN_ENV} env")
+        parser.add_argument("--server-token-env", default=DEFAULT_SERVER_TOKEN_ENV, help="environment variable containing the Bearer token")
+    else:
+        parser.add_argument("--auth-token", default=None, help=f"Bearer token required for API/SSE requests; default {DEFAULT_SERVER_TOKEN_ENV} env")
+        parser.add_argument("--auth-token-env", default=DEFAULT_SERVER_TOKEN_ENV, help="environment variable containing the Bearer token")
+
+
 def add_session_store_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path used to resolve the default session root")
     parser.add_argument("--session-root", default=None, help="session store root, default OPENAGENT_SESSION_ROOT or .openagent/sessions")
@@ -290,6 +303,7 @@ def run_serve(args: argparse.Namespace, *, serve_fn: Callable[..., object] | Non
         workspace=getattr(args, "workspace", None),
         session_store_root=getattr(args, "session_root", None),
         serve_static=not bool(getattr(args, "headless", False)),
+        auth_token=resolve_server_token(args, token_attr="auth_token", token_env_attr="auth_token_env"),
     )
 
 
@@ -345,6 +359,7 @@ def run_client_command(
     err = stderr or sys.stderr
     source = stdin or sys.stdin
     server_url = normalize_server_url(str(getattr(args, "server_url", None) or os.getenv("OPENAGENT_SERVER_URL") or DEFAULT_SERVER_URL))
+    server_token = resolve_server_token(args, token_attr="server_token", token_env_attr="server_token_env")
     workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
     prompt_text = command_text_from_args(args, stdin=source)
     if getattr(args, "custom_command", None):
@@ -365,11 +380,11 @@ def run_client_command(
         return 2
 
     try:
-        session = select_client_session(server_url, args, workspace=workspace)
+        session = select_client_session(server_url, args, workspace=workspace, auth_token=server_token)
         session_id = str(session.get("id") or "")
         if not session_id:
             raise AppBridgeClientError("server returned a session without an id")
-        turn_payload = app_bridge_post_json(server_url, f"/api/sessions/{quote_path(session_id)}/turns", {"input": prompt})
+        turn_payload = app_bridge_post_json(server_url, f"/api/sessions/{quote_path(session_id)}/turns", {"input": prompt}, auth_token=server_token)
         turn = turn_payload.get("turn") if isinstance(turn_payload.get("turn"), dict) else {}
         turn_id = str(turn.get("id") or "")
         if not turn_id:
@@ -381,6 +396,7 @@ def run_client_command(
             verbose=bool(getattr(args, "verbose", False)),
             stdout=out,
             stderr=err,
+            auth_token=server_token,
         )
     except AppBridgeClientError as error:
         print(f"OpenAgent client failed: {error}", file=err)
@@ -420,22 +436,22 @@ def select_run_session(runtime: object, args: argparse.Namespace, *, workspace: 
     return runtime.start_session(cwd=workspace)  # type: ignore[attr-defined,no-any-return]
 
 
-def select_client_session(server_url: str, args: argparse.Namespace, *, workspace: Path) -> dict[str, object]:
+def select_client_session(server_url: str, args: argparse.Namespace, *, workspace: Path, auth_token: str | None = None) -> dict[str, object]:
     session_id = getattr(args, "session", None)
     if session_id:
-        payload = app_bridge_get_json(server_url, f"/api/sessions/{quote_path(str(session_id))}")
+        payload = app_bridge_get_json(server_url, f"/api/sessions/{quote_path(str(session_id))}", auth_token=auth_token)
         session = payload.get("session")
         if isinstance(session, dict):
             return session
         raise AppBridgeClientError("server returned an invalid session payload")
     if getattr(args, "continue_last", False):
-        payload = app_bridge_get_json(server_url, "/api/sessions")
+        payload = app_bridge_get_json(server_url, "/api/sessions", auth_token=auth_token)
         sessions = payload.get("sessions")
         if isinstance(sessions, list) and sessions:
             first = sessions[0]
             if isinstance(first, dict):
                 return first
-    payload = app_bridge_post_json(server_url, "/api/sessions", {"cwd": str(workspace)})
+    payload = app_bridge_post_json(server_url, "/api/sessions", {"cwd": str(workspace)}, auth_token=auth_token)
     session = payload.get("session")
     if isinstance(session, dict):
         return session
@@ -501,11 +517,12 @@ def emit_app_bridge_events(
     verbose: bool,
     stdout: object,
     stderr: object,
+    auth_token: str | None = None,
 ) -> int:
     printed_answer = False
     status = "failed"
     final_answer = ""
-    for event in stream_app_bridge_events(server_url, turn_id):
+    for event in stream_app_bridge_events(server_url, turn_id, auth_token=auth_token):
         if output_format == "json":
             print(json.dumps(event, ensure_ascii=False, sort_keys=True), file=stdout)
         else:
@@ -543,12 +560,12 @@ class AppBridgeClientError(Exception):
     pass
 
 
-def app_bridge_get_json(server_url: str, path: str) -> dict[str, object]:
-    return app_bridge_request_json("GET", server_url, path)
+def app_bridge_get_json(server_url: str, path: str, *, auth_token: str | None = None) -> dict[str, object]:
+    return app_bridge_request_json("GET", server_url, path, auth_token=auth_token)
 
 
-def app_bridge_post_json(server_url: str, path: str, payload: dict[str, object]) -> dict[str, object]:
-    return app_bridge_request_json("POST", server_url, path, payload=payload)
+def app_bridge_post_json(server_url: str, path: str, payload: dict[str, object], *, auth_token: str | None = None) -> dict[str, object]:
+    return app_bridge_request_json("POST", server_url, path, payload=payload, auth_token=auth_token)
 
 
 def app_bridge_request_json(
@@ -557,10 +574,13 @@ def app_bridge_request_json(
     path: str,
     *,
     payload: dict[str, object] | None = None,
+    auth_token: str | None = None,
     timeout_s: float = 15.0,
 ) -> dict[str, object]:
     data = None
     headers = {"Accept": "application/json"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -580,8 +600,11 @@ def app_bridge_request_json(
     return value
 
 
-def stream_app_bridge_events(server_url: str, turn_id: str) -> Iterator[dict[str, object]]:
-    request = urllib.request.Request(url=join_server_url(server_url, f"/api/turns/{quote_path(turn_id)}/events"), headers={"Accept": "text/event-stream"})
+def stream_app_bridge_events(server_url: str, turn_id: str, *, auth_token: str | None = None) -> Iterator[dict[str, object]]:
+    headers = {"Accept": "text/event-stream"}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+    request = urllib.request.Request(url=join_server_url(server_url, f"/api/turns/{quote_path(turn_id)}/events"), headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - user-selected local/remote App Bridge URL.
             yield from parse_sse_response(response)
@@ -636,6 +659,16 @@ def join_server_url(server_url: str, path: str) -> str:
 
 def quote_path(value: str) -> str:
     return urllib.parse.quote(value, safe="")
+
+
+def resolve_server_token(args: argparse.Namespace, *, token_attr: str, token_env_attr: str) -> str | None:
+    explicit = getattr(args, token_attr, None)
+    if explicit:
+        return str(explicit)
+    env_name = str(getattr(args, token_env_attr, None) or "")
+    if not env_name:
+        return None
+    return os.getenv(env_name) or None
 
 
 def run_session_command(args: argparse.Namespace, *, stdout: object | None = None, stderr: object | None = None) -> int:

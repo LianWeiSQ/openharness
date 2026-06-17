@@ -386,7 +386,8 @@ Create component $1 for $ARGUMENTS.
         def fake_serve(**kwargs: object) -> None:
             calls.append(kwargs)
 
-        run_serve(args, serve_fn=fake_serve)
+        with patch.dict(os.environ, {}, clear=True):
+            run_serve(args, serve_fn=fake_serve)
 
         self.assertEqual(
             calls,
@@ -397,9 +398,23 @@ Create component $1 for $ARGUMENTS.
                     "workspace": "/tmp/workspace",
                     "session_store_root": "/tmp/sessions",
                     "serve_static": False,
+                    "auth_token": None,
                 }
             ],
         )
+
+    def test_serve_command_reads_auth_token_from_env(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["serve", "--headless"])
+        calls: list[dict[str, object]] = []
+
+        def fake_serve(**kwargs: object) -> None:
+            calls.append(kwargs)
+
+        with patch.dict(os.environ, {"OPENAGENT_SERVER_TOKEN": "server-secret"}, clear=True):
+            run_serve(args, serve_fn=fake_serve)
+
+        self.assertEqual(calls[0]["auth_token"], "server-secret")
 
     def test_client_command_sends_prompt_to_running_app_bridge(self) -> None:
         parser = build_parser()
@@ -418,6 +433,19 @@ Create component $1 for $ARGUMENTS.
         self.assertEqual(server.records[0]["payload"]["cwd"], expected_workspace)
         self.assertEqual(server.records[1]["path"], "/api/sessions/session_new/turns")
         self.assertEqual(server.records[1]["payload"]["input"], "hello bridge")
+
+    def test_client_command_sends_bearer_token(self) -> None:
+        parser = build_parser()
+        server = FakeAppBridgeServer(required_token="server-secret")
+        self.addCleanup(server.close)
+        args = parser.parse_args(["client", "--server-url", server.url, "--server-token", "server-secret", "hello"])
+        stdout = io.StringIO()
+
+        exit_code = run_client_command(args, stdout=stdout, stderr=io.StringIO(), stdin=FakeStdin("", is_tty=True))
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(server.records)
+        self.assertTrue(all(record["authorization"] == "Bearer server-secret" for record in server.records))
 
     def test_client_command_can_continue_latest_server_session_and_emit_json(self) -> None:
         parser = build_parser()
@@ -523,12 +551,14 @@ class FakeModelRuntime:
 
 
 class FakeAppBridgeServer:
-    def __init__(self) -> None:
+    def __init__(self, *, required_token: str | None = None) -> None:
         self.records: list[dict[str, object]] = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                if not self._authorized():
+                    return
                 if self.path == "/api/sessions":
                     self._send_json({"sessions": [{"id": "session_existing"}]})
                     return
@@ -553,8 +583,10 @@ class FakeAppBridgeServer:
                 self._send_json({"error": "not found"}, status=404)
 
             def do_POST(self) -> None:  # noqa: N802
+                if not self._authorized():
+                    return
                 payload = self._read_json()
-                owner.records.append({"method": "POST", "path": self.path, "payload": payload})
+                owner.records.append({"method": "POST", "path": self.path, "payload": payload, "authorization": self.headers.get("Authorization") or ""})
                 if self.path == "/api/sessions":
                     self._send_json({"session": {"id": "session_new"}}, status=201)
                     return
@@ -565,6 +597,16 @@ class FakeAppBridgeServer:
 
             def log_message(self, format: str, *args: object) -> None:  # noqa: A002
                 return
+
+            def _authorized(self) -> bool:
+                if required_token is None:
+                    return True
+                if self.headers.get("Authorization") == f"Bearer {required_token}":
+                    if self.command == "GET":
+                        owner.records.append({"method": "GET", "path": self.path, "payload": {}, "authorization": self.headers.get("Authorization") or ""})
+                    return True
+                self._send_json({"error": "unauthorized"}, status=401)
+                return False
 
             def _read_json(self) -> dict[str, object]:
                 raw_len = int(self.headers.get("Content-Length") or "0")

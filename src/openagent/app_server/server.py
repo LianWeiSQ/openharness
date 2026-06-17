@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import mimetypes
+import os
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +19,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
     runtime: OpenAgentAppRuntime
     serve_static: bool = True
+    auth_token: str | None = None
 
     server_version = "OpenAgentAppServer/0.1"
 
@@ -28,9 +31,11 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if _is_api_path(path) and not self._authorize_api_request():
+            return
         try:
             if path == "/api/health":
-                self._send_json({"ok": True, "service": "openagent-app-server", "ui_enabled": self.serve_static})
+                self._send_json({"ok": True, "service": "openagent-app-server", "ui_enabled": self.serve_static, "auth_required": bool(self.auth_token)})
             elif path == "/api/models":
                 self._send_json({"models": self.runtime.list_models()})
             elif path == "/api/sessions":
@@ -58,6 +63,8 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
+        if _is_api_path(path) and not self._authorize_api_request():
+            return
         try:
             payload = self._read_json()
             if path == "/api/sessions":
@@ -79,6 +86,20 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         return
+
+    def _authorize_api_request(self) -> bool:
+        if not self.auth_token:
+            return True
+        expected = f"Bearer {self.auth_token}"
+        actual = self.headers.get("Authorization") or ""
+        if hmac.compare_digest(actual, expected):
+            return True
+        self.send_response(HTTPStatus.UNAUTHORIZED)
+        self._common_headers(content_type="application/json; charset=utf-8")
+        self.send_header("WWW-Authenticate", 'Bearer realm="openagent-app-bridge"')
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": "unauthorized"}, ensure_ascii=False).encode("utf-8"))
+        return False
 
     def _stream_turn_events(self, turn_id: str, *, last_sequence: int) -> None:
         turn = self.runtime.get_turn(turn_id)
@@ -138,7 +159,7 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", content_type)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, Last-Event-ID")
 
     def _write_sse(self, event: str, payload: dict[str, Any], *, event_id: str) -> None:
         data = json.dumps(payload, ensure_ascii=False)
@@ -159,6 +180,7 @@ def create_server(
     workspace: str | Path | None = None,
     session_store_root: str | Path | None = None,
     serve_static: bool = True,
+    auth_token: str | None = None,
 ) -> ThreadingHTTPServer:
     runtime = OpenAgentAppRuntime(workspace=workspace, session_store_root=session_store_root)
 
@@ -167,6 +189,7 @@ def create_server(
 
     Handler.runtime = runtime
     Handler.serve_static = serve_static
+    Handler.auth_token = auth_token or None
     return ThreadingHTTPServer((host, port), Handler)
 
 
@@ -177,10 +200,12 @@ def serve(
     workspace: str | Path | None = None,
     session_store_root: str | Path | None = None,
     serve_static: bool = True,
+    auth_token: str | None = None,
 ) -> ThreadingHTTPServer:
-    httpd = create_server(host=host, port=port, workspace=workspace, session_store_root=session_store_root, serve_static=serve_static)
+    httpd = create_server(host=host, port=port, workspace=workspace, session_store_root=session_store_root, serve_static=serve_static, auth_token=auth_token)
     mode = "console" if serve_static else "headless"
-    print(f"OpenAgent app bridge ({mode}) listening on http://{host}:{port}")  # noqa: T201
+    auth_state = "secured" if auth_token else "unsecured"
+    print(f"OpenAgent app bridge ({mode}, {auth_state}) listening on http://{host}:{port}")  # noqa: T201
     httpd.serve_forever()
     return httpd
 
@@ -192,8 +217,21 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--workspace", default=None)
     parser.add_argument("--session-root", default=None)
     parser.add_argument("--headless", action="store_true", help="serve API/SSE endpoints without the static console")
+    parser.add_argument("--auth-token", default=None, help="Bearer token required for API/SSE requests")
+    parser.add_argument("--auth-token-env", default="OPENAGENT_SERVER_TOKEN", help="environment variable containing the Bearer token")
     args = parser.parse_args(argv)
-    serve(host=args.host, port=args.port, workspace=args.workspace, session_store_root=args.session_root, serve_static=not args.headless)
+    serve(
+        host=args.host,
+        port=args.port,
+        workspace=args.workspace,
+        session_store_root=args.session_root,
+        serve_static=not args.headless,
+        auth_token=args.auth_token or os.getenv(str(args.auth_token_env or "")) or None,
+    )
+
+
+def _is_api_path(path: str) -> bool:
+    return path.startswith("/api/")
 
 
 def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:

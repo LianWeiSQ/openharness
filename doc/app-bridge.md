@@ -90,10 +90,13 @@ PYTHONPATH=src python -m openagent.app_server.server --host 127.0.0.1 --port 878
 For Desktop, IDE, or other non-browser clients, run the same App Bridge as a headless API/SSE service:
 
 ```bash
+export OPENAGENT_SERVER_TOKEN="replace-with-a-local-secret"
 openagent serve --host 127.0.0.1 --port 8787 --workspace . --headless
 ```
 
 `--session-root` can pin session ledger storage for clients that need stable resume paths.
+When `OPENAGENT_SERVER_TOKEN` is set, all `/api/*` JSON and SSE endpoints require `Authorization: Bearer <token>`.
+The bundled static console does not yet include a token prompt, so token-protected mode is best used with `--headless` or custom clients.
 
 Send a one-shot turn to an already running App Bridge:
 
@@ -101,6 +104,7 @@ Send a one-shot turn to an already running App Bridge:
 openagent client --server-url http://127.0.0.1:8787 "summarize this repository"
 openagent client --server-url http://127.0.0.1:8787 --continue "continue the latest server session"
 openagent client --server-url http://127.0.0.1:8787 --format json "stream events as JSON"
+openagent client --server-url http://127.0.0.1:8787 --server-token "$OPENAGENT_SERVER_TOKEN" "run through a secured bridge"
 ```
 
 `openagent client` uses the App Bridge protocol directly:
@@ -122,6 +126,7 @@ The bridge reads:
 | `OPENAGENT_APP_PERMISSION` | `FULL` | Permission ruleset |
 | `OPENAGENT_APP_TOOLS` | `all` | Tool allowlist |
 | `OPENAGENT_TRACE_ROOT` | `.openagent/traces` | Local trace root |
+| `OPENAGENT_SERVER_TOKEN` | unset | Optional Bearer token for App Bridge API/SSE |
 
 ## CLI Entrypoints
 
@@ -131,6 +136,7 @@ The bridge reads:
 | `openagent serve` | Start the App Bridge HTTP server |
 | `openagent serve --headless` | Start API/SSE endpoints without the static console |
 | `openagent client` | Send a turn to an already running App Bridge |
+| `openagent client --server-token ...` | Connect to a token-protected App Bridge |
 | `openagent-app` | Lower-level compatibility entrypoint for the same server |
 
 ## Non-goals

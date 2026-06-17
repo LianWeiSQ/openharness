@@ -50,6 +50,36 @@ class AppServerServerTests(unittest.TestCase):
         else:
             self.fail("headless server should not serve the static console")
 
+    def test_server_requires_bearer_token_when_configured(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            auth_token="server-secret",
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        try:
+            urllib.request.urlopen(f"{base_url}/api/health", timeout=5)  # noqa: S310 - local test server.
+        except urllib.error.HTTPError as error:
+            self.assertEqual(error.code, 401)
+            error.close()
+        else:
+            self.fail("server should reject unauthenticated API requests")
+
+        request = urllib.request.Request(f"{base_url}/api/health", headers={"Authorization": "Bearer server-secret"})
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local test server.
+            health = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(health["auth_required"], True)
+
 
 if __name__ == "__main__":
     unittest.main()

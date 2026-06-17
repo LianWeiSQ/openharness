@@ -279,16 +279,23 @@ openagent web --host 127.0.0.1 --port 8787 --workspace .
 只启动 App Bridge HTTP API/SSE 服务，供 Desktop、IDE 或外部客户端接入：
 
 ```bash
+export OPENAGENT_SERVER_TOKEN="$(python - <<'PY'
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+)"
 openagent serve --host 127.0.0.1 --port 8787 --workspace . --headless
 ```
 
 去掉 `--headless` 时，`serve` 会同时提供静态控制台页面。
+设置 `OPENAGENT_SERVER_TOKEN` 后，API/SSE 请求需要 Bearer token。当前静态控制台还没有 token 输入框，开启 token 时更适合 `--headless` 或外部客户端。
 
 连接已经启动的 App Bridge，从命令行发起一次远端 turn：
 
 ```bash
 openagent client --server-url http://127.0.0.1:8787 "summarize this repository"
 openagent client --server-url http://127.0.0.1:8787 --continue "continue the latest server session"
+openagent client --server-url http://127.0.0.1:8787 --server-token "$OPENAGENT_SERVER_TOKEN" "run through a secured bridge"
 ```
 
 ```bash
