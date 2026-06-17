@@ -176,6 +176,83 @@ OpenAgent 仍然包含完整的单 Agent runtime。模型接收可用工具 sche
 | Operations | Stream events, file-backed session ledger, JSONL traces, runtime logs, eval/replay, optional Langfuse export |
 | Swarm | Decoupled function/swarm kernel for routing one task to OpenAgent and external runners |
 
+## App Bridge Console
+
+OpenAgent 现在包含一个很薄的本地 App Bridge，用来把现有 `AgentLoop` 接到 UI / CLI / Desktop / IDE 这类客户端。第一版不重做复杂界面，只暴露 session、turn、item event 这条必要链路。
+
+像 Claude Code 一样，OpenAgent 也提供一个直接启动入口。默认使用本地 OpenAI-compatible 网关和 `gpt-5.5`：
+
+```bash
+openagent
+```
+
+等价于：
+
+```bash
+openagent tui --workspace .
+```
+
+检查本地模型网关：
+
+```bash
+openagent doctor
+```
+
+非交互运行一次任务，适合脚本、CI 或快速问答：
+
+```bash
+openagent run "summarize this repository"
+openagent run --file README.md --format json "review the attached file"
+openagent run --continue "continue the last session"
+```
+
+可选：把本机私有配置放进 `.openagent/openagent.env`，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
+
+```bash
+mkdir -p .openagent
+cat > .openagent/openagent.env <<'EOF'
+OPENAI_API_KEY=your-api-key
+OPENAI_BASE_URL=http://localhost:8080
+OPENAI_MODEL=gpt-5.5
+OPENAI_WIRE_API=responses
+OPENAGENT_APP_MAX_STEPS=30
+EOF
+chmod 600 .openagent/openagent.env
+```
+
+启动浏览器控制台：
+
+```bash
+openagent web --host 127.0.0.1 --port 8787 --workspace .
+```
+
+```bash
+python -m pip install -e .
+
+export OPENAI_API_KEY="..."
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_MODEL="gpt-5.5"
+export OPENAI_WIRE_API="responses"
+
+openagent-app --host 127.0.0.1 --port 8787 --workspace .
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8787
+```
+
+这层参考 Codex app-server 的 thread / turn / item 思路，但实现上保持 OpenAgent Core 不变。详细说明见 [`doc/app-bridge.md`](doc/app-bridge.md)。
+
+同一套 App Bridge runtime 也驱动终端界面：
+
+```bash
+openagent-tui --workspace .
+```
+
+TUI 对标 Codex TUI 的能力矩阵见 [`doc/tui.md`](doc/tui.md)。
+
 ## 最小 OpenAgent 使用方式
 
 ```python

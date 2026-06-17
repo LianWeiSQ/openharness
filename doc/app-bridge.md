@@ -1,0 +1,147 @@
+# OpenAgent App Bridge
+
+OpenAgent App Bridge is the first thin UI integration layer for OpenAgent. It follows the shape of Codex app-server without copying the whole Codex runtime or UI. The first version keeps the interface small: a local HTTP server, an SSE event stream, and a static console bundled inside the OpenAgent package.
+
+## Goal
+
+The goal is to let a UI, CLI, desktop shell, or IDE client drive OpenAgent through stable session and turn primitives:
+
+- create or resume a session;
+- start a turn with user input;
+- stream model text, tool calls, tool results, patches, runtime warnings, and completion state;
+- expose trace/session identifiers for later inspection.
+
+This is intentionally not a UI rewrite. The UI is a minimal console for validating the bridge.
+
+## Reference Shape
+
+Codex app-server uses three core primitives:
+
+| Codex app-server | OpenAgent mapping |
+| --- | --- |
+| Thread | `Session` |
+| Turn | one `AgentLoop.run(...)` invocation |
+| Item | `StreamEvent` projected into UI events |
+
+OpenAgent keeps the existing Python runtime as the source of truth. The bridge only adapts the runtime for clients.
+
+## First Version Scope
+
+Implemented endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /` | Static OpenAgent console |
+| `GET /api/health` | Service health |
+| `GET /api/models` | Current OpenAI-compatible model catalog |
+| `GET /api/sessions` | List known sessions |
+| `POST /api/sessions` | Create a new session |
+| `GET /api/sessions/{session_id}` | Read a session snapshot |
+| `POST /api/sessions/{session_id}/turns` | Start a turn |
+| `GET /api/turns/{turn_id}/events` | Stream turn events through SSE |
+
+The event stream uses Codex-like method names:
+
+- `turn/started`
+- `item/step/started`
+- `item/agentMessage/delta`
+- `item/toolCall/started`
+- `item/toolCall/completed`
+- `runtime/warning`
+- `item/patch/detected`
+- `turn/completed`
+- `turn/failed`
+
+## Run Locally
+
+Install the package in editable mode:
+
+```bash
+python -m pip install -e .
+```
+
+Configure the OpenAI-compatible provider:
+
+```bash
+export OPENAI_API_KEY="..."
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+export OPENAI_MODEL="gpt-5.5"
+export OPENAI_WIRE_API="responses"
+```
+
+Start the app bridge:
+
+```bash
+openagent-app --host 127.0.0.1 --port 8787 --workspace .
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8787
+```
+
+Equivalent module form:
+
+```bash
+PYTHONPATH=src python -m openagent.app_server.server --host 127.0.0.1 --port 8787
+```
+
+## Runtime Defaults
+
+The bridge reads:
+
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `OPENAGENT_WORKSPACE` | current working directory | Session workspace |
+| `OPENAGENT_SESSION_ROOT` | `.openagent/sessions` | File session store root |
+| `OPENAGENT_APP_AGENT_NAME` | `openagent-app` | Agent name |
+| `OPENAGENT_APP_MAX_STEPS` | `OPENAGENT_MAX_STEPS` or `50` | Max AgentLoop steps |
+| `OPENAGENT_APP_PERMISSION` | `FULL` | Permission ruleset |
+| `OPENAGENT_APP_TOOLS` | `all` | Tool allowlist |
+| `OPENAGENT_TRACE_ROOT` | `.openagent/traces` | Local trace root |
+
+## Non-goals
+
+First version deliberately does not implement:
+
+- full Codex app-server protocol compatibility;
+- marketplace/plugin UI;
+- remote control pairing;
+- complex permission approval UI;
+- WebRTC/realtime voice;
+- a redesigned product UI.
+
+## Next Steps
+
+1. Add `turn/interrupt` and cooperative cancellation.
+2. Make session listing read run summaries and trace links more directly.
+3. Add a thin CLI client that talks to the same bridge.
+4. Connect sandbox binding state to the right-side inspector.
+5. Add Web UI panes for context pack, tool batch, and Langfuse trace.
+
+## TUI Client
+
+The same runtime now supports a terminal UI:
+
+```bash
+openagent-tui --workspace .
+```
+
+See [`doc/tui.md`](tui.md) for the Codex TUI mapping and current capability matrix.
+
+## Non-interactive CLI
+
+The top-level `openagent` command can also run one prompt without opening the TUI:
+
+```bash
+openagent run "summarize this repository"
+```
+
+Useful scripting flags:
+
+```bash
+openagent run --file README.md --format json "review the attached file"
+openagent run --continue "continue the last session"
+openagent run --session session_abc123 "resume this session"
+```

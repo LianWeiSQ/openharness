@@ -28,7 +28,10 @@ scraping = [
 ]
 
 [project.scripts]
+openagent = "openagent.cli.main:main"
 openagent-swarm = "swarm.cli:main"
+openagent-app = "openagent.app_server.server:main"
+openagent-tui = "openagent.tui.app:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -37,4 +40,4 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-openagent = ["core/tool/builtin/*.md"]
+openagent = ["core/tool/builtin/*.md", "app_server/static/*"]
