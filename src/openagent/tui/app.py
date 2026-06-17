@@ -52,10 +52,32 @@ def _handle_key(key: int, state: TuiState) -> bool:
         return True
     if key in {4}:  # Ctrl-D
         return True
+    if key == 27 and state.session_picker_open:  # Esc
+        state.close_session_picker()
+        return False
     if key == 27 and not state.is_running and not state.input_buffer:  # Esc
         return True
+    if state.session_picker_open:
+        if key in {10, 13}:
+            state.select_session_from_picker()
+            return False
+        if key in {curses.KEY_UP, ord("k")}:
+            state.move_session_picker(-1)
+            return False
+        if key in {curses.KEY_DOWN, ord("j")}:
+            state.move_session_picker(1)
+            return False
+        if key == curses.KEY_PPAGE:
+            state.move_session_picker(-5)
+            return False
+        if key == curses.KEY_NPAGE:
+            state.move_session_picker(5)
+            return False
     if key in {14}:  # Ctrl-N
         state.new_session()
+        return False
+    if key in {18}:  # Ctrl-R
+        state.open_session_picker(announce=True)
         return False
     if key in {12}:  # Ctrl-L
         state.clear()
@@ -119,19 +141,37 @@ def _render_header(stdscr, state: TuiState, width: int) -> None:
 
 
 def _render_sessions(stdscr, state: TuiState, y: int, width: int, height: int) -> None:
-    _addstr(stdscr, y, 1, "Sessions", curses.color_pair(1) | curses.A_BOLD)
-    try:
-        sessions = state.runtime.list_sessions()[: max(0, height - 3)]
-    except Exception as error:  # noqa: BLE001
-        sessions = [{"id": "error", "status": str(error), "message_count": 0}]
+    title = "Sessions"
+    if state.session_picker_open:
+        title = "Sessions picker"
+    _addstr(stdscr, y, 1, title, curses.color_pair(1) | curses.A_BOLD)
+    sessions = _sessions_for_render(state, limit=max(0, height - 3))
     for idx, session in enumerate(sessions, start=1):
         sid = str(session.get("id") or "-")
         marker = "*" if sid == state.session_id else " "
+        selected = state.session_picker_open and (idx - 1) == state.session_picker_index
+        if selected:
+            marker = ">"
         line = f"{marker} {short_id(sid, keep=16)}"
-        _addstr(stdscr, y + idx, 1, line[: width - 2], curses.color_pair(3 if marker == "*" else 2))
+        attr = curses.color_pair(1) | curses.A_BOLD if selected else curses.color_pair(3 if marker == "*" else 2)
+        _addstr(stdscr, y + idx, 1, line[: width - 2], attr)
         meta = f"  {session.get('message_count') or 0} msg"
+        if session.get("status"):
+            meta += f"  {session.get('status')}"
         _addstr(stdscr, y + idx + 1, 1, meta[: width - 2], curses.color_pair(2))
+    if state.session_picker_open and height >= 4:
+        hint = "Enter resume | Esc close"
+        _addstr(stdscr, y + height - 1, 1, hint[: width - 2], curses.color_pair(2))
     _vline(stdscr, y, width - 1, height)
+
+
+def _sessions_for_render(state: TuiState, *, limit: int) -> list[dict[str, object]]:
+    if state.session_picker_open:
+        return state.session_picker_sessions[:limit]
+    try:
+        return list(state.runtime.list_sessions())[:limit]
+    except Exception as error:  # noqa: BLE001
+        return [{"id": "error", "status": str(error), "message_count": 0}]
 
 
 def _render_timeline(stdscr, state: TuiState, y: int, x: int, width: int, height: int) -> None:
@@ -192,6 +232,8 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
 
 def _render_footer(stdscr, state: TuiState, y: int, width: int) -> None:
     controls = "Enter send | /help | /sessions | /resume <id> | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll | Ctrl-C/Esc/Ctrl-D quit"
+    if state.session_picker_open:
+        controls = "session picker: Up/Down or j/k move | Enter resume | Esc close | PageUp/PageDown jump"
     if state.is_running:
         controls = "running... " + controls
     _addstr(stdscr, y, 0, controls[: width - 1], curses.color_pair(2))

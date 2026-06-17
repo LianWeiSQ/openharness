@@ -138,11 +138,21 @@ Built-in commands are handled locally by the TUI. `/sessions` lists recent persi
 | --- | --- |
 | `Enter` | send current task |
 | `Ctrl-N` | create new session |
+| `Ctrl-R` | open session picker |
 | `Ctrl-L` | clear visible timeline |
 | `PageUp` / `PageDown` | scroll timeline |
 | `Ctrl-C` | interrupt when running, quit when idle; terminal signal fallback exits cleanly |
 | `Esc` | quit when idle and input is empty |
 | `Ctrl-D` | quit |
+
+When the session picker is open:
+
+| Key | Action |
+| --- | --- |
+| `Up` / `Down` or `k` / `j` | move selection |
+| `PageUp` / `PageDown` | jump selection |
+| `Enter` | resume selected session |
+| `Esc` | close picker |
 
 ## Current Feature Matrix
 
@@ -155,7 +165,7 @@ Built-in commands are handled locally by the TUI. `/sessions` lists recent persi
 | Runtime warnings | Supported | Renders `runtime/warning` |
 | Patch events | Supported | Renders `item/patch/detected` |
 | Trace id/run id display | Supported | Reads trace metadata after turn completion |
-| Session resume | Partial | Runtime can load sessions and TUI supports `/sessions` plus `/resume <id-or-prefix>`; picker navigation is still pending |
+| Session resume | Supported | Runtime can load sessions; TUI supports `/sessions`, `/resume <id-or-prefix>`, and an interactive `Ctrl-R` session picker |
 | Interrupt | Not complete | UI shows intent, but `AgentLoop` has no cooperative cancellation token yet |
 | Slash commands | Partial | Built-ins cover help/session/status/new/clear/custom command listing; custom command routing works; interactive picker UI is not complete |
 | Mention/file search popup | Not complete | Needs indexed file search and popup UI |

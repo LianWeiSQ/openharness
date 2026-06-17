@@ -259,7 +259,7 @@ openagent run --command review "the current branch"
 /review the current branch
 ```
 
-`/sessions` 和 `/resume` 让终端界面可以直接切回历史 session；`/commands` 会同时列出内置命令和项目里的自定义命令。
+`/sessions` 和 `/resume` 让终端界面可以直接切回历史 session；也可以按 `Ctrl-R` 打开交互式 session picker，用 `↑/↓` 或 `j/k` 选择后按 `Enter` 恢复。`/commands` 会同时列出内置命令和项目里的自定义命令。
 
 可选：初始化本机私有配置，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
 

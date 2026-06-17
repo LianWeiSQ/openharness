@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from openagent.app_server.protocol import AppEvent
 from openagent.app_server.runtime import OpenAgentAppRuntime
+from openagent.tui.app import _handle_key
 from openagent.tui.formatting import format_event, short_id, trace_label, wrap_lines
 from openagent.tui.state import TuiState
 
@@ -141,7 +142,7 @@ class TuiFormattingTests(unittest.TestCase):
             self.assertFalse(state.submit())
 
         timeline_text = "\n".join(line.text for line in state.timeline)
-        self.assertIn("/sessions - list recent sessions", timeline_text)
+        self.assertIn("/sessions - open recent session picker", timeline_text)
         self.assertIn("/review - Review changes", timeline_text)
         self.assertEqual(state.status, "commands listed")
         self.assertEqual(state.input_buffer, "")
@@ -169,8 +170,9 @@ class TuiFormattingTests(unittest.TestCase):
         state.input_buffer = "/sessions"
 
         self.assertFalse(state.submit())
-        self.assertEqual(state.status, "sessions listed")
-        self.assertIn("session_alpha123", "\n".join(line.text for line in state.timeline))
+        self.assertTrue(state.session_picker_open)
+        self.assertEqual(state.status, "session picker")
+        self.assertEqual(state.selected_session(), runtime.sessions[0])
 
         state.input_buffer = "/resume session_alpha"
         self.assertFalse(state.submit())
@@ -181,6 +183,41 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("> old task", timeline_text)
         self.assertIn("old answer", timeline_text)
         self.assertIn("resumed session: session_alpha123", timeline_text)
+
+    def test_tui_session_picker_keyboard_resumes_selected_session(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SessionRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        self.assertFalse(_handle_key(18, state))  # Ctrl-R
+        self.assertTrue(state.session_picker_open)
+        self.assertEqual(state.selected_session(), runtime.sessions[0])
+
+        self.assertFalse(_handle_key(ord("j"), state))
+        self.assertEqual(state.selected_session(), runtime.sessions[1])
+
+        self.assertFalse(_handle_key(ord("k"), state))
+        self.assertEqual(state.selected_session(), runtime.sessions[0])
+
+        self.assertFalse(_handle_key(ord("j"), state))
+        self.assertFalse(_handle_key(10, state))  # Enter
+
+        self.assertFalse(state.session_picker_open)
+        self.assertEqual(state.session_id, "session_beta456")
+        self.assertEqual(runtime.resumed, ["session_beta456"])
+        self.assertIn("resumed session: session_beta456", "\n".join(line.text for line in state.timeline))
+
+    def test_tui_session_picker_escape_closes_without_resuming(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SessionRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        self.assertTrue(state.open_session_picker())
+        self.assertFalse(_handle_key(27, state))  # Esc
+
+        self.assertFalse(state.session_picker_open)
+        self.assertEqual(state.status, "session picker closed")
+        self.assertEqual(runtime.resumed, [])
 
     def test_tui_resume_reports_ambiguous_prefix(self) -> None:
         workspace = self._make_temp_dir()

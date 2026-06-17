@@ -10,7 +10,7 @@ from .formatting import TimelineLine, format_event
 
 BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "show TUI commands"),
-    ("/sessions", "list recent sessions"),
+    ("/sessions", "open recent session picker"),
     ("/resume <id>", "resume a session by id or unique prefix"),
     ("/new", "start a new session"),
     ("/clear", "clear the visible timeline"),
@@ -29,6 +29,9 @@ class TuiState:
     input_buffer: str = ""
     status: str = "idle"
     scroll: int = 0
+    session_picker_open: bool = False
+    session_picker_index: int = 0
+    session_picker_sessions: list[dict[str, object]] = field(default_factory=list)
 
     def ensure_session(self) -> str:
         if self.session_id:
@@ -90,7 +93,7 @@ class TuiState:
             self._show_commands()
             return True
         if name in {"sessions", "session"}:
-            self._show_sessions()
+            self.open_session_picker(announce=True)
             return True
         if name in {"resume", "continue"}:
             self._resume_from_command(arguments)
@@ -133,6 +136,77 @@ class TuiState:
         self.timeline.append(TimelineLine("status", "sessions:\n" + "\n".join(lines), important=True))
         self.status = "sessions listed"
 
+    def open_session_picker(self, *, announce: bool = False) -> bool:
+        try:
+            sessions = list(self.runtime.list_sessions())
+        except Exception as error:  # noqa: BLE001 - keep picker failures visible.
+            self.timeline.append(TimelineLine("error", f"failed to open session picker: {error}", important=True))
+            self.status = "session picker failed"
+            return False
+        self.session_picker_sessions = sessions[:50]
+        if not self.session_picker_sessions:
+            self.session_picker_open = False
+            self.session_picker_index = 0
+            self.timeline.append(TimelineLine("status", "no sessions found", important=True))
+            self.status = "no sessions"
+            return False
+        self.session_picker_index = self._current_session_picker_index()
+        self.session_picker_open = True
+        self.status = "session picker"
+        if announce:
+            self.timeline.append(
+                TimelineLine(
+                    "status",
+                    "session picker opened. Use Up/Down or j/k, Enter to resume, Esc to close.",
+                    important=True,
+                )
+            )
+        return True
+
+    def close_session_picker(self) -> None:
+        self.session_picker_open = False
+        self.status = "session picker closed"
+
+    def move_session_picker(self, delta: int) -> None:
+        if not self.session_picker_open:
+            return
+        if not self.session_picker_sessions:
+            self.open_session_picker()
+            return
+        count = len(self.session_picker_sessions)
+        self.session_picker_index = max(0, min(count - 1, self.session_picker_index + delta))
+        selected = self.selected_session()
+        if selected is not None:
+            self.status = f"selected {selected.get('id') or '-'}"
+
+    def selected_session(self) -> dict[str, object] | None:
+        if not self.session_picker_sessions:
+            return None
+        index = max(0, min(len(self.session_picker_sessions) - 1, self.session_picker_index))
+        return self.session_picker_sessions[index]
+
+    def select_session_from_picker(self) -> bool:
+        if not self.session_picker_open:
+            return False
+        selected = self.selected_session()
+        if selected is None:
+            self.status = "no session selected"
+            return False
+        session_id = str(selected.get("id") or "")
+        if not session_id:
+            self.status = "invalid session"
+            return False
+        self._resume_session_id(session_id)
+        self.session_picker_open = False
+        return True
+
+    def _current_session_picker_index(self) -> int:
+        if self.session_id:
+            for index, session in enumerate(self.session_picker_sessions):
+                if str(session.get("id") or "") == self.session_id:
+                    return index
+        return 0
+
     def _resume_from_command(self, arguments: list[str]) -> None:
         if not arguments:
             self.timeline.append(TimelineLine("warning", "usage: /resume <session-id-or-prefix>", important=True))
@@ -154,13 +228,16 @@ class TuiState:
             )
             self.status = "session ambiguous"
             return
+        self._resume_session_id(match)
+
+    def _resume_session_id(self, session_id: str) -> None:
         try:
-            session = self.runtime.resume_session(match)
+            session = self.runtime.resume_session(session_id)
         except Exception as error:  # noqa: BLE001
-            self.timeline.append(TimelineLine("error", f"failed to resume session {match}: {error}", important=True))
+            self.timeline.append(TimelineLine("error", f"failed to resume session {session_id}: {error}", important=True))
             self.status = "resume failed"
             return
-        self.session_id = str(session.get("id") or match)
+        self.session_id = str(session.get("id") or session_id)
         self.active_turn = None
         self.next_event_index = 0
         self.input_buffer = ""
