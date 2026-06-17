@@ -158,3 +158,40 @@ openagent stats
 ```
 
 These commands read the same file-backed session store used by the App Bridge runtime. By default the store is resolved from `OPENAGENT_SESSION_ROOT` or `.openagent/sessions` under the selected workspace.
+
+## Custom Commands
+
+Custom command files mirror the OpenCode command-file workflow. Place markdown files in:
+
+- project scope: `.openagent/commands/*.md`
+- global scope: `~/.config/openagent/commands/*.md`
+
+Example:
+
+```markdown
+---
+description: Review recent changes
+model: gpt-5.5
+---
+
+Recent commits:
+!`git log --oneline -5`
+
+Review $ARGUMENTS and inspect @README.md.
+```
+
+Use the command from the CLI:
+
+```bash
+openagent command list
+openagent command show review
+openagent command render review "the current branch"
+openagent run --command review "the current branch"
+```
+
+Supported template features:
+
+- `$ARGUMENTS` for the full argument string.
+- `$1`, `$2`, ... for positional arguments.
+- `!` shell blocks to inject command output from the workspace.
+- `@path` file references to inline file content.

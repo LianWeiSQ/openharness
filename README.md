@@ -216,6 +216,26 @@ openagent models --format json
 openagent stats --format json
 ```
 
+定义可复用命令，适合把高频 prompt 固化成项目资产：
+
+```bash
+mkdir -p .openagent/commands
+cat > .openagent/commands/review.md <<'EOF'
+---
+description: Review recent changes
+---
+
+Recent commits:
+!`git log --oneline -5`
+
+Review $ARGUMENTS and mention risky changes.
+EOF
+
+openagent command list
+openagent command render review "the current branch"
+openagent run --command review "the current branch"
+```
+
 可选：把本机私有配置放进 `.openagent/openagent.env`，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
 
 ```bash

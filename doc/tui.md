@@ -94,6 +94,25 @@ openagent stats
 openagent models
 ```
 
+Custom command files can be rendered or run from the CLI today:
+
+```bash
+mkdir -p .openagent/commands
+cat > .openagent/commands/review.md <<'EOF'
+---
+description: Review recent changes
+---
+
+Recent commits:
+!`git log --oneline -5`
+
+Review $ARGUMENTS.
+EOF
+
+openagent command render review "the current branch"
+openagent run --command review "the current branch"
+```
+
 ## Controls
 
 | Key | Action |
@@ -119,7 +138,7 @@ openagent models
 | Trace id/run id display | Supported | Reads trace metadata after turn completion |
 | Session resume | Partial | Runtime can load sessions, but TUI does not yet provide picker navigation |
 | Interrupt | Not complete | UI shows intent, but `AgentLoop` has no cooperative cancellation token yet |
-| Slash commands | Not complete | Needs command router equivalent to Codex bottom pane |
+| Slash commands | Partial | CLI custom command files are supported; TUI slash picker/router is not complete |
 | Mention/file search popup | Not complete | Needs indexed file search and popup UI |
 | Approval overlay | Not complete | Needs App Bridge approval request/response protocol |
 | MCP elicitation forms | Not complete | Needs typed question/elicitation UI |

@@ -18,6 +18,7 @@ from openagent.cli.main import (
     candidate_model_urls,
     load_local_env,
     run_models_command,
+    run_custom_command,
     run_non_interactive,
     run_session_command,
     run_stats_command,
@@ -219,6 +220,82 @@ class OpenAgentCliTests(unittest.TestCase):
             self.assertTrue(outside.exists())
             self.assertIn("Invalid session id", stderr.getvalue())
 
+    def test_custom_command_list_show_and_render(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            workspace = Path(raw_tmp)
+            write_command(
+                workspace,
+                "review",
+                """---
+description: Review a target
+model: gpt-command
+---
+Review $1 with $ARGUMENTS.
+
+Recent:
+!`printf shell-ok`
+
+Read @note.txt
+""",
+            )
+            (workspace / "note.txt").write_text("file context", encoding="utf-8")
+
+            list_stdout = io.StringIO()
+            list_args = parser.parse_args(["command", "list", "--workspace", str(workspace), "--format", "json"])
+            self.assertEqual(run_custom_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            listed = json.loads(list_stdout.getvalue())
+            self.assertEqual(listed["commands"][0]["name"], "review")
+            self.assertEqual(listed["commands"][0]["model"], "gpt-command")
+
+            show_stdout = io.StringIO()
+            show_args = parser.parse_args(["command", "show", "--workspace", str(workspace), "review", "--format", "json"])
+            self.assertEqual(run_custom_command(show_args, stdout=show_stdout, stderr=io.StringIO()), 0)
+            shown = json.loads(show_stdout.getvalue())
+            self.assertIn("Review $1", shown["template"])
+
+            render_stdout = io.StringIO()
+            render_args = parser.parse_args(["command", "render", "--workspace", str(workspace), "review", "README.md"])
+            self.assertEqual(run_custom_command(render_args, stdout=render_stdout, stderr=io.StringIO()), 0)
+            rendered = render_stdout.getvalue()
+            self.assertIn("Review README.md with README.md.", rendered)
+            self.assertIn("shell-ok", rendered)
+            self.assertIn("file context", rendered)
+
+    def test_run_command_can_use_custom_command_template(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            workspace = Path(raw_tmp)
+            write_command(
+                workspace,
+                "component",
+                """---
+description: Create component
+model: gpt-command
+---
+Create component $1 for $ARGUMENTS.
+""",
+            )
+            args = parser.parse_args(["run", "--skip-doctor", "--workspace", str(workspace), "--command", "component", "Button"])
+
+            with patch.dict(os.environ, {}, clear=True):
+                exit_code = run_non_interactive(args, runtime_factory=FakeRuntime, stdout=io.StringIO(), stderr=io.StringIO())
+                self.assertEqual(os.environ["OPENAI_MODEL"], "gpt-command")
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(FakeRuntime.last_prompt, "Create component Button for Button.")
+
+    def test_run_command_missing_custom_command_is_clean_error(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            stderr = io.StringIO()
+            args = parser.parse_args(["run", "--skip-doctor", "--workspace", raw_tmp, "--command", "missing", "arg"])
+
+            exit_code = run_non_interactive(args, runtime_factory=FakeRuntime, stdout=io.StringIO(), stderr=stderr)
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Command not found", stderr.getvalue())
+
 
 class FakeTurn:
     def __init__(self) -> None:
@@ -333,6 +410,14 @@ def create_persisted_session(root: Path) -> Session:
     )
     store.finish_run(session, run_id=run_id, status="completed", steps=1, finish_reason="stop")
     return session
+
+
+def write_command(workspace: Path, name: str, content: str) -> Path:
+    directory = workspace / ".openagent" / "commands"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 if __name__ == "__main__":

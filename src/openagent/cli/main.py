@@ -10,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from openagent.cli.custom_commands import discover_commands, render_command, resolve_command
+
 DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_MODEL = "gpt-5.5"
 DEFAULT_WIRE_API = "responses"
@@ -51,6 +53,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(run_models_command(args))
     if command == "stats":
         raise SystemExit(run_stats_command(args))
+    if command == "command":
+        raise SystemExit(run_custom_command(args))
     if command == "tui":
         apply_model_env(args)
         if not args.skip_doctor and not doctor(verbose=True):
@@ -107,6 +111,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--continue", "-c", dest="continue_last", action="store_true", help="continue the most recent session")
     run.add_argument("--session", "-s", default=None, help="session id to continue")
     run.add_argument("--file", "-f", action="append", default=[], help="file to attach to the prompt; can be used more than once")
+    run.add_argument("--command", dest="custom_command", default=None, help="custom command name from .openagent/commands or ~/.config/openagent/commands")
+    run.add_argument("--command-dir", action="append", default=[], help="extra custom command directory; can be used more than once")
+    run.add_argument("--no-command-shell", action="store_true", help="render custom command without executing !`shell` blocks")
     run.add_argument("--format", choices=["text", "json"], default="text", help="output format")
     run.add_argument("--verbose", action="store_true", help="show non-answer runtime events in text mode")
     run.add_argument("--skip-doctor", action="store_true", help="run without checking the local model gateway first")
@@ -138,6 +145,25 @@ def build_parser() -> argparse.ArgumentParser:
     stats.add_argument("--days", type=int, default=None, help="only include sessions updated in the last N days")
     stats.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
+    command_parser = subparsers.add_parser("command", help="manage custom prompt commands")
+    command_subparsers = command_parser.add_subparsers(dest="custom_command_action", required=True)
+
+    command_list = command_subparsers.add_parser("list", aliases=["ls"], help="list custom commands")
+    add_command_options(command_list)
+    command_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    command_show = command_subparsers.add_parser("show", help="show one custom command")
+    add_command_options(command_show)
+    command_show.add_argument("name", help="command name")
+    command_show.add_argument("--format", choices=["text", "json"], default="text", help="output format")
+
+    command_render = command_subparsers.add_parser("render", help="render a custom command without running the agent")
+    add_command_options(command_render)
+    command_render.add_argument("name", help="command name")
+    command_render.add_argument("arguments", nargs="*", help="command arguments")
+    command_render.add_argument("--no-shell", action="store_true", help="do not execute !`shell` blocks")
+    command_render.add_argument("--format", choices=["text", "json"], default="text", help="output format")
+
     doctor_parser = subparsers.add_parser("doctor", help="check local model gateway configuration")
     add_common_model_options(doctor_parser)
     return parser
@@ -161,6 +187,11 @@ def add_tui_options(parser: argparse.ArgumentParser) -> None:
 def add_session_store_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path used to resolve the default session root")
     parser.add_argument("--session-root", default=None, help="session store root, default OPENAGENT_SESSION_ROOT or .openagent/sessions")
+
+
+def add_command_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path, default current directory")
+    parser.add_argument("--command-dir", action="append", default=[], help="extra custom command directory; can be used more than once")
 
 
 def apply_model_env(args: argparse.Namespace, *, defaults: OpenAgentCliDefaults = OpenAgentCliDefaults()) -> None:
@@ -208,7 +239,22 @@ def run_non_interactive(
     err = stderr or sys.stderr
     source = stdin or sys.stdin
     workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser()
-    prompt = build_run_prompt(command_text_from_args(args, stdin=source), files=getattr(args, "file", []), workspace=workspace)
+    prompt_text = command_text_from_args(args, stdin=source)
+    if getattr(args, "custom_command", None):
+        try:
+            command = resolve_command(str(args.custom_command), workspace=workspace, extra_dirs=getattr(args, "command_dir", []))
+        except FileNotFoundError as error:
+            print(str(error), file=err)
+            return 1
+        if command.model and not getattr(args, "model", None):
+            os.environ["OPENAI_MODEL"] = command.model
+        prompt_text = render_command(
+            command,
+            list(getattr(args, "message", []) or []),
+            workspace=workspace,
+            allow_shell=not bool(getattr(args, "no_command_shell", False)),
+        )
+    prompt = build_run_prompt(prompt_text, files=getattr(args, "file", []), workspace=workspace)
     if not prompt:
         print("openagent run requires a prompt argument or stdin input.", file=err)
         return 2
@@ -386,6 +432,47 @@ def run_stats_command(args: argparse.Namespace, *, stdout: object | None = None)
     return 0
 
 
+def run_custom_command(args: argparse.Namespace, *, stdout: object | None = None, stderr: object | None = None) -> int:
+    out = stdout or sys.stdout
+    err = stderr or sys.stderr
+    workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
+    action = str(getattr(args, "custom_command_action", ""))
+    extra_dirs = list(getattr(args, "command_dir", []) or [])
+    if action in {"list", "ls"}:
+        commands = [command.to_dict() for command in discover_commands(workspace=workspace, extra_dirs=extra_dirs)]
+        if getattr(args, "format", "table") == "json":
+            print(json.dumps({"commands": commands}, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_command_table(commands, stdout=out)
+        return 0
+    if action == "show":
+        try:
+            command = resolve_command(str(args.name), workspace=workspace, extra_dirs=extra_dirs)
+        except FileNotFoundError as error:
+            print(str(error), file=err)
+            return 1
+        payload = command.to_dict(include_template=True)
+        if getattr(args, "format", "text") == "json":
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_command_detail(payload, stdout=out)
+        return 0
+    if action == "render":
+        try:
+            command = resolve_command(str(args.name), workspace=workspace, extra_dirs=extra_dirs)
+        except FileNotFoundError as error:
+            print(str(error), file=err)
+            return 1
+        rendered = render_command(command, list(getattr(args, "arguments", []) or []), workspace=workspace, allow_shell=not bool(getattr(args, "no_shell", False)))
+        if getattr(args, "format", "text") == "json":
+            print(json.dumps({"command": command.to_dict(), "prompt": rendered}, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print(rendered, file=out)
+        return 0
+    print(f"Unknown command action: {action}", file=err)
+    return 2
+
+
 def resolve_session_store_root(args: argparse.Namespace) -> Path:
     workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
     root = Path(str(getattr(args, "session_root", None) or os.getenv("OPENAGENT_SESSION_ROOT") or ".openagent/sessions")).expanduser()
@@ -546,6 +633,37 @@ def print_stats_table(payload: dict[str, object], *, stdout: object) -> None:
         ["cost", f"{float(payload.get('total_cost') or 0.0):.6f}"],
     ]
     print_table(rows, stdout=stdout)
+
+
+def print_command_table(rows: list[dict[str, object]], *, stdout: object) -> None:
+    if not rows:
+        print("No custom commands found.", file=stdout)
+        return
+    table = [["name", "scope", "description", "model"]]
+    for row in rows:
+        table.append(
+            [
+                str(row.get("name") or ""),
+                str(row.get("scope") or ""),
+                str(row.get("description") or ""),
+                str(row.get("model") or ""),
+            ]
+        )
+    print_table(table, stdout=stdout)
+
+
+def print_command_detail(payload: dict[str, object], *, stdout: object) -> None:
+    print(f"name: {payload.get('name') or ''}", file=stdout)
+    print(f"scope: {payload.get('scope') or ''}", file=stdout)
+    print(f"path: {payload.get('path') or ''}", file=stdout)
+    if payload.get("description"):
+        print(f"description: {payload.get('description')}", file=stdout)
+    if payload.get("agent"):
+        print(f"agent: {payload.get('agent')}", file=stdout)
+    if payload.get("model"):
+        print(f"model: {payload.get('model')}", file=stdout)
+    print("", file=stdout)
+    print(str(payload.get("template") or ""), file=stdout)
 
 
 def print_table(rows: list[list[str]], *, stdout: object) -> None:
