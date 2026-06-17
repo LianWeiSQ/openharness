@@ -148,7 +148,9 @@ def inject_shell_outputs(template: str, *, workspace: Path) -> str:
 def inject_file_references(template: str, *, workspace: Path) -> str:
     def replace_file(match: re.Match[str]) -> str:
         raw_path = match.group(1)
-        path = Path(raw_path).expanduser()
+        lookup_path = raw_path.rstrip(".,;:)")
+        suffix = raw_path[len(lookup_path) :]
+        path = Path(lookup_path).expanduser()
         if not path.is_absolute():
             path = workspace / path
         if not path.exists() or not path.is_file():
@@ -156,6 +158,6 @@ def inject_file_references(template: str, *, workspace: Path) -> str:
         content = path.read_text(encoding="utf-8", errors="replace")
         if len(content) > FILE_REFERENCE_LIMIT_CHARS:
             content = content[:FILE_REFERENCE_LIMIT_CHARS].rstrip() + "\n[truncated]"
-        return f"Attached file: {path}\n\n```text\n{content}\n```"
+        return f"Attached file: {path}\n\n```text\n{content}\n```{suffix}"
 
     return re.sub(r"(?<!\S)@([A-Za-z0-9_./~+-][A-Za-z0-9_./~+-]*)", replace_file, template)

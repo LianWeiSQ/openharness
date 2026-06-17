@@ -121,6 +121,15 @@ openagent command render review "the current branch"
 openagent run --command review "the current branch"
 ```
 
+Inside the TUI, type:
+
+```text
+/commands
+/review the current branch
+```
+
+`/commands` lists project/global command files. `/name args...` renders the command template and submits the rendered prompt to the active session.
+
 ## Controls
 
 | Key | Action |
@@ -146,7 +155,7 @@ openagent run --command review "the current branch"
 | Trace id/run id display | Supported | Reads trace metadata after turn completion |
 | Session resume | Partial | Runtime can load sessions, but TUI does not yet provide picker navigation |
 | Interrupt | Not complete | UI shows intent, but `AgentLoop` has no cooperative cancellation token yet |
-| Slash commands | Partial | CLI custom command files are supported; TUI slash picker/router is not complete |
+| Slash commands | Partial | Custom command routing and `/commands` listing are supported; interactive picker UI is not complete |
 | Mention/file search popup | Not complete | Needs indexed file search and popup UI |
 | Approval overlay | Not complete | Needs App Bridge approval request/response protocol |
 | MCP elicitation forms | Not complete | Needs typed question/elicitation UI |

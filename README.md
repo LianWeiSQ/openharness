@@ -249,6 +249,13 @@ openagent command render review "the current branch"
 openagent run --command review "the current branch"
 ```
 
+在 TUI 里也可以直接输入 slash command：
+
+```text
+/commands
+/review the current branch
+```
+
 可选：把本机私有配置放进 `.openagent/openagent.env`，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
 
 ```bash

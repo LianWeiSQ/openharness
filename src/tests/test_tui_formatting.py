@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import shutil
 import unittest
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
+from unittest.mock import patch
 
 from openagent.app_server.protocol import AppEvent
 from openagent.app_server.runtime import OpenAgentAppRuntime
@@ -14,8 +16,9 @@ from _mock_model import ScriptedLanguageModel
 
 
 class DummyRuntime:
-    def __init__(self) -> None:
+    def __init__(self, *, workspace: Path | None = None) -> None:
         self.session_count = 0
+        self.workspace = workspace or Path.cwd()
 
     def start_session(self):
         self.session_count += 1
@@ -23,6 +26,24 @@ class DummyRuntime:
 
     def start_turn(self, *, session_id: str, user_text: str):
         raise AssertionError("not used")
+
+
+@dataclass(slots=True)
+class CapturingTurn:
+    status: str = "completed"
+    events: list[AppEvent] = field(default_factory=list)
+
+
+class CapturingRuntime(DummyRuntime):
+    def __init__(self, *, workspace: Path) -> None:
+        super().__init__(workspace=workspace)
+        self.last_session_id: str | None = None
+        self.last_user_text: str | None = None
+
+    def start_turn(self, *, session_id: str, user_text: str):
+        self.last_session_id = session_id
+        self.last_user_text = user_text
+        return CapturingTurn()
 
 
 class TuiFormattingTests(unittest.TestCase):
@@ -84,6 +105,55 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertEqual(session_id, "session_1")
         self.assertEqual(state.ensure_session(), "session_1")
 
+    def test_tui_slash_commands_lists_custom_commands(self) -> None:
+        workspace = self._make_temp_dir()
+        write_tui_command(workspace, "review", "---\ndescription: Review changes\n---\nReview $ARGUMENTS.")
+        state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
+        state.input_buffer = "/commands"
+
+        with patch.dict("os.environ", {"HOME": str(workspace / "home")}):
+            self.assertFalse(state.submit())
+
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("/review - Review changes", timeline_text)
+        self.assertEqual(state.status, "commands listed")
+        self.assertEqual(state.input_buffer, "")
+
+    def test_tui_slash_command_renders_and_submits(self) -> None:
+        workspace = self._make_temp_dir()
+        (workspace / "note.txt").write_text("file context", encoding="utf-8")
+        write_tui_command(
+            workspace,
+            "review",
+            "---\ndescription: Review target\n---\nReview $1 / $ARGUMENTS and @note.txt.",
+        )
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "/review README"
+
+        with patch.dict("os.environ", {"HOME": str(workspace / "home")}):
+            self.assertTrue(state.submit())
+
+        self.assertEqual(runtime.last_session_id, "session_1")
+        self.assertIn("Review README / README", runtime.last_user_text or "")
+        self.assertIn("file context", runtime.last_user_text or "")
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("slash command: /review", timeline_text)
+        self.assertIn("> /review README", timeline_text)
+
+    def test_tui_missing_slash_command_does_not_start_turn(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "/missing arg"
+
+        with patch.dict("os.environ", {"HOME": str(workspace / "home")}):
+            self.assertFalse(state.submit())
+
+        self.assertIsNone(runtime.last_user_text)
+        self.assertEqual(state.status, "command not found")
+        self.assertIn("slash command not found", "\n".join(line.text for line in state.timeline))
+
     def test_tui_submit_runs_openagent_loop_and_tool_event(self) -> None:
         workspace = self._make_temp_dir()
         (workspace / "sample.txt").write_text("hello", encoding="utf-8")
@@ -129,6 +199,14 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("> list files", timeline_text)
         self.assertIn("tool call: ls", timeline_text)
         self.assertIn("I listed the workspace.", timeline_text)
+
+
+def write_tui_command(workspace: Path, name: str, content: str) -> Path:
+    directory = workspace / ".openagent" / "commands"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{name}.md"
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
 if __name__ == "__main__":
