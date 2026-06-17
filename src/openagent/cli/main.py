@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import urllib.error
 import urllib.request
@@ -43,6 +44,13 @@ def main(argv: list[str] | None = None) -> None:
             print("\nGateway check failed. Start your local OpenAI-compatible service, or rerun with --skip-doctor.", file=sys.stderr)
             raise SystemExit(2)
         raise SystemExit(run_non_interactive(args))
+    if command == "session":
+        raise SystemExit(run_session_command(args))
+    if command == "models":
+        apply_model_env(args)
+        raise SystemExit(run_models_command(args))
+    if command == "stats":
+        raise SystemExit(run_stats_command(args))
     if command == "tui":
         apply_model_env(args)
         if not args.skip_doctor and not doctor(verbose=True):
@@ -103,6 +111,33 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--verbose", action="store_true", help="show non-answer runtime events in text mode")
     run.add_argument("--skip-doctor", action="store_true", help="run without checking the local model gateway first")
 
+    session = subparsers.add_parser("session", help="manage stored sessions")
+    session_subparsers = session.add_subparsers(dest="session_command", required=True)
+
+    session_list = session_subparsers.add_parser("list", aliases=["ls"], help="list stored sessions")
+    add_session_store_options(session_list)
+    session_list.add_argument("--max-count", "-n", type=int, default=20, help="maximum sessions to show")
+    session_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    session_export = session_subparsers.add_parser("export", help="export one stored session as JSON")
+    add_session_store_options(session_export)
+    session_export.add_argument("session_id", help="session id to export")
+    session_export.add_argument("--sanitize", action="store_true", help="redact message content and local paths")
+
+    session_delete = session_subparsers.add_parser("delete", aliases=["rm"], help="delete one stored session")
+    add_session_store_options(session_delete)
+    session_delete.add_argument("session_id", help="session id to delete")
+
+    models = subparsers.add_parser("models", help="list configured model metadata")
+    add_common_model_options(models)
+    models.add_argument("provider", nargs="?", default=None, help="optional provider id filter")
+    models.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    stats = subparsers.add_parser("stats", help="show local session usage statistics")
+    add_session_store_options(stats)
+    stats.add_argument("--days", type=int, default=None, help="only include sessions updated in the last N days")
+    stats.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
     doctor_parser = subparsers.add_parser("doctor", help="check local model gateway configuration")
     add_common_model_options(doctor_parser)
     return parser
@@ -121,6 +156,11 @@ def add_tui_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", default=None, help="workspace path, default current directory")
     parser.add_argument("--session-root", default=None, help="session store root")
     parser.add_argument("--skip-doctor", action="store_true", help="start TUI without checking the local model gateway first")
+
+
+def add_session_store_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path used to resolve the default session root")
+    parser.add_argument("--session-root", default=None, help="session store root, default OPENAGENT_SESSION_ROOT or .openagent/sessions")
 
 
 def apply_model_env(args: argparse.Namespace, *, defaults: OpenAgentCliDefaults = OpenAgentCliDefaults()) -> None:
@@ -262,6 +302,315 @@ def emit_text_event(event: object, *, verbose: bool, stdout: object, stderr: obj
     if verbose:
         print(f"[{method}]", file=stderr)
     return False
+
+
+def run_session_command(args: argparse.Namespace, *, stdout: object | None = None, stderr: object | None = None) -> int:
+    out = stdout or sys.stdout
+    err = stderr or sys.stderr
+    root = resolve_session_store_root(args)
+    sessions = load_session_records(root)
+    command = str(getattr(args, "session_command", ""))
+    if command in {"list", "ls"}:
+        rows = sessions[: max(0, int(getattr(args, "max_count", 20) or 20))]
+        if getattr(args, "format", "table") == "json":
+            print(json.dumps({"session_root": str(root), "sessions": rows}, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_session_table(rows, stdout=out)
+        return 0
+    if command == "export":
+        session_id = str(getattr(args, "session_id", ""))
+        try:
+            payload = export_session_record(root, session_id)
+        except ValueError as error:
+            print(str(error), file=err)
+            return 2
+        except FileNotFoundError:
+            print(f"Session not found: {session_id}", file=err)
+            return 1
+        if getattr(args, "sanitize", False):
+            payload = sanitize_export_payload(payload)
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), file=out)
+        return 0
+    if command in {"delete", "rm"}:
+        session_id = str(getattr(args, "session_id", ""))
+        try:
+            session_dir = session_dir_for_id(root, session_id)
+        except ValueError as error:
+            print(str(error), file=err)
+            return 2
+        if not session_dir.exists():
+            print(f"Session not found: {session_id}", file=err)
+            return 1
+        shutil.rmtree(session_dir)
+        print(json.dumps({"deleted": True, "session_id": session_id, "session_root": str(root)}, ensure_ascii=False, sort_keys=True), file=out)
+        return 0
+    print(f"Unknown session command: {command}", file=err)
+    return 2
+
+
+def run_models_command(
+    args: argparse.Namespace,
+    *,
+    runtime_factory: object | None = None,
+    stdout: object | None = None,
+    stderr: object | None = None,
+) -> int:
+    from openagent.app_server.runtime import OpenAgentAppRuntime
+
+    out = stdout or sys.stdout
+    err = stderr or sys.stderr
+    factory = runtime_factory or OpenAgentAppRuntime
+    runtime = factory(workspace=getattr(args, "workspace", None), session_store_root=getattr(args, "session_root", None))
+    try:
+        models = runtime.list_models()  # type: ignore[attr-defined]
+    except Exception as error:  # noqa: BLE001 - CLI should report provider failures compactly.
+        print(f"Could not list models: {error}", file=err)
+        return 1
+    provider = getattr(args, "provider", None)
+    rows = [model for model in models if not provider or str(model.get("provider_id") or "") == str(provider)]
+    if getattr(args, "format", "table") == "json":
+        print(json.dumps({"models": rows}, ensure_ascii=False, sort_keys=True), file=out)
+    else:
+        print_model_table(rows, stdout=out)
+    return 0
+
+
+def run_stats_command(args: argparse.Namespace, *, stdout: object | None = None) -> int:
+    out = stdout or sys.stdout
+    root = resolve_session_store_root(args)
+    payload = collect_session_stats(root, days=getattr(args, "days", None))
+    if getattr(args, "format", "table") == "json":
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=out)
+    else:
+        print_stats_table(payload, stdout=out)
+    return 0
+
+
+def resolve_session_store_root(args: argparse.Namespace) -> Path:
+    workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
+    root = Path(str(getattr(args, "session_root", None) or os.getenv("OPENAGENT_SESSION_ROOT") or ".openagent/sessions")).expanduser()
+    if not root.is_absolute():
+        root = workspace / root
+    return root
+
+
+def load_session_records(root: Path) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not root.exists():
+        return rows
+    for state_path in root.glob("*/state.latest.json"):
+        session_id = state_path.parent.name
+        state = read_json_file(state_path) or {}
+        session_record = read_json_file(state_path.parent / "session.json") or {}
+        runs = load_run_records(state_path.parent)
+        updated_at = int(state.get("updated_at_ms") or session_record.get("updated_at_ms") or 0)
+        rows.append(
+            {
+                "session_id": str(state.get("session_id") or session_id),
+                "workspace": str(state.get("workspace") or session_record.get("workspace") or ""),
+                "status": str(state.get("status") or session_record.get("status") or ""),
+                "message_count": len([item for item in state.get("messages") or [] if isinstance(item, dict)]),
+                "run_count": len(runs),
+                "active_run_id": str(session_record.get("active_run_id") or state.get("run_id") or ""),
+                "updated_at_ms": updated_at,
+                "session_dir": str(state_path.parent),
+            }
+        )
+    return sorted(rows, key=lambda item: int(item.get("updated_at_ms") or 0), reverse=True)
+
+
+def load_run_records(session_dir: Path) -> list[dict[str, object]]:
+    runs: list[dict[str, object]] = []
+    for run_json in sorted((session_dir / "runs").glob("*/run.json")):
+        run = read_json_file(run_json) or {}
+        summary = read_json_file(run_json.parent / "summary.json") or {}
+        runs.append(
+            {
+                "run_id": str(run.get("run_id") or run_json.parent.name),
+                "status": str(summary.get("status") or run.get("status") or ""),
+                "model_id": run.get("model_id"),
+                "provider_id": run.get("provider_id"),
+                "started_at_ms": run.get("started_at_ms"),
+                "ended_at_ms": run.get("ended_at_ms"),
+                "duration_ms": run.get("duration_ms"),
+                "message_count": summary.get("message_count", 0),
+                "step_count": summary.get("step_count", 0),
+                "tool_call_count": summary.get("tool_call_count", 0),
+                "runtime_warning_count": summary.get("runtime_warning_count", 0),
+                "patch_count": summary.get("patch_count", 0),
+                "total_input_tokens": summary.get("total_input_tokens", 0),
+                "total_output_tokens": summary.get("total_output_tokens", 0),
+                "total_cost": summary.get("total_cost", 0.0),
+            }
+        )
+    return runs
+
+
+def export_session_record(root: Path, session_id: str) -> dict[str, object]:
+    session_dir = session_dir_for_id(root, session_id)
+    state = read_json_file(session_dir / "state.latest.json")
+    if state is None:
+        raise FileNotFoundError(session_id)
+    return {
+        "schema_version": "openagent.session_export.v1",
+        "session_root": str(root),
+        "session": state,
+        "session_record": read_json_file(session_dir / "session.json") or {},
+        "transcript": read_jsonl_file(session_dir / "transcript.jsonl"),
+        "runs": load_run_records(session_dir),
+    }
+
+
+def collect_session_stats(root: Path, *, days: int | None = None) -> dict[str, object]:
+    sessions = load_session_records(root)
+    min_updated_at = None
+    if days is not None and days > 0:
+        import time
+
+        min_updated_at = int((time.time() - days * 86400) * 1000)
+        sessions = [session for session in sessions if int(session.get("updated_at_ms") or 0) >= min_updated_at]
+
+    runs: list[dict[str, object]] = []
+    for session in sessions:
+        session_dir = Path(str(session.get("session_dir") or ""))
+        for run in load_run_records(session_dir):
+            run["session_id"] = session.get("session_id")
+            runs.append(run)
+
+    return {
+        "session_root": str(root),
+        "days": days,
+        "since_updated_at_ms": min_updated_at,
+        "session_count": len(sessions),
+        "run_count": len(runs),
+        "message_count": sum(int(session.get("message_count") or 0) for session in sessions),
+        "step_count": sum(int(run.get("step_count") or 0) for run in runs),
+        "tool_call_count": sum(int(run.get("tool_call_count") or 0) for run in runs),
+        "runtime_warning_count": sum(int(run.get("runtime_warning_count") or 0) for run in runs),
+        "patch_count": sum(int(run.get("patch_count") or 0) for run in runs),
+        "total_input_tokens": sum(int(run.get("total_input_tokens") or 0) for run in runs),
+        "total_output_tokens": sum(int(run.get("total_output_tokens") or 0) for run in runs),
+        "total_cost": sum(float(run.get("total_cost") or 0.0) for run in runs),
+        "model_counts": count_values(str(run.get("model_id") or "") for run in runs),
+    }
+
+
+def print_session_table(rows: list[dict[str, object]], *, stdout: object) -> None:
+    if not rows:
+        print("No sessions found.", file=stdout)
+        return
+    table = [["updated_ms", "session", "status", "msgs", "runs", "workspace"]]
+    for row in rows:
+        table.append(
+            [
+                str(row.get("updated_at_ms") or ""),
+                str(row.get("session_id") or ""),
+                str(row.get("status") or ""),
+                str(row.get("message_count") or 0),
+                str(row.get("run_count") or 0),
+                str(row.get("workspace") or ""),
+            ]
+        )
+    print_table(table, stdout=stdout)
+
+
+def print_model_table(rows: list[dict[str, object]], *, stdout: object) -> None:
+    if not rows:
+        print("No models found.", file=stdout)
+        return
+    table = [["provider", "model", "context", "max_output"]]
+    for row in rows:
+        table.append(
+            [
+                str(row.get("provider_id") or ""),
+                str(row.get("id") or ""),
+                str(row.get("context_window") or ""),
+                str(row.get("max_output") or ""),
+            ]
+        )
+    print_table(table, stdout=stdout)
+
+
+def print_stats_table(payload: dict[str, object], *, stdout: object) -> None:
+    rows = [
+        ["metric", "value"],
+        ["sessions", str(payload.get("session_count") or 0)],
+        ["runs", str(payload.get("run_count") or 0)],
+        ["messages", str(payload.get("message_count") or 0)],
+        ["steps", str(payload.get("step_count") or 0)],
+        ["tool_calls", str(payload.get("tool_call_count") or 0)],
+        ["runtime_warnings", str(payload.get("runtime_warning_count") or 0)],
+        ["patches", str(payload.get("patch_count") or 0)],
+        ["input_tokens", str(payload.get("total_input_tokens") or 0)],
+        ["output_tokens", str(payload.get("total_output_tokens") or 0)],
+        ["cost", f"{float(payload.get('total_cost') or 0.0):.6f}"],
+    ]
+    print_table(rows, stdout=stdout)
+
+
+def print_table(rows: list[list[str]], *, stdout: object) -> None:
+    widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
+    for row_index, row in enumerate(rows):
+        line = "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip()
+        print(line, file=stdout)
+        if row_index == 0:
+            print("  ".join("-" * width for width in widths).rstrip(), file=stdout)
+
+
+def count_values(values: object) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:  # type: ignore[union-attr]
+        if not value:
+            continue
+        counts[str(value)] = counts.get(str(value), 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def session_dir_for_id(root: Path, session_id: str) -> Path:
+    if not session_id or Path(session_id).name != session_id or session_id in {".", ".."}:
+        raise ValueError(f"Invalid session id: {session_id}")
+    session_dir = (root / session_id).resolve()
+    root_dir = root.resolve()
+    if session_dir != root_dir and root_dir in session_dir.parents:
+        return session_dir
+    raise ValueError(f"Invalid session id: {session_id}")
+
+
+def sanitize_export_payload(value: object) -> object:
+    if isinstance(value, dict):
+        sanitized: dict[str, object] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in {"content", "workspace", "session_root", "session_dir", "transcript_path", "state_path", "ledger_path", "run_dir", "parts_path"}:
+                sanitized[str(key)] = "[redacted]"
+            elif lowered.endswith("_path") or lowered.endswith("_dir"):
+                sanitized[str(key)] = "[redacted]"
+            else:
+                sanitized[str(key)] = sanitize_export_payload(item)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_export_payload(item) for item in value]
+    return value
+
+
+def read_json_file(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else None
+
+
+def read_jsonl_file(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        if isinstance(payload, dict):
+            rows.append(payload)
+    return rows
 
 
 def check_models_endpoint(*, base_url: str, timeout_s: float = 3.0) -> tuple[bool, str]:

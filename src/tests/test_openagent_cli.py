@@ -17,9 +17,15 @@ from openagent.cli.main import (
     build_parser,
     candidate_model_urls,
     load_local_env,
+    run_models_command,
     run_non_interactive,
+    run_session_command,
+    run_stats_command,
 )
 from openagent.app_server.protocol import AppEvent
+from openagent.core.session.session import Session
+from openagent.core.session.store import FileSessionStore
+from openagent.core.types import ChatMessage
 
 
 class OpenAgentCliTests(unittest.TestCase):
@@ -152,6 +158,67 @@ class OpenAgentCliTests(unittest.TestCase):
         self.assertIn("Attached file:", prompt)
         self.assertIn("important context", prompt)
 
+    def test_session_list_export_stats_and_delete_use_file_store(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp) / "sessions"
+            session = create_persisted_session(root)
+
+            list_stdout = io.StringIO()
+            list_args = parser.parse_args(["session", "list", "--session-root", str(root), "--format", "json"])
+            self.assertEqual(run_session_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            listed = json.loads(list_stdout.getvalue())
+            self.assertEqual(listed["sessions"][0]["session_id"], session.id)
+            self.assertEqual(listed["sessions"][0]["message_count"], 1)
+
+            export_stdout = io.StringIO()
+            export_args = parser.parse_args(["session", "export", "--session-root", str(root), session.id, "--sanitize"])
+            self.assertEqual(run_session_command(export_args, stdout=export_stdout, stderr=io.StringIO()), 0)
+            exported = json.loads(export_stdout.getvalue())
+            self.assertEqual(exported["schema_version"], "openagent.session_export.v1")
+            self.assertEqual(exported["session"]["messages"][0]["content"], "[redacted]")
+            self.assertEqual(exported["session"]["workspace"], "[redacted]")
+
+            stats_stdout = io.StringIO()
+            stats_args = parser.parse_args(["stats", "--session-root", str(root), "--format", "json"])
+            self.assertEqual(run_stats_command(stats_args, stdout=stats_stdout), 0)
+            stats = json.loads(stats_stdout.getvalue())
+            self.assertEqual(stats["session_count"], 1)
+            self.assertEqual(stats["run_count"], 1)
+            self.assertEqual(stats["total_input_tokens"], 12)
+            self.assertEqual(stats["total_output_tokens"], 5)
+
+            delete_stdout = io.StringIO()
+            delete_args = parser.parse_args(["session", "delete", "--session-root", str(root), session.id])
+            self.assertEqual(run_session_command(delete_args, stdout=delete_stdout, stderr=io.StringIO()), 0)
+            self.assertFalse((root / session.id).exists())
+
+    def test_models_command_lists_runtime_models(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["models", "--format", "json"])
+        stdout = io.StringIO()
+
+        exit_code = run_models_command(args, runtime_factory=FakeModelRuntime, stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["models"][0]["id"], "gpt-test")
+
+    def test_session_delete_rejects_path_traversal(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            root = Path(raw_tmp) / "sessions"
+            outside = Path(raw_tmp) / "outside"
+            outside.mkdir()
+            stderr = io.StringIO()
+            args = parser.parse_args(["session", "delete", "--session-root", str(root), "../outside"])
+
+            exit_code = run_session_command(args, stdout=io.StringIO(), stderr=stderr)
+
+            self.assertEqual(exit_code, 2)
+            self.assertTrue(outside.exists())
+            self.assertIn("Invalid session id", stderr.getvalue())
+
 
 class FakeTurn:
     def __init__(self) -> None:
@@ -221,6 +288,51 @@ class FakeStdin:
 
     def read(self) -> str:
         return self.value
+
+
+class FakeModelRuntime:
+    def __init__(self, *, workspace: str | None, session_store_root: str | None) -> None:
+        self.workspace = workspace
+        self.session_store_root = session_store_root
+
+    def list_models(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "gpt-test",
+                "provider_id": "openai",
+                "name": "OpenAI Compatible/gpt-test",
+                "context_window": 128000,
+                "max_output": 4096,
+            }
+        ]
+
+
+def create_persisted_session(root: Path) -> Session:
+    store = FileSessionStore(root)
+    session = Session(directory=root.parent / "workspace")
+    run_id = "run_test"
+    store.start_run(
+        session,
+        run_id=run_id,
+        trace_id="trace_test",
+        agent_name="test-agent",
+        model_id="gpt-test",
+        provider_id="openai",
+        permission="FULL",
+        max_steps=3,
+    )
+    message = ChatMessage(role="user", content="private prompt")
+    session.messages.append(message)
+    store.append_message(session, message, run_id=run_id, index=0)
+    store.record_event(
+        session_id=session.id,
+        run_id=run_id,
+        event="model.usage",
+        kind="model",
+        attributes={"input_tokens": 12, "output_tokens": 5, "cost": 0.003},
+    )
+    store.finish_run(session, run_id=run_id, status="completed", steps=1, finish_reason="stop")
+    return session
 
 
 if __name__ == "__main__":

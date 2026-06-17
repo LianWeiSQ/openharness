@@ -145,3 +145,16 @@ openagent run --file README.md --format json "review the attached file"
 openagent run --continue "continue the last session"
 openagent run --session session_abc123 "resume this session"
 ```
+
+The same CLI also exposes local session management and usage inspection:
+
+```bash
+openagent session list
+openagent session list --format json
+openagent session export session_abc123 --sanitize
+openagent session delete session_abc123
+openagent models
+openagent stats
+```
+
+These commands read the same file-backed session store used by the App Bridge runtime. By default the store is resolved from `OPENAGENT_SESSION_ROOT` or `.openagent/sessions` under the selected workspace.

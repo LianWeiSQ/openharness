@@ -85,6 +85,15 @@ openagent run "summarize this repository"
 openagent run --file README.md --format json "review the attached file"
 ```
 
+For persisted state inspection:
+
+```bash
+openagent session list
+openagent session export session_abc123 --sanitize
+openagent stats
+openagent models
+```
+
 ## Controls
 
 | Key | Action |

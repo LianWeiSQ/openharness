@@ -206,6 +206,16 @@ openagent run --file README.md --format json "review the attached file"
 openagent run --continue "continue the last session"
 ```
 
+管理本地 session、模型元数据和运行统计：
+
+```bash
+openagent session list
+openagent session export session_abc123 --sanitize
+openagent session delete session_abc123
+openagent models --format json
+openagent stats --format json
+```
+
 可选：把本机私有配置放进 `.openagent/openagent.env`，之后直接运行 `openagent` 即可。`.openagent/` 已经被 git 忽略。
 
 ```bash
