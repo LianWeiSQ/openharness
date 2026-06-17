@@ -36,8 +36,11 @@ def format_event(event: AppEvent) -> list[TimelineLine]:
 
     if method == "turn/started":
         return [TimelineLine("status", f"turn started: {short_id(str(params.get('turn_id') or ''))}", True)]
-    if method in {"turn/completed", "turn/failed"}:
-        status = str(params.get("status") or ("failed" if method.endswith("failed") else "completed"))
+    if method == "turn/interrupt_requested":
+        return [TimelineLine("warning", "interrupt requested", True)]
+    if method in {"turn/completed", "turn/failed", "turn/interrupted"}:
+        default_status = "interrupted" if method.endswith("interrupted") else ("failed" if method.endswith("failed") else "completed")
+        status = str(params.get("status") or default_status)
         lines = [TimelineLine("status", f"turn {status}", important=True)]
         final_answer = str(params.get("final_answer") or "").strip()
         if final_answer:

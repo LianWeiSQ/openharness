@@ -359,11 +359,14 @@ class TuiState:
         self.status = turn.status
 
     def request_interrupt(self) -> None:
-        self.timeline.append(
-            TimelineLine(
-                "warning",
-                "interrupt requested, but cooperative cancellation is not implemented yet",
-                important=True,
-            )
-        )
-        self.status = "interrupt unsupported"
+        turn = self.active_turn
+        if turn is None:
+            self.status = "no active turn"
+            return
+        interrupt_turn = getattr(self.runtime, "interrupt_turn", None)
+        if not callable(interrupt_turn):
+            self.timeline.append(TimelineLine("warning", "interrupt is not supported by this runtime", important=True))
+            self.status = "interrupt unsupported"
+            return
+        interrupt_turn(turn.id)
+        self.status = "interrupting"

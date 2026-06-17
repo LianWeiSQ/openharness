@@ -555,8 +555,9 @@ def emit_app_bridge_events(
             printed_answer = emit_text_event(event, verbose=verbose, stdout=stdout, stderr=stderr) or printed_answer
         method = event_method(event)
         params = event_params(event)
-        if method in {"turn/completed", "turn/failed"}:
-            status = str(params.get("status") or ("completed" if method == "turn/completed" else "failed"))
+        if method in {"turn/completed", "turn/failed", "turn/interrupted"}:
+            default_status = "completed" if method == "turn/completed" else ("interrupted" if method == "turn/interrupted" else "failed")
+            status = str(params.get("status") or default_status)
             final_answer = str(params.get("final_answer") or "")
     if output_format == "text":
         if printed_answer:

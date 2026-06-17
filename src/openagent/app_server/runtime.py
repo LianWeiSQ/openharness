@@ -34,6 +34,7 @@ class TurnRecord:
     final_answer: str = ""
     error: str | None = None
     trace: dict[str, Any] | None = None
+    interrupt_requested: bool = False
     events: list[AppEvent] = field(default_factory=list)
     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
 
@@ -68,6 +69,29 @@ class TurnRecord:
                 self._condition.wait(timeout=remaining)
             return True
 
+    def request_interrupt(self) -> AppEvent | None:
+        with self._condition:
+            if self.status in {"completed", "failed", "interrupted"}:
+                return None
+            if self.interrupt_requested:
+                return None
+            self.interrupt_requested = True
+            self.status = "interrupting"
+            event = lifecycle_event(
+                sequence=len(self.events) + 1,
+                method="turn/interrupt_requested",
+                thread_id=self.session_id,
+                turn_id=self.id,
+                status=self.status,
+            )
+            self.events.append(event)
+            self._condition.notify_all()
+            return event
+
+    def is_interrupt_requested(self) -> bool:
+        with self._condition:
+            return self.interrupt_requested
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -78,6 +102,7 @@ class TurnRecord:
             "error": self.error,
             "trace": self.trace,
             "event_count": len(self.events),
+            "interrupt_requested": self.interrupt_requested,
         }
 
 
@@ -155,6 +180,11 @@ class OpenAgentAppRuntime:
                 raise KeyError(f"Unknown turn: {turn_id}")
             return self._turns[turn_id]
 
+    def interrupt_turn(self, turn_id: str) -> dict[str, Any]:
+        turn = self.get_turn(turn_id)
+        turn.request_interrupt()
+        return turn.to_dict()
+
     def _run_turn_thread(self, turn_id: str) -> None:
         try:
             asyncio.run(self._run_turn(turn_id))
@@ -196,7 +226,11 @@ class OpenAgentAppRuntime:
         text_chunks: list[str] = []
         saw_error = False
 
-        async for event in loop.run(turn.input):
+        event_stream = loop.run(turn.input)
+        async for event in event_stream:
+            if turn.is_interrupt_requested():
+                await event_stream.aclose()
+                break
             self._update_turn_accumulators(turn, event, text_chunks)
             if event.get("type") == "error":
                 saw_error = True
@@ -211,11 +245,12 @@ class OpenAgentAppRuntime:
 
         turn.final_answer = "".join(text_chunks)
         turn.trace = _trace_metadata(session)
-        turn.status = "failed" if saw_error else "completed"
+        interrupted = turn.is_interrupt_requested()
+        turn.status = "interrupted" if interrupted else ("failed" if saw_error else "completed")
         turn.append(
             lifecycle_event(
                 sequence=turn.next_sequence(),
-                method="turn/failed" if saw_error else "turn/completed",
+                method="turn/interrupted" if interrupted else ("turn/failed" if saw_error else "turn/completed"),
                 thread_id=session.id,
                 turn_id=turn.id,
                 status=turn.status,

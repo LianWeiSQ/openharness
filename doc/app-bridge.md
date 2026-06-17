@@ -39,6 +39,7 @@ Implemented endpoints:
 | `GET /api/sessions/{session_id}` | Read a session snapshot |
 | `POST /api/sessions/{session_id}/turns` | Start a turn |
 | `GET /api/turns/{turn_id}/events` | Stream turn events through SSE |
+| `POST /api/turns/{turn_id}/interrupt` | Request cooperative turn interruption |
 
 The event stream uses Codex-like method names:
 
@@ -51,6 +52,10 @@ The event stream uses Codex-like method names:
 - `item/patch/detected`
 - `turn/completed`
 - `turn/failed`
+- `turn/interrupt_requested`
+- `turn/interrupted`
+
+Interrupt is cooperative: the running turn is marked as interrupting immediately, and the background OpenAgent loop stops at the next model/tool event boundary. A blocking provider request or tool process may still need to return control before the final `turn/interrupted` event is emitted.
 
 ## Run Locally
 

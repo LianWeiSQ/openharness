@@ -12,6 +12,17 @@ from uuid import uuid4
 from openagent.app_server.server import create_server
 
 
+class FakeRuntime:
+    def list_models(self):
+        return []
+
+    def list_sessions(self):
+        return []
+
+    def interrupt_turn(self, turn_id: str):
+        return {"id": turn_id, "status": "interrupting", "interrupt_requested": True}
+
+
 class AppServerServerTests(unittest.TestCase):
     def _make_temp_dir(self) -> Path:
         tmp_root = Path("openagent/tests/workdir")
@@ -79,6 +90,30 @@ class AppServerServerTests(unittest.TestCase):
             health = json.loads(response.read().decode("utf-8"))
 
         self.assertEqual(health["auth_required"], True)
+
+    def test_server_interrupt_endpoint_calls_runtime(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=FakeRuntime(),  # type: ignore[arg-type]
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        request = urllib.request.Request(f"{base_url}/api/turns/turn_123/interrupt", data=b"{}", method="POST")
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local test server.
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(payload["turn"]["id"], "turn_123")
+        self.assertEqual(payload["turn"]["status"], "interrupting")
+        self.assertEqual(payload["turn"]["interrupt_requested"], True)
 
 
 if __name__ == "__main__":

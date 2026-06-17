@@ -75,6 +75,10 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 user_text = str(payload.get("input") or payload.get("user_text") or "")
                 turn = self.runtime.start_turn(session_id=session_id, user_text=user_text)
                 self._send_json({"turn": turn.to_dict()}, status=HTTPStatus.CREATED)
+            elif path.startswith("/api/turns/") and path.endswith("/interrupt"):
+                turn_id = path.removeprefix("/api/turns/").removesuffix("/interrupt").strip("/")
+                turn = self.runtime.interrupt_turn(turn_id)
+                self._send_json({"turn": turn})
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
         except ValueError as error:
@@ -119,7 +123,7 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 continue
             self._write_sse(event.method, event.to_dict(), event_id=str(event.sequence))
             sequence = event.sequence + 1
-            if event.method in {"turn/completed", "turn/failed"}:
+            if event.method in {"turn/completed", "turn/failed", "turn/interrupted"}:
                 break
 
     def _serve_static(self, path: str) -> None:
@@ -181,8 +185,9 @@ def create_server(
     session_store_root: str | Path | None = None,
     serve_static: bool = True,
     auth_token: str | None = None,
+    runtime: OpenAgentAppRuntime | None = None,
 ) -> ThreadingHTTPServer:
-    runtime = OpenAgentAppRuntime(workspace=workspace, session_store_root=session_store_root)
+    runtime = runtime or OpenAgentAppRuntime(workspace=workspace, session_store_root=session_store_root)
 
     class Handler(OpenAgentAppRequestHandler):
         pass

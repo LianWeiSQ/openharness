@@ -32,6 +32,7 @@ class DummyRuntime:
 @dataclass(slots=True)
 class CapturingTurn:
     status: str = "completed"
+    id: str = "turn_capture"
     events: list[AppEvent] = field(default_factory=list)
 
 
@@ -45,6 +46,16 @@ class CapturingRuntime(DummyRuntime):
         self.last_session_id = session_id
         self.last_user_text = user_text
         return CapturingTurn()
+
+
+class InterruptRuntime(DummyRuntime):
+    def __init__(self, *, workspace: Path) -> None:
+        super().__init__(workspace=workspace)
+        self.interrupted_turn_ids: list[str] = []
+
+    def interrupt_turn(self, turn_id: str):
+        self.interrupted_turn_ids.append(turn_id)
+        return {"id": turn_id, "status": "interrupting"}
 
 
 class SessionRuntime(DummyRuntime):
@@ -117,6 +128,15 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertEqual([line.kind for line in lines], ["status", "assistant", "trace"])
         self.assertEqual(lines[1].text, "done")
         self.assertEqual(lines[2].text, "trace: trace_123")
+
+    def test_formats_interrupt_events(self) -> None:
+        requested = format_event(AppEvent(sequence=1, method="turn/interrupt_requested", params={}))
+        interrupted = format_event(AppEvent(sequence=2, method="turn/interrupted", params={"status": "interrupted"}))
+
+        self.assertEqual(requested[0].kind, "warning")
+        self.assertIn("interrupt requested", requested[0].text)
+        self.assertEqual(interrupted[0].kind, "status")
+        self.assertEqual(interrupted[0].text, "turn interrupted")
 
     def test_helpers(self) -> None:
         self.assertEqual(short_id("abcdef", keep=10), "abcdef")
@@ -218,6 +238,17 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertFalse(state.session_picker_open)
         self.assertEqual(state.status, "session picker closed")
         self.assertEqual(runtime.resumed, [])
+
+    def test_tui_request_interrupt_calls_runtime(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = InterruptRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.active_turn = CapturingTurn(status="running", id="turn_live")
+
+        state.request_interrupt()
+
+        self.assertEqual(runtime.interrupted_turn_ids, ["turn_live"])
+        self.assertEqual(state.status, "interrupting")
 
     def test_tui_resume_reports_ambiguous_prefix(self) -> None:
         workspace = self._make_temp_dir()

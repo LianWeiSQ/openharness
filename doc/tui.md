@@ -141,7 +141,7 @@ Built-in commands are handled locally by the TUI. `/sessions` lists recent persi
 | `Ctrl-R` | open session picker |
 | `Ctrl-L` | clear visible timeline |
 | `PageUp` / `PageDown` | scroll timeline |
-| `Ctrl-C` | interrupt when running, quit when idle; terminal signal fallback exits cleanly |
+| `Ctrl-C` | request cooperative turn interrupt when running, quit when idle; terminal signal fallback exits cleanly |
 | `Esc` | quit when idle and input is empty |
 | `Ctrl-D` | quit |
 
@@ -166,7 +166,7 @@ When the session picker is open:
 | Patch events | Supported | Renders `item/patch/detected` |
 | Trace id/run id display | Supported | Reads trace metadata after turn completion |
 | Session resume | Supported | Runtime can load sessions; TUI supports `/sessions`, `/resume <id-or-prefix>`, and an interactive `Ctrl-R` session picker |
-| Interrupt | Not complete | UI shows intent, but `AgentLoop` has no cooperative cancellation token yet |
+| Interrupt | Partial | `Ctrl-C` calls App Bridge interrupt and emits `turn/interrupted`; blocking provider/tool calls still stop at the next event boundary |
 | Slash commands | Partial | Built-ins cover help/session/status/new/clear/custom command listing; custom command routing works; interactive picker UI is not complete |
 | Mention/file search popup | Not complete | Needs indexed file search and popup UI |
 | Approval overlay | Not complete | Needs App Bridge approval request/response protocol |

@@ -1557,15 +1557,18 @@ class AgentLoop:
                                 max_output_tokens=max_output_tokens,
                             )
                             assistant_text_chunks = []
-                            async for event in stream:
-                                yielded = True
-                                self._record_stream_event_observation(event, step_index=steps, attempt_index=attempt)
-                                if event["type"] == "text-delta":
-                                    assistant_text_chunks.append(event["text"])
-                                if buffered_events is not None:
-                                    buffered_events.append(event)
-                                else:
-                                    yield event
+                            try:
+                                async for event in stream:
+                                    yielded = True
+                                    self._record_stream_event_observation(event, step_index=steps, attempt_index=attempt)
+                                    if event["type"] == "text-delta":
+                                        assistant_text_chunks.append(event["text"])
+                                    if buffered_events is not None:
+                                        buffered_events.append(event)
+                                    else:
+                                        yield event
+                            finally:
+                                await stream.aclose()
                             info = await stream.info()
                         else:
                             with model_span_cm as model_span:
@@ -1576,15 +1579,18 @@ class AgentLoop:
                                     max_output_tokens=max_output_tokens,
                                 )
                                 assistant_text_chunks = []
-                                async for event in stream:
-                                    yielded = True
-                                    self._record_stream_event_observation(event, step_index=steps, attempt_index=attempt)
-                                    if event["type"] == "text-delta":
-                                        assistant_text_chunks.append(event["text"])
-                                    if buffered_events is not None:
-                                        buffered_events.append(event)
-                                    else:
-                                        yield event
+                                try:
+                                    async for event in stream:
+                                        yielded = True
+                                        self._record_stream_event_observation(event, step_index=steps, attempt_index=attempt)
+                                        if event["type"] == "text-delta":
+                                            assistant_text_chunks.append(event["text"])
+                                        if buffered_events is not None:
+                                            buffered_events.append(event)
+                                        else:
+                                            yield event
+                                finally:
+                                    await stream.aclose()
                                 info = await stream.info()
                                 model_span.set_attributes(
                                     {

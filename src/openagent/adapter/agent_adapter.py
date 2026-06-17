@@ -28,6 +28,11 @@ class AgentReplyStream:
     async def info(self) -> StepInfo:
         return await self._info_future
 
+    async def aclose(self) -> None:
+        close = getattr(self._gen, "aclose", None)
+        if close is not None:
+            await close()
+
 
 class AgentAdapter:
     def __init__(self, *, model: LanguageModel, config: AgentConfig) -> None:
@@ -80,9 +85,9 @@ class AgentAdapter:
                         usage = coerce_usage(ev.get("usage"))
                     else:
                         continue
-            finally:
                 if started:
                     yield {"type": "text-end", "id": text_id}  # type: ignore[misc]
+            finally:
                 if not info_future.done():
                     info_future.set_result(StepInfo(finish_reason=finish_reason, usage=usage, tool_calls=tool_calls))
 
