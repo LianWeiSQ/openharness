@@ -431,7 +431,7 @@ Create component $1 for $ARGUMENTS.
     def test_auth_provider_id_normalization_and_invalid_ids(self) -> None:
         self.assertEqual(normalize_provider("Anthropic.US-East_1"), "anthropic.us-east_1")
 
-        for provider in [".bad", "-bad", "bad provider", "bad/provider"]:
+        for provider in ["", "  ", ".bad", "-bad", "bad provider", "bad/provider"]:
             with self.subTest(provider=provider):
                 with self.assertRaisesRegex(ValueError, "Invalid provider id"):
                     normalize_provider(provider)
@@ -443,6 +443,12 @@ Create component $1 for $ARGUMENTS.
             args = parser.parse_args(["auth", "login", "--auth-file", str(auth_file), "--provider", "bad/provider", "--api-key", "secret"])
 
             self.assertEqual(run_auth_command(args, stdout=io.StringIO(), stderr=stderr), 2)
+            self.assertIn("Invalid provider id", stderr.getvalue())
+            self.assertFalse(auth_file.exists())
+
+            stderr = io.StringIO()
+            empty_args = parser.parse_args(["auth", "login", "--auth-file", str(auth_file), "--provider", "", "--api-key", "secret"])
+            self.assertEqual(run_auth_command(empty_args, stdout=io.StringIO(), stderr=stderr), 2)
             self.assertIn("Invalid provider id", stderr.getvalue())
             self.assertFalse(auth_file.exists())
 
@@ -477,7 +483,7 @@ Create component $1 for $ARGUMENTS.
                 )
                 self.assertEqual(run_auth_command(args, stdout=io.StringIO(), stderr=io.StringIO()), 0)
 
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "env-secret"}, clear=True):
+            with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "env-secret"}, clear=True):
                 json_stdout = io.StringIO()
                 list_args = parser.parse_args(["auth", "list", "--auth-file", str(auth_file), "--format", "json"])
                 self.assertEqual(run_auth_command(list_args, stdout=json_stdout, stderr=io.StringIO()), 0)
@@ -489,6 +495,7 @@ Create component $1 for $ARGUMENTS.
                 listed = json.loads(raw_json)
                 self.assertEqual([row["provider"] for row in listed["providers"]], ["anthropic.us", "openai"])
                 self.assertEqual(listed["providers"][0]["type"], "openai-compatible")
+                self.assertEqual(listed["providers"][0]["env"]["api_key"], "ANTHROPIC_API_KEY")
                 self.assertEqual(listed["providers"][0]["env_status"]["api_key"]["status"], "set")
 
                 table_stdout = io.StringIO()
@@ -511,6 +518,60 @@ Create component $1 for $ARGUMENTS.
             list_args = parser.parse_args(["auth", "list", "--auth-file", str(auth_file), "--format", "json"])
             self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
             self.assertEqual([row["provider"] for row in json.loads(list_stdout.getvalue())["providers"]], ["openai"])
+
+    def test_auth_login_update_preserves_existing_key_and_type(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            create_args = parser.parse_args(
+                [
+                    "auth",
+                    "login",
+                    "--auth-file",
+                    str(auth_file),
+                    "--provider",
+                    "openrouter",
+                    "--type",
+                    "openai-compatible",
+                    "--api-key",
+                    "openrouter-secret",
+                    "--base-url",
+                    "http://old.test/v1",
+                ]
+            )
+            self.assertEqual(run_auth_command(create_args, stdout=io.StringIO(), stderr=io.StringIO()), 0)
+
+            update_args = parser.parse_args(
+                [
+                    "auth",
+                    "login",
+                    "--auth-file",
+                    str(auth_file),
+                    "--provider",
+                    "openrouter",
+                    "--base-url",
+                    "http://new.test/v1",
+                    "--model",
+                    "openrouter/model",
+                ]
+            )
+            self.assertEqual(run_auth_command(update_args, stdout=io.StringIO(), stderr=io.StringIO()), 0)
+
+            list_stdout = io.StringIO()
+            list_args = parser.parse_args(["auth", "list", "--auth-file", str(auth_file), "--format", "json"])
+            self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            record = json.loads(list_stdout.getvalue())["providers"][0]
+            self.assertEqual(record["provider"], "openrouter")
+            self.assertEqual(record["type"], "openai-compatible")
+            self.assertEqual(record["base_url"], "http://new.test/v1")
+            self.assertEqual(record["model"], "openrouter/model")
+            self.assertEqual(record["env"]["api_key"], "OPENROUTER_API_KEY")
+            self.assertNotIn("openrouter-secret", list_stdout.getvalue())
+
+            with patch.dict(os.environ, {"OPENAGENT_PROVIDER": "openrouter"}, clear=True):
+                load_auth_env(str(auth_file))
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "openrouter-secret")
+                self.assertEqual(os.environ["OPENROUTER_API_KEY"], "openrouter-secret")
 
     def test_load_auth_env_selects_active_provider_without_overwriting_env(self) -> None:
         parser = build_parser()
@@ -557,11 +618,17 @@ Create component $1 for $ARGUMENTS.
                 self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://user.test/v1")
                 self.assertEqual(os.environ["OPENAI_MODEL"], "claude-test")
                 self.assertEqual(os.environ["OPENAI_WIRE_API"], "chat")
+                self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "anthropic-secret")
+                self.assertEqual(os.environ["ANTHROPIC_BASE_URL"], "http://anthropic.test/v1")
 
             with patch.dict(os.environ, {"OPENAGENT_ACTIVE_PROVIDER": "anthropic"}, clear=True):
                 load_auth_env(str(auth_file))
                 self.assertEqual(os.environ["OPENAGENT_PROVIDER"], "anthropic")
                 self.assertEqual(os.environ["OPENAI_API_KEY"], "anthropic-secret")
+
+            with patch.dict(os.environ, {"OPENAGENT_PROVIDER": "missing"}, clear=True):
+                load_auth_env(str(auth_file))
+                self.assertNotIn("OPENAI_API_KEY", os.environ)
 
     def test_providers_alias_uses_auth_commands(self) -> None:
         parser = build_parser()

@@ -49,6 +49,8 @@ def main(argv: list[str] | None = None) -> None:
     if command == "mcp":
         raise SystemExit(run_mcp_command(args))
     load_local_env(getattr(args, "config", None))
+    if command in {"auth", "providers"}:
+        raise SystemExit(run_auth_command(args))
     load_auth_env(getattr(args, "auth_file", None))
 
     if command == "doctor":
@@ -83,8 +85,6 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(run_custom_command(args))
     if command == "config":
         raise SystemExit(run_config_command(args))
-    if command in {"auth", "providers"}:
-        raise SystemExit(run_auth_command(args))
     if command == "tui":
         apply_model_env(args)
         if not args.skip_doctor and not doctor(verbose=True):
@@ -382,7 +382,7 @@ def add_auth_parser(subparsers: argparse._SubParsersAction, name: str, *, help_t
     auth_login = auth_subparsers.add_parser("login", help="store OpenAI-compatible provider credentials")
     add_auth_options(auth_login)
     auth_login.add_argument("--provider", "-p", default="openai", help="provider id, default openai")
-    auth_login.add_argument("--type", dest="credential_type", default="api", help="credential type metadata, default api")
+    auth_login.add_argument("--type", dest="credential_type", default=None, help="credential type metadata; default api on first login")
     auth_login.add_argument("--api-key", default=None, help="API key to store")
     auth_login.add_argument("--api-key-stdin", action="store_true", help="read API key from stdin")
     auth_login.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
