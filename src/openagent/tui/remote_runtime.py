@@ -160,11 +160,26 @@ class RemoteAppBridgeRuntime:
         payload = app_bridge_get_json(self.server_url, f"/api/sessions/{quote_path(session_id)}", auth_token=self.auth_token)
         return _session_from_payload(payload)
 
-    def start_turn(self, *, session_id: str, user_text: str) -> RemoteTurnRecord:
+    def start_turn(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        model_id: str | None = None,
+        agent: str | None = None,
+        variant: str | None = None,
+    ) -> RemoteTurnRecord:
+        body: dict[str, object] = {"input": user_text}
+        if model_id:
+            body["model_id"] = model_id
+        if agent:
+            body["agent"] = agent
+        if variant:
+            body["variant"] = variant
         payload = app_bridge_post_json(
             self.server_url,
             f"/api/sessions/{quote_path(session_id)}/turns",
-            {"input": user_text},
+            body,
             auth_token=self.auth_token,
         )
         raw_turn = payload.get("turn")

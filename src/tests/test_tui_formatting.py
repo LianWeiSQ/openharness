@@ -41,10 +41,31 @@ class CapturingRuntime(DummyRuntime):
         super().__init__(workspace=workspace)
         self.last_session_id: str | None = None
         self.last_user_text: str | None = None
+        self.last_model_id: str | None = None
+        self.last_agent: str | None = None
+        self.last_variant: str | None = None
+        self.models = [
+            {"id": "gpt-a", "provider_id": "openai", "name": "GPT A"},
+            {"id": "gpt-b", "provider_id": "openai", "name": "GPT B"},
+        ]
 
-    def start_turn(self, *, session_id: str, user_text: str):
+    def list_models(self):
+        return list(self.models)
+
+    def start_turn(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        model_id: str | None = None,
+        agent: str | None = None,
+        variant: str | None = None,
+    ):
         self.last_session_id = session_id
         self.last_user_text = user_text
+        self.last_model_id = model_id
+        self.last_agent = agent
+        self.last_variant = variant
         return CapturingTurn()
 
 
@@ -211,6 +232,48 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertEqual(state.status, "commands listed")
         self.assertEqual(state.input_buffer, "")
 
+    def test_tui_model_agent_variant_commands_pass_selection_to_runtime(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        for command in ["/model", "/model gpt-b", "/agent plan", "/variant high"]:
+            state.input_buffer = command
+            self.assertFalse(state.submit())
+
+        self.assertEqual(state.selected_model_id, "gpt-b")
+        self.assertEqual(state.selected_agent, "plan")
+        self.assertEqual(state.selected_variant, "high")
+        self.assertIn("gpt-b | plan:high", state.active_runtime_label())
+
+        state.input_buffer = "use the selected runtime"
+        self.assertTrue(state.submit())
+
+        self.assertEqual(runtime.last_session_id, "session_1")
+        self.assertEqual(runtime.last_user_text, "use the selected runtime")
+        self.assertEqual(runtime.last_model_id, "gpt-b")
+        self.assertEqual(runtime.last_agent, "plan")
+        self.assertEqual(runtime.last_variant, "high")
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("models:", timeline_text)
+        self.assertIn("model selected: gpt-b", timeline_text)
+        self.assertIn("agent selected: plan", timeline_text)
+        self.assertIn("variant selected: high", timeline_text)
+
+    def test_tui_variant_off_and_control_selection_update_state(self) -> None:
+        runtime = CapturingRuntime(workspace=self._make_temp_dir())
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        self.assertEqual(state.apply_control_request({"path": "/tui/select-model", "body": {"modelID": "gpt-a"}})["applied"], True)
+        self.assertEqual(state.apply_control_request({"action": "agent.set", "params": {"agent": "explore"}})["applied"], True)
+        self.assertEqual(state.apply_control_request({"action": "variant.set", "params": {"variant": "medium"}})["applied"], True)
+        state.input_buffer = "/variant off"
+        self.assertFalse(state.submit())
+
+        self.assertEqual(state.selected_model_id, "gpt-a")
+        self.assertEqual(state.selected_agent, "explore")
+        self.assertIsNone(state.selected_variant)
+
     def test_tui_builtin_help_and_status_are_local(self) -> None:
         workspace = self._make_temp_dir()
         state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
@@ -226,6 +289,9 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertFalse(state.submit())
         timeline_text = "\n".join(line.text for line in state.timeline)
         self.assertIn("session: session_live", timeline_text)
+        self.assertIn("model: env:OPENAI_MODEL", timeline_text)
+        self.assertIn("agent: build", timeline_text)
+        self.assertIn("variant: -", timeline_text)
         self.assertIn(f"workspace: {workspace}", timeline_text)
 
     def test_tui_sessions_and_resume_by_prefix(self) -> None:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import curses
 import json
-import os
 import textwrap
 import time
 from pathlib import Path
@@ -225,7 +224,7 @@ def _render(stdscr, state: TuiState) -> None:
 def _render_header(stdscr, state: TuiState, width: int) -> None:
     title = "OpenAgent TUI"
     session = short_id(state.session_id)
-    model = os.getenv("OPENAI_MODEL") or "env:OPENAI_MODEL"
+    model = state.active_runtime_label()
     status = state.status
     _addstr(stdscr, 0, 0, title, curses.color_pair(1) | curses.A_BOLD)
     _addstr(stdscr, 0, len(title) + 2, f"session {session}", curses.color_pair(2))

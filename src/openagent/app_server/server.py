@@ -99,7 +99,13 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/sessions/") and path.endswith("/turns"):
                 session_id = path.removeprefix("/api/sessions/").removesuffix("/turns").strip("/")
                 user_text = str(payload.get("input") or payload.get("user_text") or "")
-                turn = self.runtime.start_turn(session_id=session_id, user_text=user_text)
+                turn = self.runtime.start_turn(
+                    session_id=session_id,
+                    user_text=user_text,
+                    model_id=_optional_payload_text(payload, "model_id", "modelID"),
+                    agent=_optional_payload_text(payload, "agent"),
+                    variant=_optional_payload_text(payload, "variant"),
+                )
                 self._send_json({"turn": turn.to_dict()}, status=HTTPStatus.CREATED)
             elif path.startswith("/api/turns/") and path.endswith("/interrupt"):
                 turn_id = path.removeprefix("/api/turns/").removesuffix("/interrupt").strip("/")
@@ -400,6 +406,17 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} is required")
     return value
+
+
+def _optional_payload_text(payload: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
 
 
 def _publish_to_control(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:

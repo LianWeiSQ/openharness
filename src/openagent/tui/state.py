@@ -22,8 +22,13 @@ BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/new", "start a new session"),
     ("/clear", "clear the visible timeline"),
     ("/status", "show current session, turn, and model status"),
+    ("/model [id]", "list or select the active model"),
+    ("/agent [build|plan|explore]", "show or select the active agent"),
+    ("/variant [name|off]", "show, set, or clear the model variant"),
     ("/commands", "list project/global custom commands"),
 )
+
+AVAILABLE_AGENTS = ("build", "plan", "explore")
 
 
 @dataclass(slots=True)
@@ -40,6 +45,9 @@ class TuiState:
     session_picker_index: int = 0
     session_picker_sessions: list[dict[str, object]] = field(default_factory=list)
     active_approval: dict[str, Any] | None = None
+    selected_model_id: str | None = None
+    selected_agent: str = "build"
+    selected_variant: str | None = None
     file_picker_open: bool = False
     file_picker_index: int = 0
     file_picker_query: str = ""
@@ -57,6 +65,15 @@ class TuiState:
     def is_running(self) -> bool:
         return self.active_turn is not None and self.active_turn.status not in {"completed", "failed", "interrupted"}
 
+    def active_model_label(self) -> str:
+        return self.selected_model_id or os.getenv("OPENAI_MODEL") or "env:OPENAI_MODEL"
+
+    def active_runtime_label(self) -> str:
+        label = f"{self.active_model_label()} | {self.selected_agent}"
+        if self.selected_variant:
+            label += f":{self.selected_variant}"
+        return label
+
     def submit(self) -> bool:
         raw_text = self.input_buffer.strip()
         text, display_text, handled = self._prepare_submission(raw_text)
@@ -66,12 +83,27 @@ class TuiState:
         if not text or self.is_running:
             return False
         session_id = self.ensure_session()
-        self.active_turn = self.runtime.start_turn(session_id=session_id, user_text=text)
+        self.active_turn = self._start_turn(session_id=session_id, user_text=text)
         self.next_event_index = 0
         self.input_buffer = ""
         self.status = "running"
         self.timeline.append(TimelineLine("user", f"> {display_text}", important=True))
         return True
+
+    def _start_turn(self, *, session_id: str, user_text: str) -> TurnRecord:
+        kwargs = {
+            "session_id": session_id,
+            "user_text": user_text,
+            "model_id": self.selected_model_id,
+            "agent": self.selected_agent,
+            "variant": self.selected_variant,
+        }
+        try:
+            return self.runtime.start_turn(**kwargs)
+        except TypeError as error:
+            if "unexpected keyword" not in str(error):
+                raise
+            return self.runtime.start_turn(session_id=session_id, user_text=user_text)
 
     def apply_control_request(self, request: dict[str, Any]) -> dict[str, object]:
         path = str(request.get("path") or "")
@@ -136,7 +168,19 @@ class TuiState:
             self.input_buffer = command if command.startswith("/") else f"/{command}"
             submitted = self.submit()
             return {"applied": submitted, "action": action}
-        if action.startswith("model.") or action.startswith("theme.") or action.startswith("palette."):
+        if action == "model.open":
+            self._show_models()
+            return {"applied": True, "action": action}
+        if action == "model.set":
+            model_id = str(params.get("modelID") or params.get("model_id") or params.get("id") or "")
+            return {"applied": self._set_model(model_id), "action": action}
+        if action == "agent.set":
+            agent = str(params.get("agent") or params.get("name") or "")
+            return {"applied": self._set_agent(agent), "action": action}
+        if action == "variant.set":
+            variant = str(params.get("variant") or params.get("name") or "")
+            return {"applied": self._set_variant(variant), "action": action}
+        if action.startswith("theme.") or action.startswith("palette."):
             self.timeline.append(TimelineLine("warning", f"TUI control unsupported: {action}", important=True))
             self.status = "control unsupported"
             return {"applied": False, "action": action, "unsupported": True}
@@ -160,6 +204,11 @@ class TuiState:
             "tui.command.execute": "command.execute",
             "tui.toast.show": "toast.show",
             "tui.session.select": "session.select",
+            "tui.model.open": "model.open",
+            "tui.models.open": "model.open",
+            "tui.model.set": "model.set",
+            "tui.agent.set": "agent.set",
+            "tui.variant.set": "variant.set",
         }.get(topic, topic), body
 
     def _prepare_submission(self, raw_text: str) -> tuple[str, str, bool]:
@@ -212,6 +261,15 @@ class TuiState:
             return True
         if name == "status":
             self._show_status()
+            return True
+        if name == "model":
+            self._model_from_command(arguments)
+            return True
+        if name == "agent":
+            self._agent_from_command(arguments)
+            return True
+        if name == "variant":
+            self._variant_from_command(arguments)
             return True
         return False
 
@@ -472,6 +530,138 @@ class TuiState:
             return None
         return limit
 
+    def _model_from_command(self, arguments: list[str]) -> None:
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /model [model-id]", important=True))
+            self.status = "model invalid"
+            return
+        if not arguments:
+            self._show_models()
+            return
+        self._set_model(arguments[0])
+
+    def _agent_from_command(self, arguments: list[str]) -> None:
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /agent [build|plan|explore]", important=True))
+            self.status = "agent invalid"
+            return
+        if not arguments:
+            self.timeline.append(
+                TimelineLine(
+                    "status",
+                    f"agent: {self.selected_agent}\navailable agents: {', '.join(AVAILABLE_AGENTS)}",
+                    important=True,
+                )
+            )
+            self.status = "agent shown"
+            return
+        self._set_agent(arguments[0])
+
+    def _variant_from_command(self, arguments: list[str]) -> None:
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /variant [name|off]", important=True))
+            self.status = "variant invalid"
+            return
+        if not arguments:
+            self.timeline.append(TimelineLine("status", f"variant: {self.selected_variant or '-'}", important=True))
+            self.status = "variant shown"
+            return
+        self._set_variant(arguments[0])
+
+    def _show_models(self) -> None:
+        list_models = getattr(self.runtime, "list_models", None)
+        if not callable(list_models):
+            self.timeline.append(TimelineLine("warning", "model listing is not supported by this runtime", important=True))
+            self.status = "models unsupported"
+            return
+        try:
+            models = list(list_models())
+        except Exception as error:  # noqa: BLE001 - model listing should fail visibly in TUI.
+            self.timeline.append(TimelineLine("error", f"failed to list models: {error}", important=True))
+            self.status = "models failed"
+            return
+        if not models:
+            self.timeline.append(TimelineLine("status", "no models found", important=True))
+            self.status = "no models"
+            return
+        lines = [f"current: {self.selected_model_id or '-'}"]
+        for model in models:
+            item = model if isinstance(model, dict) else {}
+            model_id = str(item.get("id") or "")
+            if not model_id:
+                continue
+            marker = "*" if model_id == self.selected_model_id else " "
+            provider = str(item.get("provider_id") or "")
+            name = str(item.get("name") or model_id)
+            lines.append(f"{marker} {model_id}  {provider}  {name}")
+        self.timeline.append(TimelineLine("status", "models:\n" + "\n".join(lines), important=True))
+        self.status = "models listed"
+
+    def _set_model(self, model_id: str) -> bool:
+        model_id = model_id.strip()
+        if not model_id:
+            self.timeline.append(TimelineLine("warning", "usage: /model [model-id]", important=True))
+            self.status = "model invalid"
+            return False
+        known_ids = self._known_model_ids()
+        if known_ids and model_id not in known_ids:
+            self.timeline.append(
+                TimelineLine(
+                    "error",
+                    f"model not found: {model_id}\navailable: {', '.join(known_ids)}",
+                    important=True,
+                )
+            )
+            self.status = "model not found"
+            return False
+        self.selected_model_id = model_id
+        self.timeline.append(TimelineLine("status", f"model selected: {model_id}", important=True))
+        self.status = "model selected"
+        return True
+
+    def _set_agent(self, agent: str) -> bool:
+        normalized = agent.strip().lower()
+        if normalized not in AVAILABLE_AGENTS:
+            self.timeline.append(
+                TimelineLine(
+                    "error",
+                    f"agent not found: {agent or '-'}\navailable: {', '.join(AVAILABLE_AGENTS)}",
+                    important=True,
+                )
+            )
+            self.status = "agent not found"
+            return False
+        self.selected_agent = normalized
+        self.timeline.append(TimelineLine("status", f"agent selected: {normalized}", important=True))
+        self.status = "agent selected"
+        return True
+
+    def _set_variant(self, variant: str) -> bool:
+        value = variant.strip()
+        if not value or value.lower() in {"off", "none", "default", "clear"}:
+            self.selected_variant = None
+            self.timeline.append(TimelineLine("status", "variant cleared", important=True))
+            self.status = "variant cleared"
+            return True
+        self.selected_variant = value
+        self.timeline.append(TimelineLine("status", f"variant selected: {value}", important=True))
+        self.status = "variant selected"
+        return True
+
+    def _known_model_ids(self) -> list[str]:
+        list_models = getattr(self.runtime, "list_models", None)
+        if not callable(list_models):
+            return []
+        try:
+            models = list(list_models())
+        except Exception:
+            return []
+        return [
+            str(model.get("id") or "")
+            for model in models
+            if isinstance(model, dict) and str(model.get("id") or "").strip()
+        ]
+
     def _resume_session_id(self, session_id: str) -> None:
         try:
             session = self.runtime.resume_session(session_id)
@@ -578,6 +768,9 @@ class TuiState:
             f"turn: {getattr(turn, 'id', '-') if turn is not None else '-'}",
             f"turn_status: {turn.status if turn is not None else '-'}",
             f"events: {len(turn.events) if turn is not None else 0}",
+            f"model: {self.active_model_label()}",
+            f"agent: {self.selected_agent}",
+            f"variant: {self.selected_variant or '-'}",
         ]
         workspace = getattr(self.runtime, "workspace", None)
         if workspace is not None:
@@ -726,6 +919,9 @@ def _normalize_control_action(action: str) -> str:
         "open-sessions": "sessions.open",
         "open-themes": "theme.open",
         "open-models": "model.open",
+        "select-model": "model.set",
+        "select-agent": "agent.set",
+        "select-variant": "variant.set",
         "select-session": "session.select",
         "show-toast": "toast.show",
         "execute-command": "command.execute",

@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from openagent.core.agent.base import BaseAgent
+from openagent.core.agent.explore import ExploreAgent
+from openagent.core.agent.plan import PlanAgent
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.id import new_id
 from openagent.core.loop.processor import AgentLoop
@@ -25,6 +28,12 @@ from .protocol import AppEvent, TuiControlRequest, lifecycle_event, stream_event
 
 LanguageModelFactory = Callable[[Model], LanguageModel | Awaitable[LanguageModel]]
 MAX_TUI_CONTROL_QUEUE = 100
+APP_AGENT_CLASSES: dict[str, type[BaseAgent]] = {
+    "build": UniversalAgent,
+    "plan": PlanAgent,
+    "explore": ExploreAgent,
+}
+READONLY_APP_AGENTS = {"plan", "explore"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +70,9 @@ class TurnRecord:
     id: str
     session_id: str
     input: str
+    model_id: str | None = None
+    agent_name: str = "build"
+    variant: str | None = None
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     status: str = "queued"
     final_answer: str = ""
@@ -226,6 +238,9 @@ class TurnRecord:
             "id": self.id,
             "session_id": self.session_id,
             "status": self.status,
+            "model_id": self.model_id,
+            "agent": self.agent_name,
+            "variant": self.variant,
             "created_at_ms": self.created_at_ms,
             "final_answer": self.final_answer,
             "error": self.error,
@@ -297,12 +312,31 @@ class OpenAgentAppRuntime:
 
         return asyncio.run(_list())
 
-    def start_turn(self, *, session_id: str, user_text: str) -> TurnRecord:
+    def start_turn(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        model_id: str | None = None,
+        agent: str | None = None,
+        variant: str | None = None,
+    ) -> TurnRecord:
         text = user_text.strip()
         if not text:
             raise ValueError("user_text is required")
+        agent_name = _normalize_agent_name(agent)
+        selected_model_id = _clean_optional_text(model_id)
+        selected_variant = _clean_optional_text(variant)
         session = self._get_session(session_id)
-        turn = TurnRecord(id=new_id("turn"), session_id=session.id, input=text, _event_publisher=self._append_global_event)
+        turn = TurnRecord(
+            id=new_id("turn"),
+            session_id=session.id,
+            input=text,
+            model_id=selected_model_id,
+            agent_name=agent_name,
+            variant=selected_variant,
+            _event_publisher=self._append_global_event,
+        )
         with self._lock:
             self._turns[turn.id] = turn
         thread = threading.Thread(target=self._run_turn_thread, args=(turn.id,), daemon=True)
@@ -411,10 +445,11 @@ class OpenAgentAppRuntime:
             )
         )
 
-        model_metadata = (await self.provider.list_models())[0]
+        model_metadata = self._select_model(await self.provider.list_models(), model_id=turn.model_id)
         language_model = await self._language_model(model_metadata)
-        agent_config = self._agent_config(model_metadata)
-        agent = UniversalAgent(config=agent_config, model=language_model, system_prompt="")
+        agent_config = self._agent_config(model_metadata, agent_name=turn.agent_name, variant=turn.variant)
+        agent_class = APP_AGENT_CLASSES[turn.agent_name]
+        agent = agent_class(config=agent_config, model=language_model, system_prompt="")
         permission_manager = PermissionManager(ask_user_func=turn.request_approval)
         loop = AgentLoop(agent=agent, session=session, permission_manager=permission_manager)
         text_chunks: list[str] = []
@@ -463,26 +498,45 @@ class OpenAgentAppRuntime:
             return await value  # type: ignore[no-any-return]
         return value  # type: ignore[return-value]
 
-    def _agent_config(self, model: Model) -> AgentConfig:
+    def _select_model(self, models: list[Model], *, model_id: str | None) -> Model:
+        if not models:
+            raise ValueError("provider returned no models")
+        if not model_id:
+            return models[0]
+        for model in models:
+            if model.id == model_id:
+                return model
+        available = ", ".join(model.id for model in models)
+        raise ValueError(f"unknown model id: {model_id}. Available models: {available}")
+
+    def _agent_config(self, model: Model, *, agent_name: str = "build", variant: str | None = None) -> AgentConfig:
+        permission = "READONLY" if agent_name in READONLY_APP_AGENTS else _permission_from_env()
+        options: dict[str, Any] = {
+            "selected_agent": agent_name,
+            "selected_model_id": model.id,
+            "session_store": {
+                "enabled": True,
+                "root_dir": str(self.session_store_root),
+            },
+            "trace": {
+                "enabled": True,
+                "root_dir": os.getenv("OPENAGENT_TRACE_ROOT") or ".openagent/traces",
+            },
+            "runtime_warnings": {
+                "enabled": True,
+            },
+        }
+        if variant:
+            options["model_variant"] = variant
+            if variant in {"low", "medium", "high", "xhigh"}:
+                options["reasoning_effort"] = variant
         return AgentConfig(
             name=os.getenv("OPENAGENT_APP_AGENT_NAME") or "openagent-app",
             model=model,
             tools=_tools_from_env(),
-            permission=_permission_from_env(),
+            permission=permission,  # type: ignore[arg-type]
             max_steps=_env_int("OPENAGENT_APP_MAX_STEPS", _env_int("OPENAGENT_MAX_STEPS", 50)),
-            options={
-                "session_store": {
-                    "enabled": True,
-                    "root_dir": str(self.session_store_root),
-                },
-                "trace": {
-                    "enabled": True,
-                    "root_dir": os.getenv("OPENAGENT_TRACE_ROOT") or ".openagent/traces",
-                },
-                "runtime_warnings": {
-                    "enabled": True,
-                },
-            },
+            options=options,
         )
 
     def _get_session(self, session_id: str) -> Session:
@@ -540,6 +594,20 @@ def _permission_from_env() -> str:
     if value not in {"FULL", "READONLY", "PLAN_ONLY", "NONE"}:
         return "FULL"
     return value
+
+
+def _normalize_agent_name(value: str | None) -> str:
+    name = (value or "build").strip().lower()
+    if not name:
+        return "build"
+    if name not in APP_AGENT_CLASSES:
+        raise ValueError(f"unknown agent: {name}. Available agents: {', '.join(sorted(APP_AGENT_CLASSES))}")
+    return name
+
+
+def _clean_optional_text(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _tools_from_env() -> list[str] | str:

@@ -11,8 +11,11 @@ RUNTIME_OPTION_KEYS = frozenset(
         "context_budget",
         "compaction",
         "logging",
+        "model_variant",
         "observability",
         "runtime_warnings",
+        "selected_agent",
+        "selected_model_id",
         "session_store",
         "trace",
     }

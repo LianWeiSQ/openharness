@@ -184,7 +184,7 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
             resumed = runtime.resume_session("session_existing")
             fetched = runtime.get_session("session_existing")
             created = runtime.start_session()
-            turn = runtime.start_turn(session_id="session_existing", user_text="hello")
+            turn = runtime.start_turn(session_id="session_existing", user_text="hello", model_id="gpt-b", agent="plan", variant="high")
             approval_response = runtime.respond_approval("turn_remote", "approval_1", "deny")
             interrupt_response = runtime.interrupt_turn("turn_remote")
 
@@ -204,6 +204,8 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         self.assertTrue(all(record["authorization"] == "Bearer secret" for record in server.records))
         create_record = next(record for record in server.records if record["path"] == "/api/sessions" and record["method"] == "POST")
         self.assertEqual(create_record["payload"]["cwd"], str(workspace))
+        turn_record = next(record for record in server.records if record["path"] == "/api/sessions/session_existing/turns" and record["method"] == "POST")
+        self.assertEqual(turn_record["payload"], {"input": "hello", "model_id": "gpt-b", "agent": "plan", "variant": "high"})
 
     def test_remote_runtime_consumes_global_events_for_remote_turn(self) -> None:
         server = RemoteRuntimeServer(

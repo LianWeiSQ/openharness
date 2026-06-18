@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from openagent.core.provider.base import LanguageModel
 from openagent.core.provider.anthropic import AnthropicProvider
+from openagent.core.types import Model
 from openagent.app_server.runtime import OpenAgentAppRuntime
 
 from _mock_model import ScriptedLanguageModel
@@ -42,6 +43,38 @@ class InterruptibleLanguageModel(LanguageModel):
             await asyncio.sleep(0.01)
         yield {"type": "text-delta", "id": "t2", "text": "after interrupt"}
         yield {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}}
+
+
+class OptionCapturingLanguageModel(LanguageModel):
+    def __init__(self) -> None:
+        self.options_by_call: list[dict[str, Any] | None] = []
+
+    async def stream(
+        self,
+        *,
+        system: str | None,
+        messages: list[Any],
+        tools: list[Any],
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        del system, messages, tools, temperature, max_output_tokens
+        self.options_by_call.append(dict(options) if isinstance(options, dict) else None)
+        yield {"type": "text-delta", "id": "t1", "text": "selected runtime"}
+        yield {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}}
+
+
+class FakeProvider:
+    async def list_models(self) -> list[Model]:
+        return [
+            Model(id="model-a", provider_id="test", name="Model A", context_window=1024, max_output=128),
+            Model(id="model-b", provider_id="test", name="Model B", context_window=2048, max_output=256),
+        ]
+
+    async def get_language_model(self, model: Model) -> LanguageModel:
+        del model
+        return ScriptedLanguageModel(script=[])
 
 
 class AppServerRuntimeTests(unittest.TestCase):
@@ -110,6 +143,47 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertIsInstance(runtime.provider, AnthropicProvider)
         self.assertEqual(models[0]["provider_id"], "anthropic")
         self.assertEqual(models[0]["id"], "claude-runtime")
+
+    def test_runtime_applies_selected_model_agent_and_variant(self) -> None:
+        workspace = self._make_temp_dir()
+        selected_model_ids: list[str] = []
+        model = OptionCapturingLanguageModel()
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda selected: selected_model_ids.append(selected.id) or model,
+        )
+        runtime.provider = FakeProvider()  # type: ignore[assignment]
+
+        session = runtime.start_session()
+        turn = runtime.start_turn(session_id=session["id"], user_text="use selected runtime", model_id="model-b", agent="plan", variant="high")
+
+        self.assertTrue(turn.wait_until_terminal(timeout_s=10.0))
+        self.assertEqual(turn.status, "completed")
+        self.assertEqual(turn.model_id, "model-b")
+        self.assertEqual(turn.agent_name, "plan")
+        self.assertEqual(turn.variant, "high")
+        self.assertEqual(selected_model_ids, ["model-b"])
+        self.assertEqual(model.options_by_call[0]["selected_agent"], "plan")
+        self.assertEqual(model.options_by_call[0]["selected_model_id"], "model-b")
+        self.assertEqual(model.options_by_call[0]["model_variant"], "high")
+        self.assertEqual(model.options_by_call[0]["reasoning_effort"], "high")
+
+    def test_runtime_marks_turn_failed_for_unknown_selected_model(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda _model: ScriptedLanguageModel(script=[]),
+        )
+        runtime.provider = FakeProvider()  # type: ignore[assignment]
+
+        session = runtime.start_session()
+        turn = runtime.start_turn(session_id=session["id"], user_text="use missing model", model_id="missing-model")
+
+        self.assertTrue(turn.wait_until_terminal(timeout_s=10.0))
+        self.assertEqual(turn.status, "failed")
+        self.assertIn("unknown model id: missing-model", turn.error or "")
 
     def test_runtime_interrupts_running_turn_at_event_boundary(self) -> None:
         workspace = self._make_temp_dir()
