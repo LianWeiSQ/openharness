@@ -107,11 +107,11 @@ P0 rows are the first implementation tranche after this matrix:
    and [#67](https://github.com/LianWeiSQ/openagent-ai/issues/67) env-discovery
    slice add the local storage, auth-method metadata, and active-provider base
    needed for this.
-3. [TUI-10 / #63](https://github.com/LianWeiSQ/openagent-ai/issues/63) and
-   [#66](https://github.com/LianWeiSQ/openagent-ai/issues/66): finish attach-era
-   global App Bridge event transport and server-side TUI control routes after
-   the [#62](https://github.com/LianWeiSQ/openagent-ai/issues/62) interactive
-   attach vertical path.
+3. [TUI-10 / #66](https://github.com/LianWeiSQ/openagent-ai/issues/66):
+   finish attach-era server-side TUI control routes after the
+   [#62](https://github.com/LianWeiSQ/openagent-ai/issues/62) interactive
+   attach vertical path and [#63](https://github.com/LianWeiSQ/openagent-ai/issues/63)
+   global App Bridge event transport.
 4. [TUI-04 / #56](https://github.com/LianWeiSQ/openagent-ai/issues/56) and
    [TUI-06 / #58](https://github.com/LianWeiSQ/openagent-ai/issues/58): rich
    approval, diff, and revert UX. These are the trust boundary for coding-agent
