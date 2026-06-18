@@ -388,6 +388,18 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_auth_status.add_argument("name", nargs="?", help="MCP server name; omit to list all")
     mcp_auth_status.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
+    mcp_auth_login = mcp_auth_subparsers.add_parser("login", help="run browser OAuth for a remote MCP server")
+    add_mcp_options(mcp_auth_login)
+    mcp_auth_login.add_argument("name", help="MCP server name")
+    mcp_auth_login.add_argument("--redirect-uri", default=None, help="OAuth redirect URI; default local callback")
+    mcp_auth_login.add_argument("--callback-host", default="127.0.0.1", help="local OAuth callback host")
+    mcp_auth_login.add_argument("--callback-port", type=int, default=14555, help="local OAuth callback port")
+    mcp_auth_login.add_argument("--scope", action="append", default=[], help="OAuth scope; can be used more than once")
+    mcp_auth_login.add_argument("--client-metadata-url", default=None, help="HTTPS client metadata URL for supported servers")
+    mcp_auth_login.add_argument("--no-browser", action="store_true", help="print the authorization URL instead of opening a browser")
+    mcp_auth_login.add_argument("--timeout-s", type=float, default=300.0, help="OAuth login timeout in seconds")
+    mcp_auth_login.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
     mcp_auth_set_token = mcp_auth_subparsers.add_parser("set-token", help="store a bearer token in MCP server headers")
     add_mcp_options(mcp_auth_set_token)
     mcp_auth_set_token.add_argument("name", help="MCP server name")

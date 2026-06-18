@@ -18,6 +18,7 @@ from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import EmbeddedResource, ImageContent, TextContent
 
+from .auth import build_oauth_auth
 from .types import (
     McpConfig,
     McpToolFilter,
@@ -139,13 +140,14 @@ class RemoteMcpManager:
         try:
             transport, result = await self._call_tool_with_fallback(server, descriptor.original_name, arguments or {})
         except Exception as exc:  # noqa: BLE001
+            message = _sanitize_error_text(str(exc))
             with self._lock:
                 state = self._servers[descriptor.server_name]
                 state.status = "error"
-                state.last_error = str(exc)
+                state.last_error = message
             return RemoteMcpToolCallResult(
                 output="",
-                error=str(exc),
+                error=message,
                 metadata=_build_result_metadata(
                     descriptor,
                     transport=self._servers[descriptor.server_name].selected_transport,
@@ -196,10 +198,11 @@ class RemoteMcpManager:
                 state.last_refreshed_at = time.time()
                 state.tools_by_dynamic_name = {item.dynamic_name: item for item in descriptors}
         except Exception as exc:  # noqa: BLE001
+            message = _sanitize_error_text(str(exc))
             with self._lock:
                 state.status = "error"
                 state.selected_transport = None
-                state.last_error = str(exc)
+                state.last_error = message
                 state.last_refreshed_at = time.time()
                 state.tools_by_dynamic_name = {}
 
@@ -220,7 +223,7 @@ class RemoteMcpManager:
                 tools = await self._list_tools(server, transport)
                 return transport, tools
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{transport}: {exc}")
+                errors.append(f"{transport}: {_sanitize_error_text(str(exc))}")
                 if server.transport != "auto":
                     break
         raise RuntimeError(f"Failed to list tools from MCP server '{server.name}' ({'; '.join(errors)})")
@@ -251,7 +254,7 @@ class RemoteMcpManager:
                     state.last_error = None
                 return transport, result
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{transport}: {exc}")
+                errors.append(f"{transport}: {_sanitize_error_text(str(exc))}")
                 if server.transport != "auto":
                     break
         raise RuntimeError(
@@ -293,7 +296,8 @@ class RemoteMcpManager:
         transport: Literal["http", "sse"],
     ):
         timeout_seconds = _timeout_seconds(server.timeout_ms)
-        client = httpx.AsyncClient(headers=server.headers, timeout=httpx.Timeout(timeout_seconds))
+        auth = _build_oauth_auth(server)
+        client = _build_http_client(server, timeout_seconds=timeout_seconds, auth=auth)
         try:
             if transport == "http":
                 async with streamable_http_client(server.url, http_client=client) as streams:
@@ -310,6 +314,7 @@ class RemoteMcpManager:
             async with sse_client(
                 server.url,
                 headers=server.headers,
+                auth=auth,
                 timeout=timeout_seconds,
                 sse_read_timeout=max(timeout_seconds, 60.0),
             ) as streams:
@@ -414,6 +419,38 @@ def _timeout_seconds(timeout_ms: int) -> float:
     return max(float(timeout_ms) / 1000.0, 1.0)
 
 
+def _build_oauth_auth(server: RemoteMcpServerConfig) -> httpx.Auth | None:
+    return build_oauth_auth(server)
+
+
+def _build_http_client(
+    server: RemoteMcpServerConfig,
+    *,
+    timeout_seconds: float,
+    auth: httpx.Auth | None = None,
+) -> httpx.AsyncClient:
+    return httpx.AsyncClient(headers=server.headers, timeout=httpx.Timeout(timeout_seconds), auth=auth)
+
+
+def _sanitize_error_text(value: str) -> str:
+    redacted = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer [redacted]", value)
+    redacted = re.sub(
+        r"(?i)\b(access[_-]?token|refresh[_-]?token|id[_-]?token|bearer[_-]?token|auth[_-]?token|api[_-]?key|client[_-]?secret|secret|token|code|state)=([^&\s\"']+)",
+        lambda match: f"{match.group(1)}=[redacted]",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?i)([\"'](?:access[_-]?token|refresh[_-]?token|id[_-]?token|bearer[_-]?token|auth[_-]?token|api[_-]?key|client[_-]?secret|secret|token|code|state)[\"']\s*:\s*[\"'])([^\"']+)([\"'])",
+        lambda match: f"{match.group(1)}[redacted]{match.group(3)}",
+        redacted,
+    )
+    return re.sub(
+        r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s@]+@)",
+        lambda match: f"{match.group(1)}[redacted]@",
+        redacted,
+    )
+
+
 def _build_result_metadata(
     descriptor: RemoteMcpToolDescriptor,
     *,
@@ -492,5 +529,3 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _json_safe(vars(value))
     return str(value)
-
-

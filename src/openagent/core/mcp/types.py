@@ -13,6 +13,38 @@ class McpToolFilter:
 
 
 @dataclass(frozen=True, slots=True)
+class McpOAuthTokens:
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int | None = None
+    scope: str | None = None
+    refresh_token: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class McpOAuthClientInfo:
+    client_id: str | None = None
+    client_secret: str | None = None
+    client_id_issued_at: int | None = None
+    client_secret_expires_at: int | None = None
+    redirect_uris: tuple[str, ...] = ()
+    token_endpoint_auth_method: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class McpOAuthConfig:
+    enabled: bool = True
+    redirect_uris: tuple[str, ...] = ("http://127.0.0.1:14555/oauth/callback",)
+    scopes: tuple[str, ...] = ()
+    client_name: str = "OpenAgent"
+    client_uri: str | None = None
+    client_metadata_url: str | None = None
+    timeout_s: float = 300.0
+    tokens: McpOAuthTokens | None = None
+    client: McpOAuthClientInfo | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class RemoteMcpServerConfig:
     name: str
     url: str
@@ -21,6 +53,7 @@ class RemoteMcpServerConfig:
     headers: dict[str, str] = field(default_factory=dict)
     timeout_ms: int = 30000
     tools: McpToolFilter = field(default_factory=McpToolFilter)
+    oauth: McpOAuthConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,4 +127,3 @@ class RemoteMcpSnapshot:
             "server_count": self.server_count,
             "servers": [server.to_dict() for server in self.servers],
         }
-

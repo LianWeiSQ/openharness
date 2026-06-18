@@ -11,7 +11,8 @@ from mcp.types import TextContent
 
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.loop.processor import AgentLoop
-from openagent.core.mcp.runtime import RemoteMcpManager
+from openagent.core.mcp.config import load_mcp_config
+from openagent.core.mcp.runtime import RemoteMcpManager, _build_http_client, _build_oauth_auth, _sanitize_error_text
 from openagent.core.mcp.types import McpConfig, RemoteMcpServerConfig, RemoteMcpToolDescriptor
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.session.session import Session
@@ -175,3 +176,40 @@ class McpRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Cloudy with light wind.', tool_messages[0].content)
         self.assertNotIn('structured', tool_messages[0].content.lower())
         self.assertNotIn('temperature', tool_messages[0].content)
+
+    async def test_remote_mcp_oauth_auth_is_attached_to_http_client(self) -> None:
+        server = load_mcp_config(
+            {
+                "mcpServers": {
+                    "secure": {
+                        "url": "https://example.com/mcp",
+                        "headers": {"X-Team": "platform"},
+                        "oauth": {
+                            "tokens": {"access_token": "seeded-access-token"},
+                            "client": {"client_id": "client-id"},
+                        },
+                    }
+                }
+            }
+        ).servers[0]
+
+        auth = _build_oauth_auth(server)
+        client = _build_http_client(server, timeout_seconds=1.0, auth=auth)
+        try:
+            self.assertIsNotNone(auth)
+            self.assertIs(client.auth, auth)
+            self.assertEqual(client.headers["X-Team"], "platform")
+        finally:
+            await client.aclose()
+
+    async def test_remote_mcp_runtime_sanitizes_secret_errors(self) -> None:
+        message = _sanitize_error_text(
+            "failed Bearer access-secret at https://user:pass@example.test/mcp?token=url-secret "
+            "{'client_secret': 'client-secret'}"
+        )
+
+        self.assertNotIn("access-secret", message)
+        self.assertNotIn("user:pass", message)
+        self.assertNotIn("url-secret", message)
+        self.assertNotIn("client-secret", message)
+        self.assertIn("[redacted]", message)

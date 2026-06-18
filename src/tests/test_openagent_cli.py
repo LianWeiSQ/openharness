@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+
 from openagent.cli.main import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
@@ -1827,6 +1829,121 @@ Create component $1 for $ARGUMENTS.
                 {"client_id": "nested-client-id", "registration_url": "https://issuer.example/register"},
             )
             self.assertEqual(server["client_id"], "client-id")
+
+    def test_mcp_auth_status_and_logout_handle_structured_oauth_tokens(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "secure": {
+                                "url": "https://example.com/mcp",
+                                "oauth": {
+                                    "enabled": True,
+                                    "scopes": ["tools"],
+                                    "tokens": {
+                                        "access_token": "nested-access-secret",
+                                        "refresh_token": "nested-refresh-secret",
+                                    },
+                                    "client": {
+                                        "client_id": "registered-client",
+                                        "client_secret": "nested-client-secret",
+                                    },
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status_stdout = io.StringIO()
+            status_args = parser.parse_args(
+                ["mcp", "auth", "status", "secure", "--config", str(config_path), "--format", "json"]
+            )
+            self.assertEqual(run_mcp_command(status_args, stdout=status_stdout, stderr=io.StringIO()), 0)
+            status_payload = json.loads(status_stdout.getvalue())
+            self.assertEqual(status_payload["server"]["status"], "authenticated")
+            self.assertEqual(status_payload["server"]["method"], "oauth")
+            self.assertIn("oauth.tokens", status_payload["server"]["token_fields"])
+            self.assertTrue(status_payload["server"]["client_id_set"])
+            self.assertTrue(status_payload["server"]["client_secret_set"])
+            self.assertNotIn("nested-access-secret", status_stdout.getvalue())
+            self.assertNotIn("nested-client-secret", status_stdout.getvalue())
+
+            logout_stdout = io.StringIO()
+            logout_args = parser.parse_args(["mcp", "logout", "secure", "--config", str(config_path), "--format", "json"])
+            self.assertEqual(run_mcp_command(logout_args, stdout=logout_stdout, stderr=io.StringIO()), 0)
+            logout_payload = json.loads(logout_stdout.getvalue())
+            self.assertEqual(logout_payload["server"]["status"], "needs_auth")
+            self.assertEqual(logout_payload["removed_fields"], ["oauth.client.client_secret", "oauth.tokens"])
+            self.assertNotIn("nested-access-secret", logout_stdout.getvalue())
+            self.assertNotIn("nested-client-secret", logout_stdout.getvalue())
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                raw["mcpServers"]["secure"]["oauth"],
+                {"client": {"client_id": "registered-client"}, "enabled": True, "scopes": ["tools"]},
+            )
+
+    def test_mcp_auth_login_writes_oauth_tokens_and_client_registration(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            config_path.write_text(
+                json.dumps({"mcpServers": {"secure": {"url": "https://example.com/mcp"}}}),
+                encoding="utf-8",
+            )
+            calls: list[dict[str, object]] = []
+
+            async def fake_flow(server, **kwargs):
+                calls.append({"server": server, **kwargs})
+                return (
+                    OAuthToken(access_token="oauth-access-secret", refresh_token="oauth-refresh-secret"),
+                    OAuthClientInformationFull(
+                        redirect_uris=["http://127.0.0.1:14555/oauth/callback"],
+                        client_id="registered-client",
+                        client_secret="registered-secret",
+                    ),
+                )
+
+            args = parser.parse_args(
+                [
+                    "mcp",
+                    "auth",
+                    "login",
+                    "secure",
+                    "--config",
+                    str(config_path),
+                    "--scope",
+                    "tools",
+                    "--no-browser",
+                    "--format",
+                    "json",
+                ]
+            )
+            stdout = io.StringIO()
+
+            with patch("openagent.cli.mcp.run_mcp_oauth_login_flow", side_effect=fake_flow):
+                self.assertEqual(run_mcp_command(args, stdout=stdout, stderr=io.StringIO()), 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["server"]["status"], "authenticated")
+            self.assertEqual(payload["server"]["method"], "oauth")
+            self.assertEqual(payload["server"]["token_fields"], ["oauth.tokens"])
+            self.assertNotIn("oauth-access-secret", stdout.getvalue())
+            self.assertNotIn("registered-secret", stdout.getvalue())
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            oauth = raw["mcpServers"]["secure"]["oauth"]
+            self.assertEqual(oauth["enabled"], True)
+            self.assertEqual(oauth["scopes"], ["tools"])
+            self.assertEqual(oauth["tokens"]["access_token"], "oauth-access-secret")
+            self.assertEqual(oauth["tokens"]["refresh_token"], "oauth-refresh-secret")
+            self.assertEqual(oauth["client"]["client_id"], "registered-client")
+            self.assertEqual(oauth["client"]["client_secret"], "registered-secret")
+            self.assertEqual(calls[0]["redirect_uri"], "http://127.0.0.1:14555/oauth/callback")
+            self.assertTrue(calls[0]["no_browser"])
 
     def test_mcp_debug_refresh_failure_is_structured_and_redacted(self) -> None:
         parser = build_parser()

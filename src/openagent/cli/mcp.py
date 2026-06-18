@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
 import sys
+import threading
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+import httpx
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from openagent.core.mcp import RemoteMcpManager, load_mcp_config
+from openagent.core.mcp.auth import build_oauth_auth, build_oauth_storage
 
 MCP_CONFIG_ENV = "OPENAGENT_MCP_CONFIG"
 SUPPORTED_MCP_TRANSPORTS = {"auto", "http", "sse"}
@@ -80,6 +89,10 @@ def run_mcp_command(args: argparse.Namespace, *, stdout: object | None = None, s
                 payload = status_mcp_auth(args)
                 table_kind = "auth_status" if "server" in payload else "auth_list"
                 print_mcp_payload(payload, output_format=str(getattr(args, "format", "table")), stdout=out, table_kind=table_kind)
+                return 0
+            if auth_command == "login":
+                payload = login_mcp_auth(args, stderr=err)
+                print_mcp_payload(payload, output_format=str(getattr(args, "format", "table")), stdout=out, table_kind="auth_update")
                 return 0
             if auth_command == "set-token":
                 payload = set_mcp_auth_token(args)
@@ -180,6 +193,74 @@ def set_mcp_auth_token(args: argparse.Namespace) -> dict[str, object]:
     return {
         "config_path": str(path),
         "updated": True,
+        "server": mcp_auth_status_item(name, server),
+    }
+
+
+def login_mcp_auth(args: argparse.Namespace, *, stderr: object | None = None) -> dict[str, object]:
+    name = normalize_server_name(str(getattr(args, "name", "")))
+    timeout_s = float(getattr(args, "timeout_s", 300.0) or 300.0)
+    if timeout_s < 1.0:
+        raise ValueError("MCP OAuth timeout must be at least 1 second.")
+    redirect_uri = resolve_oauth_redirect_uri(args)
+    output = stderr or sys.stderr
+
+    path = resolve_mcp_config_path(args)
+    raw = read_mcp_config_file(path)
+    servers = mcp_servers(raw)
+    if name not in servers:
+        raise KeyError(f"MCP server not found: {name}")
+    server = ensure_server_object(name, servers[name])
+    status = mcp_auth_status_item(name, server)
+    if status.get("status") == "not_remote":
+        raise ValueError(f"MCP server is not remote: {name}")
+    if status.get("status") == "error":
+        raise ValueError(str(status.get("error") or f"MCP server is invalid: {name}"))
+
+    oauth = ensure_oauth_config_object(server)
+    oauth["enabled"] = True
+    oauth["redirect_uri"] = redirect_uri
+    oauth["timeout_s"] = timeout_s
+    scopes = [str(item).strip() for item in list(getattr(args, "scope", []) or []) if str(item).strip()]
+    if scopes:
+        oauth["scopes"] = scopes
+    client_metadata_url = str(getattr(args, "client_metadata_url", "") or "").strip()
+    if client_metadata_url:
+        oauth["client_metadata_url"] = client_metadata_url
+
+    try:
+        config = load_mcp_config({"mcpServers": {name: server}})
+    except ValueError as error:
+        raise ValueError(sanitize_secret_text(str(error))) from error
+    server_config = config.servers[0]
+
+    try:
+        tokens, client_info = asyncio.run(
+            run_mcp_oauth_login_flow(
+                server_config,
+                redirect_uri=redirect_uri,
+                no_browser=bool(getattr(args, "no_browser", False)),
+                timeout_s=timeout_s,
+                stderr=output,
+            )
+        )
+    except OSError as error:
+        raise ValueError(f"Failed to start local OAuth callback server: {error}") from error
+    except TimeoutError as error:
+        raise ValueError(str(error)) from error
+    except httpx.HTTPError as error:
+        raise ValueError(sanitize_secret_text(str(error))) from error
+    except Exception as error:
+        raise ValueError(sanitize_secret_text(str(error) or error.__class__.__name__)) from error
+
+    oauth["tokens"] = oauth_tokens_to_config(tokens)
+    if client_info is not None:
+        oauth["client"] = oauth_client_info_to_config(client_info)
+    write_mcp_config_file(path, raw)
+    return {
+        "config_path": str(path),
+        "updated": True,
+        "redirect_uri": redirect_uri,
         "server": mcp_auth_status_item(name, server),
     }
 
@@ -436,6 +517,168 @@ def read_bearer_token(args: argparse.Namespace) -> str:
     if not value:
         raise ValueError("MCP bearer token cannot be empty.")
     return value
+
+
+def resolve_oauth_redirect_uri(args: argparse.Namespace) -> str:
+    explicit = str(getattr(args, "redirect_uri", "") or "").strip()
+    if explicit:
+        validate_local_redirect_uri(explicit)
+        return explicit
+    host = str(getattr(args, "callback_host", "127.0.0.1") or "127.0.0.1").strip()
+    port = int(getattr(args, "callback_port", 14555) or 14555)
+    if port < 1 or port > 65535:
+        raise ValueError("MCP OAuth callback port must be between 1 and 65535.")
+    redirect_uri = f"http://{host}:{port}/oauth/callback"
+    validate_local_redirect_uri(redirect_uri)
+    return redirect_uri
+
+
+def validate_local_redirect_uri(value: str) -> None:
+    parsed = urlparse(value)
+    if parsed.scheme != "http" or not parsed.hostname:
+        raise ValueError("MCP OAuth redirect URI must be an absolute http://localhost URL.")
+    if parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("MCP OAuth redirect URI must use localhost or 127.0.0.1.")
+    if not parsed.port:
+        raise ValueError("MCP OAuth redirect URI must include an explicit port.")
+    if parsed.query or parsed.fragment:
+        raise ValueError("MCP OAuth redirect URI cannot include query or fragment.")
+
+
+def ensure_oauth_config_object(server: dict[str, Any]) -> dict[str, Any]:
+    raw = server.get("oauth")
+    if raw is None or isinstance(raw, bool):
+        oauth: dict[str, Any] = {"enabled": True}
+        server["oauth"] = oauth
+        return oauth
+    if not isinstance(raw, dict):
+        raise ValueError("MCP oauth config must be a boolean or object.")
+    return raw
+
+
+async def run_mcp_oauth_login_flow(
+    server,
+    *,
+    redirect_uri: str,
+    no_browser: bool,
+    timeout_s: float,
+    stderr: object,
+) -> tuple[OAuthToken, OAuthClientInformationFull | None]:
+    callback = LocalOAuthCallbackServer(redirect_uri=redirect_uri, timeout_s=timeout_s)
+    with callback:
+        storage = build_oauth_storage(server)
+
+        async def redirect_handler(url: str) -> None:
+            print(f"MCP OAuth authorization URL for {server.name}:", file=stderr)
+            print(url, file=stderr)
+            if not no_browser:
+                webbrowser.open(url)
+
+        async def callback_handler() -> tuple[str, str | None]:
+            return await callback.wait_async()
+
+        auth = build_oauth_auth(
+            server,
+            storage=storage,
+            redirect_handler=redirect_handler,
+            callback_handler=callback_handler,
+        )
+        async with httpx.AsyncClient(headers=server.headers, auth=auth, timeout=httpx.Timeout(timeout_s)) as client:
+            await client.get(server.url)
+
+        tokens = await storage.get_tokens()
+        if tokens is None:
+            raise ValueError(
+                "MCP OAuth login did not receive tokens. "
+                "Ensure the remote server starts OAuth with a 401 WWW-Authenticate challenge."
+            )
+        return tokens, await storage.get_client_info()
+
+
+def oauth_tokens_to_config(tokens: OAuthToken) -> dict[str, object]:
+    return tokens.model_dump(mode="json", exclude_none=True)
+
+
+def oauth_client_info_to_config(client_info: OAuthClientInformationFull) -> dict[str, object]:
+    payload = client_info.model_dump(mode="json", exclude_none=True)
+    allowed = {
+        "client_id",
+        "client_secret",
+        "client_id_issued_at",
+        "client_secret_expires_at",
+        "redirect_uris",
+        "token_endpoint_auth_method",
+    }
+    return {key: value for key, value in payload.items() if key in allowed}
+
+
+class LocalOAuthCallbackServer:
+    def __init__(self, *, redirect_uri: str, timeout_s: float) -> None:
+        validate_local_redirect_uri(redirect_uri)
+        parsed = urlparse(redirect_uri)
+        self.host = parsed.hostname or "127.0.0.1"
+        self.port = int(parsed.port or 0)
+        self.path = parsed.path or "/oauth/callback"
+        self.timeout_s = timeout_s
+        self._event = threading.Event()
+        self._code: str | None = None
+        self._state: str | None = None
+        self._error: str | None = None
+        self._server: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> LocalOAuthCallbackServer:
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API.
+                parsed = urlparse(self.path)
+                if parsed.path != owner.path:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                query = parse_qs(parsed.query)
+                owner._code = (query.get("code") or [""])[0]
+                owner._state = (query.get("state") or [None])[0]
+                owner._error = (query.get("error") or [None])[0]
+                owner._event.set()
+                self.send_response(200 if owner._code else 400)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                body = (
+                    "<html><body><h1>OpenAgent MCP OAuth complete</h1>"
+                    "<p>You can return to the terminal.</p></body></html>"
+                    if owner._code
+                    else "<html><body><h1>OpenAgent MCP OAuth failed</h1></body></html>"
+                )
+                self.wfile.write(body.encode("utf-8"))
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - stdlib API name.
+                return
+
+        self._server = ThreadingHTTPServer((self.host, self.port), Handler)
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    async def wait_async(self) -> tuple[str, str | None]:
+        return await asyncio.to_thread(self._wait)
+
+    def _wait(self) -> tuple[str, str | None]:
+        if not self._event.wait(self.timeout_s):
+            raise TimeoutError("Timed out waiting for MCP OAuth callback.")
+        if self._error:
+            raise ValueError(f"MCP OAuth callback returned error: {self._error}")
+        if not self._code:
+            raise ValueError("MCP OAuth callback did not include a code.")
+        return self._code, self._state
 
 
 def normalize_header_name(name: str) -> str:

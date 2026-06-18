@@ -67,6 +67,74 @@ class McpConfigTests(unittest.TestCase):
 
         self.assertEqual(config.servers[0].transport, "sse")
 
+    def test_load_mcp_config_parses_oauth_config(self) -> None:
+        config = load_mcp_config(
+            {
+                "mcpServers": {
+                    "secure": {
+                        "url": "https://mcp.example.test/mcp",
+                        "oauth": {
+                            "redirect_uri": "http://127.0.0.1:14555/callback",
+                            "scopes": ["tools", "search"],
+                            "client_name": "OpenAgent Test",
+                            "client_uri": "https://openagent.example.test",
+                            "client_metadata_url": "https://client.example.test/openagent.json",
+                            "tokens": {
+                                "access_token": "access-secret",
+                                "refresh_token": "refresh-secret",
+                                "expires_in": 3600,
+                            },
+                            "client": {
+                                "client_id": "client-id",
+                                "client_secret": "client-secret",
+                                "token_endpoint_auth_method": "client_secret_basic",
+                            },
+                        },
+                    }
+                }
+            }
+        )
+
+        oauth = config.servers[0].oauth
+        self.assertIsNotNone(oauth)
+        assert oauth is not None
+        self.assertTrue(oauth.enabled)
+        self.assertEqual(oauth.redirect_uris, ("http://127.0.0.1:14555/callback",))
+        self.assertEqual(oauth.scopes, ("tools", "search"))
+        self.assertEqual(oauth.client_name, "OpenAgent Test")
+        self.assertEqual(oauth.client_uri, "https://openagent.example.test")
+        self.assertEqual(oauth.client_metadata_url, "https://client.example.test/openagent.json")
+        self.assertEqual(oauth.tokens.access_token if oauth.tokens else None, "access-secret")
+        self.assertEqual(oauth.tokens.refresh_token if oauth.tokens else None, "refresh-secret")
+        self.assertEqual(oauth.client.client_id if oauth.client else None, "client-id")
+        self.assertEqual(oauth.client.token_endpoint_auth_method if oauth.client else None, "client_secret_basic")
+
+    def test_load_mcp_config_rejects_invalid_oauth_redirect_uri(self) -> None:
+        with self.assertRaisesRegex(ValueError, "redirect_uri"):
+            load_mcp_config(
+                {
+                    "mcpServers": {
+                        "secure": {
+                            "url": "https://mcp.example.test/mcp",
+                            "oauth": {"redirect_uri": "not-a-url"},
+                        }
+                    }
+                }
+            )
+
+    def test_load_mcp_config_rejects_invalid_oauth_scope_items(self) -> None:
+        with self.assertRaisesRegex(ValueError, "scopes"):
+            load_mcp_config(
+                {
+                    "mcpServers": {
+                        "secure": {
+                            "url": "https://mcp.example.test/mcp",
+                            "oauth": {"scopes": ["tools search"]},
+                        }
+                    }
+                }
+            )
+
     def test_load_mcp_config_rejects_non_remote_type(self) -> None:
         with self.assertRaisesRegex(ValueError, "streamableHttp"):
             load_mcp_config(
