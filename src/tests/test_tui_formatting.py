@@ -206,6 +206,7 @@ class TuiFormattingTests(unittest.TestCase):
 
         timeline_text = "\n".join(line.text for line in state.timeline)
         self.assertIn("/sessions - open recent session picker", timeline_text)
+        self.assertIn("/transcript [limit] - show recent messages from the current session", timeline_text)
         self.assertIn("/review - Review changes", timeline_text)
         self.assertEqual(state.status, "commands listed")
         self.assertEqual(state.input_buffer, "")
@@ -219,6 +220,7 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertFalse(state.submit())
         self.assertEqual(state.status, "help listed")
         self.assertIn("/resume <id>", "\n".join(line.text for line in state.timeline))
+        self.assertIn("/transcript [limit]", "\n".join(line.text for line in state.timeline))
 
         state.input_buffer = "/status"
         self.assertFalse(state.submit())
@@ -246,6 +248,32 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("> old task", timeline_text)
         self.assertIn("old answer", timeline_text)
         self.assertIn("resumed session: session_alpha123", timeline_text)
+
+    def test_tui_transcript_renders_current_session_with_limit(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SessionRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.session_id = "session_alpha123"
+        state.input_buffer = "/transcript 1"
+
+        self.assertFalse(state.submit())
+
+        self.assertEqual(state.status, "transcript shown")
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("transcript: session_alpha123 (last 1 of 2 messages)", timeline_text)
+        self.assertNotIn("> old task", timeline_text)
+        self.assertIn("old answer", timeline_text)
+
+    def test_tui_transcript_reports_unsupported_runtime(self) -> None:
+        workspace = self._make_temp_dir()
+        state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
+        state.session_id = "session_live"
+        state.input_buffer = "/transcript"
+
+        self.assertFalse(state.submit())
+
+        self.assertEqual(state.status, "transcript unsupported")
+        self.assertIn("transcript is not supported by this runtime", "\n".join(line.text for line in state.timeline))
 
     def test_tui_session_picker_keyboard_resumes_selected_session(self) -> None:
         workspace = self._make_temp_dir()

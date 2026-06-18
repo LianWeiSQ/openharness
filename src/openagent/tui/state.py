@@ -11,10 +11,14 @@ from openagent.cli.custom_commands import discover_commands, inject_file_referen
 
 from .formatting import TimelineLine, format_event
 
+DEFAULT_TRANSCRIPT_LIMIT = 30
+MAX_TRANSCRIPT_LIMIT = 100
+
 BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "show TUI commands"),
     ("/sessions", "open recent session picker"),
     ("/resume <id>", "resume a session by id or unique prefix"),
+    ("/transcript [limit]", "show recent messages from the current session"),
     ("/new", "start a new session"),
     ("/clear", "clear the visible timeline"),
     ("/status", "show current session, turn, and model status"),
@@ -106,6 +110,9 @@ class TuiState:
             return True
         if name in {"resume", "continue"}:
             self._resume_from_command(arguments)
+            return True
+        if name == "transcript":
+            self._transcript_from_command(arguments)
             return True
         if name == "new":
             session_id = self.new_session()
@@ -337,6 +344,42 @@ class TuiState:
             return
         self._resume_session_id(match)
 
+    def _transcript_from_command(self, arguments: list[str]) -> None:
+        limit = self._parse_transcript_limit(arguments)
+        if limit is None:
+            return
+        if not self.session_id:
+            self.timeline.append(TimelineLine("error", "no active session for transcript", important=True))
+            self.status = "no session"
+            return
+        self._append_session_messages(self.session_id, limit=limit, announce=True, report_errors=True)
+
+    def _parse_transcript_limit(self, arguments: list[str]) -> int | None:
+        if not arguments:
+            return DEFAULT_TRANSCRIPT_LIMIT
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /transcript [limit]", important=True))
+            self.status = "transcript invalid"
+            return None
+        raw_limit = arguments[0]
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            self.timeline.append(TimelineLine("error", f"invalid transcript limit: {raw_limit}", important=True))
+            self.status = "transcript invalid"
+            return None
+        if limit < 1 or limit > MAX_TRANSCRIPT_LIMIT:
+            self.timeline.append(
+                TimelineLine(
+                    "error",
+                    f"transcript limit must be between 1 and {MAX_TRANSCRIPT_LIMIT}",
+                    important=True,
+                )
+            )
+            self.status = "transcript invalid"
+            return None
+        return limit
+
     def _resume_session_id(self, session_id: str) -> None:
         try:
             session = self.runtime.resume_session(session_id)
@@ -369,17 +412,57 @@ class TuiState:
         return None
 
     def _load_session_messages(self, session_id: str) -> None:
+        self._append_session_messages(session_id, limit=DEFAULT_TRANSCRIPT_LIMIT, announce=False, report_errors=False)
+
+    def _append_session_messages(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        announce: bool,
+        report_errors: bool,
+    ) -> None:
         get_session = getattr(self.runtime, "get_session", None)
         if not callable(get_session):
+            if report_errors:
+                self.timeline.append(TimelineLine("warning", "transcript is not supported by this runtime", important=True))
+                self.status = "transcript unsupported"
             return
         try:
             payload = get_session(session_id)
-        except Exception:  # noqa: BLE001 - resume should still work without transcript rendering.
+        except Exception as error:  # noqa: BLE001 - transcript failures should be visible when requested.
+            if report_errors:
+                self.timeline.append(TimelineLine("error", f"failed to load transcript: {error}", important=True))
+                self.status = "transcript failed"
             return
         messages = payload.get("messages") if isinstance(payload, dict) else None
         if not isinstance(messages, list):
+            if report_errors:
+                self.timeline.append(TimelineLine("error", "session transcript is unavailable", important=True))
+                self.status = "transcript unavailable"
             return
-        for message in messages[-30:]:
+        lines = self._session_message_lines(messages[-limit:])
+        if not lines:
+            if report_errors:
+                self.timeline.append(TimelineLine("status", f"transcript is empty for session: {session_id}", important=True))
+                self.status = "transcript empty"
+            return
+        if announce:
+            shown_count = min(limit, len(messages))
+            self.timeline.append(
+                TimelineLine(
+                    "status",
+                    f"transcript: {session_id} (last {shown_count} of {len(messages)} messages)",
+                    important=True,
+                )
+            )
+        self.timeline.extend(lines)
+        if report_errors:
+            self.status = "transcript shown"
+
+    def _session_message_lines(self, messages: list[object]) -> list[TimelineLine]:
+        lines: list[TimelineLine] = []
+        for message in messages:
             if not isinstance(message, dict):
                 continue
             role = str(message.get("role") or "message")
@@ -387,13 +470,14 @@ class TuiState:
             if not content:
                 continue
             if role == "user":
-                self.timeline.append(TimelineLine("user", f"> {content}", important=True))
+                lines.append(TimelineLine("user", f"> {content}", important=True))
             elif role == "assistant":
-                self.timeline.append(TimelineLine("assistant", content, important=False))
+                lines.append(TimelineLine("assistant", content, important=False))
             elif role == "tool":
-                self.timeline.append(TimelineLine("tool", f"tool result: {content}", important=False))
+                lines.append(TimelineLine("tool", f"tool result: {content}", important=False))
             else:
-                self.timeline.append(TimelineLine("event", f"{role}: {content}", important=False))
+                lines.append(TimelineLine("event", f"{role}: {content}", important=False))
+        return lines
 
     def _show_status(self) -> None:
         turn = self.active_turn
