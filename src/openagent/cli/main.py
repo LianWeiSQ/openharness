@@ -14,8 +14,12 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from openagent.cli.auth import list_providers, load_auth_env, login_provider, logout_provider, resolve_auth_file
+from openagent.cli.auth import list_providers, load_auth_env, login_provider, login_wellknown_provider, logout_provider, resolve_auth_file
 from openagent.cli.custom_commands import discover_commands, render_command, resolve_command
+from openagent.cli.wellknown import (
+    WellKnownProviderError,
+    load_wellknown_provider_login,
+)
 from openagent.core.provider.metadata import (
     DEFAULT_PROVIDER,
     default_env_mapping,
@@ -484,13 +488,15 @@ def add_auth_parser(subparsers: argparse._SubParsersAction, name: str, *, help_t
 
     auth_login = auth_subparsers.add_parser("login", help="store OpenAI-compatible provider credentials")
     add_auth_options(auth_login)
-    auth_login.add_argument("--provider", "-p", default="openai", help="provider id, default openai")
+    auth_login.add_argument("provider_url", nargs="?", default=None, help="provider URL for guarded .well-known/opencode login")
+    auth_login.add_argument("--provider", "-p", default=None, help="provider id, default openai for API-key login; required for provider URL login")
     auth_login.add_argument("--type", dest="credential_type", default=None, help="credential type metadata; default api on first login")
     auth_login.add_argument("--api-key", default=None, help="API key to store")
     auth_login.add_argument("--api-key-stdin", action="store_true", help="read API key from stdin")
     auth_login.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
     auth_login.add_argument("--model", default=None, help="default model id")
     auth_login.add_argument("--wire-api", choices=["chat", "responses"], default=None, help="wire API")
+    auth_login.add_argument("--allow-insecure-localhost", action="store_true", help="allow localhost provider URL login and http localhost dev endpoints")
 
     auth_list = auth_subparsers.add_parser("list", aliases=["ls"], help="list authenticated providers")
     add_auth_options(auth_list)
@@ -1271,12 +1277,74 @@ def run_auth_command(
     command = str(getattr(args, "auth_command", ""))
     auth_file = getattr(args, "auth_file", None)
     if command == "login":
+        provider_url = getattr(args, "provider_url", None)
+        if provider_url:
+            provider = getattr(args, "provider", None)
+            if not provider:
+                print("--provider is required for provider URL login", file=err)
+                return 2
+            try:
+                normalized_provider = normalize_provider(str(provider))
+                login = load_wellknown_provider_login(
+                    str(provider_url),
+                    provider=normalized_provider,
+                    allow_insecure_localhost=bool(getattr(args, "allow_insecure_localhost", False)),
+                )
+            except WellKnownProviderError as error:
+                print(str(error), file=err)
+                return 2
+            except ValueError as error:
+                print(str(error), file=err)
+                return 2
+            api_key = getattr(args, "api_key", None)
+            if getattr(args, "api_key_stdin", False):
+                api_key = str(source.read()).strip()
+            if not api_key:
+                print(
+                    json.dumps(
+                        {
+                            "status": "command_preview",
+                            "provider": normalized_provider,
+                            "provider_url": login.provider_url,
+                            "wellknown_url": login.wellknown_url,
+                            "base_url": login.base_url,
+                            "model": login.model,
+                            "wire_api": login.wire_api,
+                            "auth_env": login.auth_env,
+                            "auth_command_preview": login.auth_command_preview,
+                            "executed": False,
+                            "next_step": "run the audited auth_command_preview yourself, then rerun with --api-key or --api-key-stdin",
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    file=out,
+                )
+                return 0
+            try:
+                result = login_wellknown_provider(
+                    provider=normalized_provider,
+                    api_key=api_key,
+                    provider_url=login.provider_url,
+                    wellknown_url=login.wellknown_url,
+                    auth_env=login.auth_env,
+                    auth_command_preview=login.auth_command_preview,
+                    base_url=login.base_url,
+                    model=login.model,
+                    wire_api=login.wire_api,
+                    path=auth_file,
+                )
+            except ValueError as error:
+                print(str(error), file=err)
+                return 2
+            print(json.dumps({"status": "logged_in", "provider_url": login.provider_url, **result}, ensure_ascii=False, sort_keys=True), file=out)
+            return 0
         api_key = getattr(args, "api_key", None)
         if getattr(args, "api_key_stdin", False):
             api_key = str(source.read()).strip()
         try:
             result = login_provider(
-                provider=str(getattr(args, "provider", "openai")),
+                provider=str(getattr(args, "provider", None)) if getattr(args, "provider", None) is not None else "openai",
                 credential_type=getattr(args, "credential_type", None),
                 api_key=api_key,
                 base_url=getattr(args, "base_url", None),

@@ -4,8 +4,10 @@ import io
 import json
 import os
 import stat
+import sys
 import tempfile
 import threading
+import urllib.error
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -34,10 +36,24 @@ from openagent.cli.main import (
     run_stats_command,
 )
 from openagent.app_server.protocol import AppEvent
-from openagent.cli.auth import load_auth_env, normalize_provider
+from openagent.cli.auth import load_auth_env, load_auth_file, normalize_provider
 from openagent.core.session.session import Session
 from openagent.core.session.store import FileSessionStore
 from openagent.core.types import ChatMessage
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self.data = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self) -> "FakeHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def read(self, size: int = -1) -> bytes:
+        return self.data if size < 0 else self.data[:size]
 
 
 class OpenAgentCliTests(unittest.TestCase):
@@ -561,6 +577,245 @@ Create component $1 for $ARGUMENTS.
             empty_args = parser.parse_args(["auth", "login", "--auth-file", str(auth_file), "--provider", "", "--api-key", "secret"])
             self.assertEqual(run_auth_command(empty_args, stdout=io.StringIO(), stderr=stderr), 2)
             self.assertIn("Invalid provider id", stderr.getvalue())
+            self.assertFalse(auth_file.exists())
+
+    def test_wellknown_login_validates_url_before_fetch(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            for url in [
+                "file:///tmp/provider",
+                "javascript:alert(1)",
+                "data:text/plain,hello",
+                "ftp://provider.test",
+                "https:///missing-host",
+                "https://user:pass@provider.test",
+                "https://provider.test?x=1",
+                "https://provider.test#token",
+                "https://provider.test:99999",
+                "https://127.0.0.1",
+                "https://10.0.0.1",
+                "http://provider.test",
+            ]:
+                with self.subTest(url=url), patch("openagent.cli.wellknown.open_wellknown_request") as open_request:
+                    stderr = io.StringIO()
+                    args = parser.parse_args(["providers", "login", url, "--auth-file", str(auth_file), "--provider", "wellknown-test"])
+
+                    self.assertEqual(run_auth_command(args, stdout=io.StringIO(), stderr=stderr), 2)
+                    open_request.assert_not_called()
+                    self.assertFalse(auth_file.exists())
+
+    def test_wellknown_login_previews_command_without_execution_by_default(self) -> None:
+        parser = build_parser()
+        opaque = "sk-1234567890abcdef1234567890"
+        metadata = {
+            "auth": {
+                "command": [
+                    "provider-login",
+                    "--credential",
+                    opaque,
+                    "-H",
+                    "Authorization: Basic abcdef123456",
+                    "--private-key=key-value",
+                    "--token",
+                    "plain-token-value",
+                ],
+                "env": "WELLKNOWN_API_KEY",
+            },
+            "config": {
+                "provider": {
+                    "local-provider": {
+                        "options": {"baseURL": "http://127.0.0.1:49153/v1", "wireAPI": "responses"},
+                        "models": {"local-model": {}},
+                    }
+                }
+            },
+        }
+
+        def fake_open_request(request: object, timeout_s: float = 0) -> FakeHTTPResponse:
+            self.assertEqual(getattr(request, "full_url"), "http://127.0.0.1:49152/.well-known/opencode")
+            return FakeHTTPResponse(metadata)
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            args = parser.parse_args(
+                [
+                    "providers",
+                    "login",
+                    "http://127.0.0.1:49152",
+                    "--allow-insecure-localhost",
+                    "--auth-file",
+                    str(auth_file),
+                    "--provider",
+                    "local-provider",
+                ]
+            )
+            stdout = io.StringIO()
+
+            with patch("openagent.cli.wellknown.open_wellknown_request", side_effect=fake_open_request):
+                self.assertEqual(run_auth_command(args, stdout=stdout, stderr=io.StringIO()), 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["status"], "command_preview")
+            self.assertEqual(payload["provider"], "local-provider")
+            self.assertEqual(payload["wellknown_url"], "http://127.0.0.1:49152/.well-known/opencode")
+            self.assertEqual(payload["base_url"], "http://127.0.0.1:49153/v1")
+            self.assertEqual(payload["model"], "local-model")
+            self.assertEqual(payload["wire_api"], "responses")
+            self.assertEqual(payload["auth_env"], "WELLKNOWN_API_KEY")
+            self.assertFalse(payload["executed"])
+            self.assertNotIn(opaque, stdout.getvalue())
+            self.assertNotIn("abcdef123456", stdout.getvalue())
+            self.assertNotIn("key-value", stdout.getvalue())
+            self.assertNotIn("plain-token-value", stdout.getvalue())
+            self.assertFalse(auth_file.exists())
+
+    def test_wellknown_login_stores_user_supplied_token_and_redacts_output(self) -> None:
+        parser = build_parser()
+        secret = "wellknown-token-secret"
+        metadata = {
+            "auth": {"command": [sys.executable, "-c", f"print({secret!r})"], "env": "WELLKNOWN_API_KEY"},
+            "config": {
+                "provider": {
+                    "wellknown-test": {
+                        "options": {"baseURL": "https://api.provider.test/v1"},
+                        "defaultModel": "provider-model",
+                    }
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            args = parser.parse_args(
+                [
+                    "auth",
+                    "login",
+                    "http://localhost:8081/provider",
+                    "--allow-insecure-localhost",
+                    "--api-key",
+                    secret,
+                    "--auth-file",
+                    str(auth_file),
+                    "--provider",
+                    "wellknown-test",
+                ]
+            )
+            stdout = io.StringIO()
+
+            with patch("openagent.cli.wellknown.open_wellknown_request", return_value=FakeHTTPResponse(metadata)):
+                self.assertEqual(run_auth_command(args, stdout=stdout, stderr=io.StringIO()), 0)
+
+            raw_output = stdout.getvalue()
+            self.assertNotIn(secret, raw_output)
+            payload = json.loads(raw_output)
+            self.assertEqual(payload["status"], "logged_in")
+            self.assertEqual(payload["record"]["type"], "wellknown")
+            self.assertEqual(payload["record"]["api_key"], "well**************cret")
+            self.assertEqual(payload["record"]["base_url"], "https://api.provider.test/v1")
+            self.assertEqual(payload["record"]["model"], "provider-model")
+            self.assertEqual(payload["record"]["wellknown_url"], "http://localhost:8081/provider/.well-known/opencode")
+            self.assertEqual(payload["record"]["wellknown_provider_url"], "http://localhost:8081/provider")
+            self.assertEqual(payload["record"]["auth_env"], "WELLKNOWN_API_KEY")
+            self.assertIn("-c", payload["record"]["auth_command_preview"])
+
+            stored = load_auth_file(auth_file)["providers"]["wellknown-test"]
+            self.assertEqual(stored["api_key"], secret)
+            self.assertEqual(stored["base_url"], "https://api.provider.test/v1")
+            self.assertEqual(stored["model"], "provider-model")
+            self.assertEqual(stored["type"], "wellknown")
+            self.assertEqual(stored["wellknown_provider_url"], "http://localhost:8081/provider")
+            self.assertEqual(stored["wellknown_url"], "http://localhost:8081/provider/.well-known/opencode")
+            self.assertEqual(stored["auth_env"], "WELLKNOWN_API_KEY")
+            self.assertEqual(stored["env"]["api_key"], "WELLKNOWN_API_KEY")
+
+            with patch.dict(os.environ, {"OPENAGENT_PROVIDER": "wellknown-test"}, clear=True):
+                load_auth_env(str(auth_file))
+                self.assertEqual(os.environ["OPENAI_API_KEY"], secret)
+                self.assertEqual(os.environ["OPENAI_BASE_URL"], "https://api.provider.test/v1")
+                self.assertEqual(os.environ["OPENAI_MODEL"], "provider-model")
+                self.assertEqual(os.environ["WELLKNOWN_API_KEY"], secret)
+
+    def test_wellknown_login_rejects_invalid_metadata(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            for metadata, message in [
+                ({"auth": {"command": "echo token", "env": "VALID_ENV"}}, "auth.command"),
+                ({"auth": {"command": ["echo", "token"], "env": "not-valid-env"}}, "auth.env"),
+            ]:
+                with self.subTest(metadata=metadata), patch(
+                    "openagent.cli.wellknown.open_wellknown_request",
+                    return_value=FakeHTTPResponse(metadata),
+                ):
+                    stderr = io.StringIO()
+                    args = parser.parse_args(
+                        [
+                            "auth",
+                            "login",
+                            "https://provider.test",
+                            "--auth-file",
+                            str(auth_file),
+                            "--provider",
+                            "wellknown-test",
+                        ]
+                    )
+                    self.assertEqual(run_auth_command(args, stdout=io.StringIO(), stderr=stderr), 2)
+                    self.assertIn(message, stderr.getvalue())
+                    self.assertFalse(auth_file.exists())
+
+    def test_wellknown_login_stdin_token_does_not_store_without_valid_metadata(self) -> None:
+        parser = build_parser()
+        secret = "failed-token-secret"
+        metadata = {"auth": {"command": ["echo", "token"], "env": "bad-env-name"}}
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            args = parser.parse_args(
+                [
+                    "providers",
+                    "login",
+                    "http://[::1]:8081",
+                    "--allow-insecure-localhost",
+                    "--api-key-stdin",
+                    "--auth-file",
+                    str(auth_file),
+                    "--provider",
+                    "wellknown-test",
+                ]
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with patch("openagent.cli.wellknown.open_wellknown_request", return_value=FakeHTTPResponse(metadata)):
+                self.assertEqual(run_auth_command(args, stdout=stdout, stderr=stderr, stdin=io.StringIO(secret)), 2)
+
+            self.assertIn("auth.env", stderr.getvalue())
+            self.assertNotIn(secret, stdout.getvalue())
+            self.assertNotIn(secret, stderr.getvalue())
+            self.assertFalse(auth_file.exists())
+
+    def test_wellknown_login_rejects_metadata_redirects(self) -> None:
+        parser = build_parser()
+        redirect = urllib.error.HTTPError("https://provider.test/.well-known/opencode", 302, "Found", {}, io.BytesIO(b""))
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            args = parser.parse_args(
+                [
+                    "providers",
+                    "login",
+                    "https://provider.test",
+                    "--auth-file",
+                    str(auth_file),
+                    "--provider",
+                    "wellknown-test",
+                ]
+            )
+            stderr = io.StringIO()
+
+            with patch("openagent.cli.wellknown.open_wellknown_request", side_effect=redirect):
+                self.assertEqual(run_auth_command(args, stdout=io.StringIO(), stderr=stderr), 2)
+
+            self.assertIn("redirects are not allowed", stderr.getvalue())
             self.assertFalse(auth_file.exists())
 
     def test_auth_multi_provider_list_and_logout_redact_secrets(self) -> None:
