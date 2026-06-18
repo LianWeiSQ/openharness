@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(run_custom_command(args))
     if command == "config":
         raise SystemExit(run_config_command(args))
-    if command == "auth":
+    if command in {"auth", "providers"}:
         raise SystemExit(run_auth_command(args))
     if command == "tui":
         apply_model_env(args)
@@ -286,25 +286,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_server_auth_options(config_show, role="client")
     config_show.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
-    auth = subparsers.add_parser("auth", help="manage provider credentials")
-    auth_subparsers = auth.add_subparsers(dest="auth_command", required=True)
-
-    auth_login = auth_subparsers.add_parser("login", help="store OpenAI-compatible provider credentials")
-    add_auth_options(auth_login)
-    auth_login.add_argument("--provider", "-p", default="openai", help="provider id, currently openai")
-    auth_login.add_argument("--api-key", default=None, help="API key to store")
-    auth_login.add_argument("--api-key-stdin", action="store_true", help="read API key from stdin")
-    auth_login.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
-    auth_login.add_argument("--model", default=None, help="default model id")
-    auth_login.add_argument("--wire-api", choices=["chat", "responses"], default=None, help="wire API")
-
-    auth_list = auth_subparsers.add_parser("list", aliases=["ls"], help="list authenticated providers")
-    add_auth_options(auth_list)
-    auth_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
-
-    auth_logout = auth_subparsers.add_parser("logout", help="remove stored provider credentials")
-    add_auth_options(auth_logout)
-    auth_logout.add_argument("--provider", "-p", default="openai", help="provider id, currently openai")
+    add_auth_parser(subparsers, "auth", help_text="manage provider credentials")
+    add_auth_parser(subparsers, "providers", help_text="manage provider credentials")
 
     mcp = subparsers.add_parser("mcp", help="manage remote MCP servers")
     mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
@@ -390,6 +373,29 @@ def add_command_options(parser: argparse.ArgumentParser) -> None:
 
 def add_auth_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--auth-file", default=None, help="auth file; default OPENAGENT_AUTH_FILE or ~/.config/openagent/auth.json")
+
+
+def add_auth_parser(subparsers: argparse._SubParsersAction, name: str, *, help_text: str) -> None:
+    auth = subparsers.add_parser(name, help=help_text)
+    auth_subparsers = auth.add_subparsers(dest="auth_command", required=True)
+
+    auth_login = auth_subparsers.add_parser("login", help="store OpenAI-compatible provider credentials")
+    add_auth_options(auth_login)
+    auth_login.add_argument("--provider", "-p", default="openai", help="provider id, default openai")
+    auth_login.add_argument("--type", dest="credential_type", default="api", help="credential type metadata, default api")
+    auth_login.add_argument("--api-key", default=None, help="API key to store")
+    auth_login.add_argument("--api-key-stdin", action="store_true", help="read API key from stdin")
+    auth_login.add_argument("--base-url", default=None, help="OpenAI-compatible base URL")
+    auth_login.add_argument("--model", default=None, help="default model id")
+    auth_login.add_argument("--wire-api", choices=["chat", "responses"], default=None, help="wire API")
+
+    auth_list = auth_subparsers.add_parser("list", aliases=["ls"], help="list authenticated providers")
+    add_auth_options(auth_list)
+    auth_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    auth_logout = auth_subparsers.add_parser("logout", help="remove stored provider credentials")
+    add_auth_options(auth_logout)
+    auth_logout.add_argument("--provider", "-p", default="openai", help="provider id, default openai")
 
 
 def add_mcp_options(parser: argparse.ArgumentParser) -> None:
@@ -1132,6 +1138,7 @@ def run_auth_command(
         try:
             result = login_provider(
                 provider=str(getattr(args, "provider", "openai")),
+                credential_type=getattr(args, "credential_type", None),
                 api_key=api_key,
                 base_url=getattr(args, "base_url", None),
                 model=getattr(args, "model", None),
@@ -1365,12 +1372,16 @@ def print_auth_table(rows: list[dict[str, object]], *, stdout: object) -> None:
     if not rows:
         print("No authenticated providers found.", file=stdout)
         return
-    table = [["provider", "api_key", "base_url", "model", "wire_api"]]
+    table = [["provider", "type", "api_key", "env_api_key", "base_url", "model", "wire_api"]]
     for row in rows:
+        env_status = row.get("env_status") if isinstance(row.get("env_status"), dict) else {}
+        api_key_env = env_status.get("api_key") if isinstance(env_status.get("api_key"), dict) else {}
         table.append(
             [
                 str(row.get("provider") or ""),
+                str(row.get("type") or ""),
                 str(row.get("api_key") or ""),
+                str(api_key_env.get("status") or ""),
                 str(row.get("base_url") or ""),
                 str(row.get("model") or ""),
                 str(row.get("wire_api") or ""),
