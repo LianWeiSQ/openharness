@@ -9,10 +9,33 @@ import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
+from openagent.app_server.protocol import AppEvent
 from openagent.app_server.server import create_server
 
 
 class FakeRuntime:
+    def __init__(self) -> None:
+        self.global_events = [
+            AppEvent(
+                sequence=1,
+                method="turn/started",
+                params={"thread_id": "session_1", "turn_id": "turn_1", "status": "running"},
+                global_sequence=1,
+            ),
+            AppEvent(
+                sequence=2,
+                method="turn/completed",
+                params={"thread_id": "session_1", "turn_id": "turn_1", "status": "completed", "final_answer": "done"},
+                global_sequence=2,
+            ),
+            AppEvent(
+                sequence=1,
+                method="turn/started",
+                params={"thread_id": "session_1", "turn_id": "turn_2", "status": "running"},
+                global_sequence=3,
+            ),
+        ]
+
     def list_models(self):
         return []
 
@@ -33,6 +56,11 @@ class FakeRuntime:
                 },
             },
         }
+
+    def wait_for_global_sequence(self, sequence: int, *, timeout_s: float = 15.0):
+        if 1 <= sequence <= len(self.global_events):
+            return self.global_events[sequence - 1]
+        return None
 
 
 class AppServerServerTests(unittest.TestCase):
@@ -103,6 +131,84 @@ class AppServerServerTests(unittest.TestCase):
 
         self.assertEqual(health["auth_required"], True)
 
+    def test_global_event_stream_replays_after_query_sequence(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=FakeRuntime(),  # type: ignore[arg-type]
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        events = _read_sse_events(f"{base_url}/api/events?last_sequence=1", count=2)
+
+        self.assertEqual([event["id"] for event in events], ["2", "3"])
+        self.assertEqual(events[0]["event"], "turn/completed")
+        self.assertEqual(events[0]["data"]["global_sequence"], 2)
+        self.assertEqual(events[1]["data"]["params"]["turn_id"], "turn_2")
+
+    def test_global_event_stream_replays_after_last_event_id_header(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=FakeRuntime(),  # type: ignore[arg-type]
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        events = _read_sse_events(f"{base_url}/api/events", count=1, headers={"Last-Event-ID": "2"})
+
+        self.assertEqual(events[0]["id"], "3")
+        self.assertEqual(events[0]["data"]["global_sequence"], 3)
+        self.assertEqual(events[0]["data"]["params"]["turn_id"], "turn_2")
+
+    def test_global_event_stream_requires_bearer_token_when_configured(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=FakeRuntime(),  # type: ignore[arg-type]
+            auth_token="server-secret",
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        try:
+            urllib.request.urlopen(f"{base_url}/api/events", timeout=5)  # noqa: S310 - local test server.
+        except urllib.error.HTTPError as error:
+            self.assertEqual(error.code, 401)
+            error.close()
+        else:
+            self.fail("server should reject unauthenticated global SSE requests")
+
+        events = _read_sse_events(
+            f"{base_url}/api/events?last_sequence=2",
+            count=1,
+            headers={"Authorization": "Bearer server-secret"},
+        )
+
+        self.assertEqual(events[0]["id"], "3")
+
     def test_server_interrupt_endpoint_calls_runtime(self) -> None:
         workspace = self._make_temp_dir()
         server = create_server(
@@ -156,6 +262,43 @@ class AppServerServerTests(unittest.TestCase):
         self.assertEqual(payload["event"]["params"]["turn_id"], "turn_123")
         self.assertEqual(payload["event"]["params"]["approval"]["request_id"], "approval_456")
         self.assertEqual(payload["event"]["params"]["approval"]["action"], "allow")
+
+
+def _read_sse_events(url: str, *, count: int, headers: dict[str, str] | None = None) -> list[dict[str, object]]:
+    request_headers = {"Connection": "close", **(headers or {})}
+    request = urllib.request.Request(url, headers=request_headers)
+    events: list[dict[str, object]] = []
+    event_id = ""
+    event_name = ""
+    data_lines: list[str] = []
+    with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local test server.
+        while len(events) < count:
+            raw_line = response.readline()
+            if not raw_line:
+                break
+            line = raw_line.decode("utf-8").rstrip("\r\n")
+            if not line:
+                if data_lines:
+                    events.append(
+                        {
+                            "id": event_id,
+                            "event": event_name,
+                            "data": json.loads("\n".join(data_lines)),
+                        }
+                    )
+                    event_id = ""
+                    event_name = ""
+                    data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            if line.startswith("id:"):
+                event_id = line.removeprefix("id:").strip()
+            elif line.startswith("event:"):
+                event_name = line.removeprefix("event:").strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.removeprefix("data:").lstrip())
+    return events
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import hmac
 import json
 import mimetypes
 import os
+import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,6 +15,14 @@ from urllib.parse import parse_qs, urlparse
 from .runtime import OpenAgentAppRuntime
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+class OpenAgentThreadingHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request: object, client_address: object) -> None:
+        error = sys.exc_info()[1]
+        if isinstance(error, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
 
 class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
@@ -40,6 +49,11 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"models": self.runtime.list_models()})
             elif path == "/api/sessions":
                 self._send_json({"sessions": self.runtime.list_sessions()})
+            elif path == "/api/events":
+                query = parse_qs(parsed.query)
+                header_sequence = _header_int(self.headers.get("Last-Event-ID"), 0)
+                last_sequence = _query_int(query, "last_sequence", header_sequence)
+                self._stream_global_events(last_sequence=last_sequence)
             elif path.startswith("/api/sessions/"):
                 session_id = path.removeprefix("/api/sessions/").strip("/")
                 if not session_id:
@@ -49,7 +63,8 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/turns/") and path.endswith("/events"):
                 turn_id = path.removeprefix("/api/turns/").removesuffix("/events").strip("/")
                 query = parse_qs(parsed.query)
-                last_sequence = _query_int(query, "last_sequence", 0)
+                header_sequence = _header_int(self.headers.get("Last-Event-ID"), 0)
+                last_sequence = _query_int(query, "last_sequence", header_sequence)
                 self._stream_turn_events(turn_id, last_sequence=last_sequence)
             elif not self.serve_static:
                 self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
@@ -118,17 +133,40 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         sequence = max(1, last_sequence + 1)
-        while True:
-            event = turn.wait_for_sequence(sequence, timeout_s=10.0)
-            if event is None:
-                self._write_sse_comment("ping")
-                if turn.status in {"completed", "failed", "interrupted"} and sequence > len(turn.events):
+        try:
+            while True:
+                event = turn.wait_for_sequence(sequence, timeout_s=10.0)
+                if event is None:
+                    self._write_sse_comment("ping")
+                    if turn.status in {"completed", "failed", "interrupted"} and sequence > len(turn.events):
+                        break
+                    continue
+                self._write_sse(event.method, event.to_dict(), event_id=str(event.sequence))
+                sequence = event.sequence + 1
+                if event.method in {"turn/completed", "turn/failed", "turn/interrupted"}:
                     break
-                continue
-            self._write_sse(event.method, event.to_dict(), event_id=str(event.sequence))
-            sequence = event.sequence + 1
-            if event.method in {"turn/completed", "turn/failed", "turn/interrupted"}:
-                break
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            return
+
+    def _stream_global_events(self, *, last_sequence: int) -> None:
+        self.send_response(HTTPStatus.OK)
+        self._common_headers(content_type="text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        sequence = max(1, last_sequence + 1)
+        try:
+            while True:
+                event = self.runtime.wait_for_global_sequence(sequence, timeout_s=10.0)
+                if event is None:
+                    self._write_sse_comment("ping")
+                    continue
+                global_sequence = event.global_sequence or sequence
+                self._write_sse(event.method, event.to_dict(), event_id=str(global_sequence))
+                sequence = global_sequence + 1
+        except (BrokenPipeError, ConnectionResetError, TimeoutError):
+            return
 
     def _serve_static(self, path: str) -> None:
         target = "index.html" if path in {"", "/"} else path.lstrip("/")
@@ -199,7 +237,7 @@ def create_server(
     Handler.runtime = runtime
     Handler.serve_static = serve_static
     Handler.auth_token = auth_token or None
-    return ThreadingHTTPServer((host, port), Handler)
+    return OpenAgentThreadingHTTPServer((host, port), Handler)
 
 
 def serve(
@@ -254,6 +292,13 @@ def _parse_turn_approval_path(path: str) -> tuple[str, str]:
 def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:
     try:
         return int((query.get(key) or [default])[0])
+    except (TypeError, ValueError):
+        return default
+
+
+def _header_int(value: str | None, default: int) -> int:
+    try:
+        return int(value or default)
     except (TypeError, ValueError):
         return default
 

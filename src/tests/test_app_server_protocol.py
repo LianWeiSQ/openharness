@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from openagent.app_server.protocol import stream_event_to_app_event, stream_event_to_app_method
+from openagent.app_server.protocol import AppEvent, stream_event_to_app_event, stream_event_to_app_method
 
 
 class AppServerProtocolTests(unittest.TestCase):
@@ -26,6 +26,17 @@ class AppServerProtocolTests(unittest.TestCase):
         self.assertEqual(event.params["thread_id"], "session_1")
         self.assertEqual(event.params["turn_id"], "turn_1")
         self.assertEqual(event.params["event"]["name"], "ls")
+
+    def test_app_event_serializes_optional_global_sequence(self) -> None:
+        event = AppEvent(
+            sequence=2,
+            method="turn/completed",
+            params={"thread_id": "session_1", "turn_id": "turn_1"},
+            global_sequence=7,
+        )
+
+        self.assertEqual(event.to_dict()["sequence"], 2)
+        self.assertEqual(event.to_dict()["global_sequence"], 7)
 
 
 if __name__ == "__main__":
