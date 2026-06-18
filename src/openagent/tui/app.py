@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import curses
 import json
-import os
 import textwrap
 import time
 from pathlib import Path
@@ -101,6 +100,15 @@ def _handle_key(key: int, state: TuiState) -> bool:
     if key == 27 and state.session_picker_open:  # Esc
         state.close_session_picker()
         return False
+    if key == 27 and state.model_picker_open:  # Esc
+        state.close_model_picker()
+        return False
+    if key == 27 and state.agent_picker_open:  # Esc
+        state.close_agent_picker()
+        return False
+    if key == 27 and state.variant_picker_open:  # Esc
+        state.close_variant_picker()
+        return False
     if key == 27 and not state.is_running and not state.input_buffer:  # Esc
         return True
     if state.session_picker_open:
@@ -118,6 +126,54 @@ def _handle_key(key: int, state: TuiState) -> bool:
             return False
         if key == curses.KEY_NPAGE:
             state.move_session_picker(5)
+            return False
+    if state.model_picker_open:
+        if key in {10, 13}:
+            state.select_model_from_picker()
+            return False
+        if key in {curses.KEY_UP, ord("k")}:
+            state.move_model_picker(-1)
+            return False
+        if key in {curses.KEY_DOWN, ord("j")}:
+            state.move_model_picker(1)
+            return False
+        if key == curses.KEY_PPAGE:
+            state.move_model_picker(-5)
+            return False
+        if key == curses.KEY_NPAGE:
+            state.move_model_picker(5)
+            return False
+    if state.agent_picker_open:
+        if key in {10, 13}:
+            state.select_agent_from_picker()
+            return False
+        if key in {curses.KEY_UP, ord("k")}:
+            state.move_agent_picker(-1)
+            return False
+        if key in {curses.KEY_DOWN, ord("j")}:
+            state.move_agent_picker(1)
+            return False
+        if key == curses.KEY_PPAGE:
+            state.move_agent_picker(-5)
+            return False
+        if key == curses.KEY_NPAGE:
+            state.move_agent_picker(5)
+            return False
+    if state.variant_picker_open:
+        if key in {10, 13}:
+            state.select_variant_from_picker()
+            return False
+        if key in {curses.KEY_UP, ord("k")}:
+            state.move_variant_picker(-1)
+            return False
+        if key in {curses.KEY_DOWN, ord("j")}:
+            state.move_variant_picker(1)
+            return False
+        if key == curses.KEY_PPAGE:
+            state.move_variant_picker(-5)
+            return False
+        if key == curses.KEY_NPAGE:
+            state.move_variant_picker(5)
             return False
     if state.file_picker_open:
         if key in {10, 13, 9}:  # Enter or Tab
@@ -202,7 +258,7 @@ def _render(stdscr, state: TuiState) -> None:
         return
 
     header_h = 3
-    input_h = 8 if state.file_picker_open else 4
+    input_h = 8 if state.file_picker_open or state.model_picker_open or state.agent_picker_open or state.variant_picker_open else 4
     if state.active_approval is not None:
         input_h = 4
     body_h = max(1, height - header_h - input_h - 1)
@@ -225,11 +281,11 @@ def _render(stdscr, state: TuiState) -> None:
 def _render_header(stdscr, state: TuiState, width: int) -> None:
     title = "OpenAgent TUI"
     session = short_id(state.session_id)
-    model = os.getenv("OPENAI_MODEL") or "env:OPENAI_MODEL"
+    selector = f"{state.agent_label}/{state.model_label}/{state.variant_label}"
     status = state.status
     _addstr(stdscr, 0, 0, title, curses.color_pair(1) | curses.A_BOLD)
     _addstr(stdscr, 0, len(title) + 2, f"session {session}", curses.color_pair(2))
-    right = f"{status} | {model}"
+    right = f"{status} | {selector}"
     _addstr(stdscr, 0, max(0, width - len(right) - 1), right[: max(0, width - 1)], curses.color_pair(2))
     _hline(stdscr, 2, 0, width)
 
@@ -287,6 +343,9 @@ def _render_details(stdscr, state: TuiState, y: int, x: int, width: int, height:
         ("Session", state.session_id or "-"),
         ("Turn", turn.id if turn else "-"),
         ("Status", turn.status if turn else state.status),
+        ("Model", state.model_label),
+        ("Agent", state.agent_label),
+        ("Variant", state.variant_label),
         ("Events", str(len(turn.events) if turn else 0)),
         ("Trace", trace),
     ]
@@ -336,6 +395,12 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
     _addstr(stdscr, y + 1, input_x, value, curses.color_pair(3))
     if state.file_picker_open:
         _render_file_picker(stdscr, state, y + 2, x + 1, width - 2, max(0, height - 3))
+    elif state.model_picker_open:
+        _render_model_picker(stdscr, state, y + 2, x + 1, width - 2, max(0, height - 3))
+    elif state.agent_picker_open:
+        _render_agent_picker(stdscr, state, y + 2, x + 1, width - 2, max(0, height - 3))
+    elif state.variant_picker_open:
+        _render_variant_picker(stdscr, state, y + 2, x + 1, width - 2, max(0, height - 3))
     try:
         stdscr.move(y + 1, min(input_x + len(value), width - 2))
     except curses.error:
@@ -350,6 +415,12 @@ def _render_footer(stdscr, state: TuiState, y: int, width: int) -> None:
         controls = "file picker: Up/Down move | Enter/Tab insert | Esc close"
     elif state.session_picker_open:
         controls = "session picker: Up/Down or j/k move | Enter resume | Esc close | PageUp/PageDown jump"
+    elif state.model_picker_open:
+        controls = "model picker: Up/Down or j/k move | Enter select | Esc close | PageUp/PageDown jump"
+    elif state.agent_picker_open:
+        controls = "agent picker: Up/Down or j/k move | Enter select | Esc close | PageUp/PageDown jump"
+    elif state.variant_picker_open:
+        controls = "variant picker: Up/Down or j/k move | Enter select | Esc close | PageUp/PageDown jump"
     if state.is_running:
         controls = "running... " + controls
     _addstr(stdscr, y, 0, controls[: width - 1], curses.color_pair(2))
@@ -390,6 +461,40 @@ def _render_file_picker(stdscr, state: TuiState, y: int, x: int, width: int, hei
         marker = ">" if idx == state.file_picker_index else " "
         attr = curses.color_pair(1) | curses.A_BOLD if idx == state.file_picker_index else curses.color_pair(3)
         _addstr(stdscr, y + idx + 1, x, f"{marker} @{path}"[:width], attr)
+
+
+def _render_model_picker(stdscr, state: TuiState, y: int, x: int, width: int, height: int) -> None:
+    if height <= 0:
+        return
+    _addstr(stdscr, y, x, "Models", curses.color_pair(6) | curses.A_BOLD)
+    for idx, model in enumerate(state.model_picker_models[: max(0, height - 1)]):
+        marker = ">" if idx == state.model_picker_index else ("*" if str(model.get("id") or "") == (state.selected_model_id or "") else " ")
+        provider = str(model.get("provider_id") or "-")
+        model_id = str(model.get("id") or "-")
+        name = str(model.get("name") or model_id)
+        label = f"{marker} {provider}/{model_id}  {name}"
+        attr = curses.color_pair(1) | curses.A_BOLD if idx == state.model_picker_index else curses.color_pair(3)
+        _addstr(stdscr, y + idx + 1, x, label[:width], attr)
+
+
+def _render_agent_picker(stdscr, state: TuiState, y: int, x: int, width: int, height: int) -> None:
+    if height <= 0:
+        return
+    _addstr(stdscr, y, x, "Agents", curses.color_pair(6) | curses.A_BOLD)
+    for idx, agent in enumerate(state.agent_picker_agents[: max(0, height - 1)]):
+        marker = ">" if idx == state.agent_picker_index else ("*" if agent == state.agent_label else " ")
+        attr = curses.color_pair(1) | curses.A_BOLD if idx == state.agent_picker_index else curses.color_pair(3)
+        _addstr(stdscr, y + idx + 1, x, f"{marker} {agent}"[:width], attr)
+
+
+def _render_variant_picker(stdscr, state: TuiState, y: int, x: int, width: int, height: int) -> None:
+    if height <= 0:
+        return
+    _addstr(stdscr, y, x, "Variants", curses.color_pair(6) | curses.A_BOLD)
+    for idx, variant in enumerate(state.variant_picker_variants[: max(0, height - 1)]):
+        marker = ">" if idx == state.variant_picker_index else ("*" if variant == state.variant_label else " ")
+        attr = curses.color_pair(1) | curses.A_BOLD if idx == state.variant_picker_index else curses.color_pair(3)
+        _addstr(stdscr, y + idx + 1, x, f"{marker} {variant}"[:width], attr)
 
 
 def _init_colors() -> None:

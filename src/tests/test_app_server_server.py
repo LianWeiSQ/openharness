@@ -385,8 +385,14 @@ class AppServerServerTests(unittest.TestCase):
             ("/tui/open-sessions", {}, {}),
             ("/tui/open-themes", {}, {}),
             ("/tui/open-models", {}, {}),
+            ("/tui/open-agents", {}, {}),
+            ("/tui/open-variants", {}, {}),
+            ("/tui/select-model", {"modelID": "gpt-test", "providerID": "openai"}, {"modelID": "gpt-test", "providerID": "openai"}),
+            ("/tui/select-agent", {"agent": "plan"}, {"agent": "plan"}),
+            ("/tui/select-variant", {"variant": "fast"}, {"variant": "fast"}),
             ("/tui/execute-command", {"command": "status"}, {"command": "status"}),
             ("/tui/show-toast", {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}, {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}),
+            ("/tui/publish", {"type": "tui.model.select", "properties": {"modelID": "gpt-test"}}, {"type": "tui.model.select", "properties": {"modelID": "gpt-test"}}),
             ("/tui/publish", {"type": "tui.command.execute", "properties": {"command": "help"}}, {"type": "tui.command.execute", "properties": {"command": "help"}}),
             ("/tui/select-session", {"sessionID": "session_existing"}, {"sessionID": "session_existing"}),
         ]
@@ -398,6 +404,9 @@ class AppServerServerTests(unittest.TestCase):
 
         for path, body in [
             ("/tui/execute-command", {}),
+            ("/tui/select-model", {}),
+            ("/tui/select-agent", {}),
+            ("/tui/select-variant", {}),
             ("/tui/show-toast", {}),
             ("/tui/publish", {"type": "tui.unknown", "properties": {}}),
         ]:

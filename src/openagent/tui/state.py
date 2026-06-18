@@ -18,12 +18,20 @@ BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "show TUI commands"),
     ("/sessions", "open recent session picker"),
     ("/resume <id>", "resume a session by id or unique prefix"),
+    ("/models", "open model picker"),
+    ("/model <id|next|prev>", "select or cycle the active model"),
+    ("/agents", "open agent picker"),
+    ("/agent <name>", "select the active agent profile label"),
+    ("/variants", "open variant picker"),
+    ("/variant <name>", "select the active model variant label"),
     ("/transcript [limit]", "show recent messages from the current session"),
     ("/new", "start a new session"),
     ("/clear", "clear the visible timeline"),
     ("/status", "show current session, turn, and model status"),
     ("/commands", "list project/global custom commands"),
 )
+
+DEFAULT_AGENT_CHOICES: tuple[str, ...] = ("build", "plan", "explore")
 
 
 @dataclass(slots=True)
@@ -44,6 +52,27 @@ class TuiState:
     file_picker_index: int = 0
     file_picker_query: str = ""
     file_picker_matches: list[str] = field(default_factory=list)
+    model_picker_open: bool = False
+    model_picker_index: int = 0
+    model_picker_models: list[dict[str, object]] = field(default_factory=list)
+    selected_model_id: str | None = None
+    selected_provider_id: str | None = None
+    selected_agent: str = ""
+    selected_variant: str = ""
+    agent_picker_open: bool = False
+    agent_picker_index: int = 0
+    agent_picker_agents: list[str] = field(default_factory=list)
+    variant_picker_open: bool = False
+    variant_picker_index: int = 0
+    variant_picker_variants: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.selected_model_id:
+            self.selected_model_id = os.getenv("OPENAGENT_MODEL") or os.getenv("OPENAI_MODEL") or None
+        if not self.selected_agent:
+            self.selected_agent = os.getenv("OPENAGENT_APP_AGENT_NAME") or "build"
+        if not self.selected_variant:
+            self.selected_variant = os.getenv("OPENAGENT_VARIANT") or "default"
 
     def ensure_session(self) -> str:
         if self.session_id:
@@ -66,7 +95,7 @@ class TuiState:
         if not text or self.is_running:
             return False
         session_id = self.ensure_session()
-        self.active_turn = self.runtime.start_turn(session_id=session_id, user_text=text)
+        self.active_turn = self._start_turn(session_id=session_id, user_text=text)
         self.next_event_index = 0
         self.input_buffer = ""
         self.status = "running"
@@ -109,6 +138,30 @@ class TuiState:
         if action == "sessions.open":
             opened = self.open_session_picker(announce=True)
             return {"applied": opened, "action": action}
+        if action == "model.open":
+            opened = self.open_model_picker(announce=True)
+            return {"applied": opened, "action": action}
+        if action == "model.select":
+            selected = self.select_model(
+                str(params.get("modelID") or params.get("model_id") or params.get("id") or ""),
+                provider_id=str(params.get("providerID") or params.get("provider_id") or "") or None,
+            )
+            return {"applied": selected, "action": action}
+        if action == "agent.select":
+            selected = self.select_agent(str(params.get("agent") or params.get("name") or ""))
+            return {"applied": selected, "action": action}
+        if action == "agent.open":
+            opened = self.open_agent_picker(announce=True)
+            return {"applied": opened, "action": action}
+        if action == "agent.cycle":
+            self.cycle_agent()
+            return {"applied": True, "action": action, "agent": self.selected_agent}
+        if action == "variant.open":
+            opened = self.open_variant_picker(announce=True)
+            return {"applied": opened, "action": action}
+        if action == "variant.select":
+            selected = self.select_variant(str(params.get("variant") or params.get("name") or ""))
+            return {"applied": selected, "action": action}
         if action == "session.select":
             session_id = str(params.get("sessionID") or params.get("session_id") or "")
             if not session_id:
@@ -136,7 +189,7 @@ class TuiState:
             self.input_buffer = command if command.startswith("/") else f"/{command}"
             submitted = self.submit()
             return {"applied": submitted, "action": action}
-        if action.startswith("model.") or action.startswith("theme.") or action.startswith("palette."):
+        if action.startswith("theme.") or action.startswith("palette."):
             self.timeline.append(TimelineLine("warning", f"TUI control unsupported: {action}", important=True))
             self.status = "control unsupported"
             return {"applied": False, "action": action, "unsupported": True}
@@ -160,6 +213,12 @@ class TuiState:
             "tui.command.execute": "command.execute",
             "tui.toast.show": "toast.show",
             "tui.session.select": "session.select",
+            "tui.model.select": "model.select",
+            "tui.agent.open": "agent.open",
+            "tui.agent.select": "agent.select",
+            "tui.agent.cycle": "agent.cycle",
+            "tui.variant.open": "variant.open",
+            "tui.variant.select": "variant.select",
         }.get(topic, topic), body
 
     def _prepare_submission(self, raw_text: str) -> tuple[str, str, bool]:
@@ -197,6 +256,24 @@ class TuiState:
         if name in {"sessions", "session"}:
             self.open_session_picker(announce=True)
             return True
+        if name == "models":
+            self.open_model_picker(announce=True)
+            return True
+        if name == "model":
+            self._model_from_command(arguments)
+            return True
+        if name == "agents":
+            self.open_agent_picker(announce=True)
+            return True
+        if name == "agent":
+            self._agent_from_command(arguments)
+            return True
+        if name == "variants":
+            self.open_variant_picker(announce=True)
+            return True
+        if name == "variant":
+            self._variant_from_command(arguments)
+            return True
         if name in {"resume", "continue"}:
             self._resume_from_command(arguments)
             return True
@@ -214,6 +291,356 @@ class TuiState:
             self._show_status()
             return True
         return False
+
+    @property
+    def model_label(self) -> str:
+        model = self.selected_model_id or "auto"
+        if self.selected_provider_id:
+            return f"{self.selected_provider_id}/{model}"
+        return model
+
+    @property
+    def agent_label(self) -> str:
+        return self.selected_agent or "build"
+
+    @property
+    def variant_label(self) -> str:
+        return self.selected_variant or "default"
+
+    def turn_options(self) -> dict[str, str]:
+        options: dict[str, str] = {
+            "agent_name": self.agent_label,
+            "variant": self.variant_label,
+        }
+        if self.selected_model_id:
+            options["model_id"] = self.selected_model_id
+        if self.selected_provider_id:
+            options["provider_id"] = self.selected_provider_id
+        return options
+
+    def _start_turn(self, *, session_id: str, user_text: str) -> TurnRecord:
+        options = self.turn_options()
+        try:
+            return self.runtime.start_turn(session_id=session_id, user_text=user_text, **options)
+        except TypeError as error:
+            # Older or duck-typed test runtimes may not accept selector kwargs.
+            if "unexpected keyword" not in str(error):
+                raise
+            return self.runtime.start_turn(session_id=session_id, user_text=user_text)
+
+    def open_model_picker(self, *, announce: bool = False) -> bool:
+        list_models = getattr(self.runtime, "list_models", None)
+        if not callable(list_models):
+            self.timeline.append(TimelineLine("warning", "model picker is not supported by this runtime", important=True))
+            self.status = "model picker unsupported"
+            return False
+        try:
+            models = [dict(item) for item in list_models() if isinstance(item, dict)]
+        except Exception as error:  # noqa: BLE001 - picker failures should stay visible.
+            self.timeline.append(TimelineLine("error", f"failed to open model picker: {error}", important=True))
+            self.status = "model picker failed"
+            return False
+        if not models:
+            self.timeline.append(TimelineLine("warning", "no models available", important=True))
+            self.status = "no models"
+            return False
+        self._close_pickers(except_name="model", update_status=False)
+        self.model_picker_models = models[:100]
+        self.model_picker_index = self._current_model_picker_index()
+        self.model_picker_open = True
+        self.status = "model picker"
+        if announce:
+            self.timeline.append(TimelineLine("status", "model picker opened. Use Up/Down or j/k, Enter to select, Esc to close.", important=True))
+        return True
+
+    def close_model_picker(self) -> None:
+        self.model_picker_open = False
+        self.status = "model picker closed"
+
+    def move_model_picker(self, delta: int) -> None:
+        if not self.model_picker_open:
+            return
+        if not self.model_picker_models:
+            self.open_model_picker()
+            return
+        self.model_picker_index = _bounded_index(self.model_picker_index + delta, len(self.model_picker_models))
+        selected = self.selected_model()
+        if selected:
+            self.status = f"selected model {selected.get('id') or '-'}"
+
+    def selected_model(self) -> dict[str, object] | None:
+        if not self.model_picker_models:
+            return None
+        return self.model_picker_models[_bounded_index(self.model_picker_index, len(self.model_picker_models))]
+
+    def select_model_from_picker(self) -> bool:
+        selected = self.selected_model()
+        if selected is None:
+            self.status = "no model selected"
+            return False
+        applied = self.select_model(str(selected.get("id") or ""), provider_id=str(selected.get("provider_id") or "") or None)
+        if applied:
+            self.model_picker_open = False
+        return applied
+
+    def select_model(self, model_id: str, *, provider_id: str | None = None) -> bool:
+        model_id = model_id.strip()
+        if not model_id:
+            self.timeline.append(TimelineLine("warning", "usage: /model <model-id|next|prev>", important=True))
+            self.status = "model invalid"
+            return False
+        if model_id in {"next", "prev"}:
+            return self.cycle_model(1 if model_id == "next" else -1)
+        model = self._resolve_model(model_id, provider_id=provider_id)
+        if model is None:
+            self.timeline.append(TimelineLine("error", f"model not found: {model_id}", important=True))
+            self.status = "model not found"
+            return False
+        self.selected_model_id = str(model.get("id") or model_id)
+        self.selected_provider_id = str(model.get("provider_id") or provider_id or "") or None
+        self._clear_invalid_variant()
+        self.timeline.append(TimelineLine("status", f"model selected: {self.model_label}", important=True))
+        self.status = "model selected"
+        return True
+
+    def cycle_model(self, delta: int) -> bool:
+        if not self.model_picker_models and not self.open_model_picker(announce=False):
+            return False
+        if not self.model_picker_models:
+            return False
+        index = self._current_model_picker_index()
+        self.model_picker_index = _bounded_index(index + delta, len(self.model_picker_models))
+        return self.select_model_from_picker()
+
+    def _model_from_command(self, arguments: list[str]) -> None:
+        if not arguments:
+            self.open_model_picker(announce=True)
+            return
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /model <model-id|next|prev>", important=True))
+            self.status = "model invalid"
+            return
+        self.select_model(arguments[0])
+
+    def _resolve_model(self, model_id: str, *, provider_id: str | None = None) -> dict[str, object] | None:
+        models = self.model_picker_models
+        if not models:
+            list_models = getattr(self.runtime, "list_models", None)
+            if callable(list_models):
+                try:
+                    models = [dict(item) for item in list_models() if isinstance(item, dict)]
+                except Exception:
+                    models = []
+        for model in models:
+            raw_id = str(model.get("id") or "")
+            raw_provider = str(model.get("provider_id") or "")
+            if provider_id and raw_provider != provider_id:
+                continue
+            if raw_id == model_id or f"{raw_provider}/{raw_id}" == model_id:
+                return model
+        matches = [model for model in models if str(model.get("id") or "").startswith(model_id)]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _current_model_picker_index(self) -> int:
+        for index, model in enumerate(self.model_picker_models):
+            if str(model.get("id") or "") == (self.selected_model_id or "") and (
+                not self.selected_provider_id or str(model.get("provider_id") or "") == self.selected_provider_id
+            ):
+                return index
+        return 0
+
+    def open_agent_picker(self, *, announce: bool = False) -> bool:
+        agents = self._agent_choices()
+        if not agents:
+            self.timeline.append(TimelineLine("warning", "no agents available", important=True))
+            self.status = "no agents"
+            return False
+        self._close_pickers(except_name="agent", update_status=False)
+        self.agent_picker_agents = agents
+        self.agent_picker_index = _bounded_index(agents.index(self.agent_label) if self.agent_label in agents else 0, len(agents))
+        self.agent_picker_open = True
+        self.status = "agent picker"
+        if announce:
+            self.timeline.append(TimelineLine("status", "agent picker opened. Use Up/Down or j/k, Enter to select, Esc to close.", important=True))
+        return True
+
+    def close_agent_picker(self) -> None:
+        self.agent_picker_open = False
+        self.status = "agent picker closed"
+
+    def move_agent_picker(self, delta: int) -> None:
+        if not self.agent_picker_open:
+            return
+        self.agent_picker_index = _bounded_index(self.agent_picker_index + delta, len(self.agent_picker_agents))
+        self.status = f"selected agent {self.agent_picker_agents[self.agent_picker_index]}"
+
+    def select_agent_from_picker(self) -> bool:
+        if not self.agent_picker_agents:
+            self.status = "no agent selected"
+            return False
+        applied = self.select_agent(self.agent_picker_agents[_bounded_index(self.agent_picker_index, len(self.agent_picker_agents))])
+        if applied:
+            self.agent_picker_open = False
+        return applied
+
+    def select_agent(self, name: str) -> bool:
+        normalized = name.strip()
+        choices = self._agent_choices()
+        if not normalized:
+            self.timeline.append(TimelineLine("warning", "usage: /agent <name|next|prev>", important=True))
+            self.status = "agent invalid"
+            return False
+        if normalized in {"next", "prev"}:
+            self.cycle_agent(1 if normalized == "next" else -1)
+            return True
+        matches = [agent for agent in choices if agent == normalized or agent.startswith(normalized)]
+        if len(matches) != 1:
+            self.timeline.append(TimelineLine("error", f"agent not found: {normalized}", important=True))
+            self.status = "agent not found"
+            return False
+        self.selected_agent = matches[0]
+        self.timeline.append(TimelineLine("status", f"agent selected: {self.selected_agent}", important=True))
+        self.status = "agent selected"
+        return True
+
+    def cycle_agent(self, delta: int = 1) -> None:
+        agents = self._agent_choices()
+        index = agents.index(self.agent_label) if self.agent_label in agents else 0
+        self.selected_agent = agents[_bounded_index(index + delta, len(agents))]
+        self.timeline.append(TimelineLine("status", f"agent selected: {self.selected_agent}", important=True))
+        self.status = "agent selected"
+
+    def _agent_from_command(self, arguments: list[str]) -> None:
+        if not arguments:
+            self.open_agent_picker(announce=True)
+            return
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /agent <name|next|prev>", important=True))
+            self.status = "agent invalid"
+            return
+        self.select_agent(arguments[0])
+
+    def _agent_choices(self) -> list[str]:
+        list_agents = getattr(self.runtime, "list_agents", None)
+        if callable(list_agents):
+            try:
+                raw_agents = list_agents()
+            except Exception:
+                raw_agents = []
+            agents: list[str] = []
+            for item in raw_agents:
+                if isinstance(item, dict):
+                    name = str(item.get("id") or item.get("name") or "").strip()
+                else:
+                    name = str(item).strip()
+                if name:
+                    agents.append(name)
+            if agents:
+                return agents
+        return list(DEFAULT_AGENT_CHOICES)
+
+    def open_variant_picker(self, *, announce: bool = False) -> bool:
+        variants = self._variant_choices()
+        if len(variants) <= 1:
+            self.timeline.append(TimelineLine("warning", "no variants available for the selected model", important=True))
+            self.status = "variants unavailable"
+            return False
+        self._close_pickers(except_name="variant", update_status=False)
+        self.variant_picker_variants = variants
+        self.variant_picker_index = _bounded_index(variants.index(self.variant_label) if self.variant_label in variants else 0, len(variants))
+        self.variant_picker_open = True
+        self.status = "variant picker"
+        if announce:
+            self.timeline.append(TimelineLine("status", "variant picker opened. Use Up/Down or j/k, Enter to select, Esc to close.", important=True))
+        return True
+
+    def close_variant_picker(self) -> None:
+        self.variant_picker_open = False
+        self.status = "variant picker closed"
+
+    def move_variant_picker(self, delta: int) -> None:
+        if not self.variant_picker_open:
+            return
+        self.variant_picker_index = _bounded_index(self.variant_picker_index + delta, len(self.variant_picker_variants))
+        self.status = f"selected variant {self.variant_picker_variants[self.variant_picker_index]}"
+
+    def select_variant_from_picker(self) -> bool:
+        if not self.variant_picker_variants:
+            self.status = "no variant selected"
+            return False
+        applied = self.select_variant(self.variant_picker_variants[_bounded_index(self.variant_picker_index, len(self.variant_picker_variants))])
+        if applied:
+            self.variant_picker_open = False
+        return applied
+
+    def select_variant(self, name: str) -> bool:
+        normalized = name.strip()
+        variants = self._variant_choices()
+        if not normalized:
+            self.timeline.append(TimelineLine("warning", "usage: /variant <name>", important=True))
+            self.status = "variant invalid"
+            return False
+        matches = [variant for variant in variants if variant == normalized or variant.startswith(normalized)]
+        if len(matches) != 1:
+            self.timeline.append(TimelineLine("error", f"variant not found: {normalized}", important=True))
+            self.status = "variant not found"
+            return False
+        self.selected_variant = matches[0]
+        self.timeline.append(TimelineLine("status", f"variant selected: {self.selected_variant}", important=True))
+        self.status = "variant selected"
+        return True
+
+    def _variant_from_command(self, arguments: list[str]) -> None:
+        if not arguments:
+            self.open_variant_picker(announce=True)
+            return
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /variant <name>", important=True))
+            self.status = "variant invalid"
+            return
+        self.select_variant(arguments[0])
+
+    def _variant_choices(self) -> list[str]:
+        model = self._selected_model_payload()
+        raw_variants = model.get("variants") if isinstance(model, dict) else None
+        variants = ["default"]
+        if isinstance(raw_variants, list):
+            for item in raw_variants:
+                if isinstance(item, dict):
+                    variant = str(item.get("id") or item.get("name") or "").strip()
+                else:
+                    variant = str(item).strip()
+                if variant and variant not in variants:
+                    variants.append(variant)
+        return variants
+
+    def _selected_model_payload(self) -> dict[str, object]:
+        if self.selected_model_id:
+            resolved = self._resolve_model(self.selected_model_id, provider_id=self.selected_provider_id)
+            if resolved is not None:
+                return resolved
+        return {}
+
+    def _clear_invalid_variant(self) -> None:
+        variants = self._variant_choices()
+        if self.variant_label not in variants:
+            self.selected_variant = "default"
+
+    def _close_pickers(self, *, except_name: str = "", update_status: bool = False) -> None:
+        if except_name != "session":
+            self.session_picker_open = False
+        if except_name != "file":
+            self.close_file_picker(update_status=False)
+        if except_name != "model":
+            self.model_picker_open = False
+        if except_name != "agent":
+            self.agent_picker_open = False
+        if except_name != "variant":
+            self.variant_picker_open = False
+        if update_status:
+            self.status = "picker closed"
 
     def _show_help(self) -> None:
         lines = [f"{name} - {description}" for name, description in BUILTIN_COMMANDS]
@@ -577,6 +1004,9 @@ class TuiState:
             f"session: {self.session_id or '-'}",
             f"turn: {getattr(turn, 'id', '-') if turn is not None else '-'}",
             f"turn_status: {turn.status if turn is not None else '-'}",
+            f"model: {self.model_label}",
+            f"agent: {self.agent_label}",
+            f"variant: {self.variant_label}",
             f"events: {len(turn.events) if turn is not None else 0}",
         ]
         workspace = getattr(self.runtime, "workspace", None)
@@ -623,7 +1053,7 @@ class TuiState:
         self.next_event_index = 0
         self.input_buffer = ""
         self.active_approval = None
-        self.close_file_picker(update_status=False)
+        self._close_pickers(update_status=False)
         self.timeline.clear()
         self.status = "new session"
         return self.session_id
@@ -631,7 +1061,7 @@ class TuiState:
     def clear(self) -> None:
         self.timeline.clear()
         self.scroll = 0
-        self.close_file_picker(update_status=False)
+        self._close_pickers(update_status=False)
         self.status = "cleared"
 
     def poll_events(self) -> None:
@@ -717,6 +1147,12 @@ def _file_match_score(path: str, query: str) -> tuple[int, int, str]:
     return rank, len(path), path
 
 
+def _bounded_index(index: int, count: int) -> int:
+    if count <= 0:
+        return 0
+    return max(0, min(count - 1, index))
+
+
 def _normalize_control_action(action: str) -> str:
     return {
         "append-prompt": "prompt.append",
@@ -726,7 +1162,12 @@ def _normalize_control_action(action: str) -> str:
         "open-sessions": "sessions.open",
         "open-themes": "theme.open",
         "open-models": "model.open",
+        "open-agents": "agent.open",
+        "open-variants": "variant.open",
         "select-session": "session.select",
+        "select-model": "model.select",
+        "select-agent": "agent.select",
+        "select-variant": "variant.select",
         "show-toast": "toast.show",
         "execute-command": "command.execute",
     }.get(action, action)

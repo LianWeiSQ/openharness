@@ -99,7 +99,15 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
             elif path.startswith("/api/sessions/") and path.endswith("/turns"):
                 session_id = path.removeprefix("/api/sessions/").removesuffix("/turns").strip("/")
                 user_text = str(payload.get("input") or payload.get("user_text") or "")
-                turn = self.runtime.start_turn(session_id=session_id, user_text=user_text)
+                turn = _start_runtime_turn(
+                    self.runtime,
+                    session_id=session_id,
+                    user_text=user_text,
+                    model_id=_optional_string(payload, "model_id"),
+                    provider_id=_optional_string(payload, "provider_id"),
+                    agent_name=_optional_string(payload, "agent_name"),
+                    variant=_optional_string(payload, "variant"),
+                )
                 self._send_json({"turn": turn.to_dict()}, status=HTTPStatus.CREATED)
             elif path.startswith("/api/turns/") and path.endswith("/interrupt"):
                 turn_id = path.removeprefix("/api/turns/").removesuffix("/interrupt").strip("/")
@@ -201,6 +209,24 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/tui/open-models":
             self._send_control_enqueued(path, {})
+            return
+        if path == "/tui/open-agents":
+            self._send_control_enqueued(path, {})
+            return
+        if path == "/tui/open-variants":
+            self._send_control_enqueued(path, {})
+            return
+        if path == "/tui/select-model":
+            params = {"modelID": _required_string(payload, "modelID")}
+            if "providerID" in payload and payload["providerID"] is not None:
+                params["providerID"] = _required_string(payload, "providerID")
+            self._send_control_enqueued(path, params)
+            return
+        if path == "/tui/select-agent":
+            self._send_control_enqueued(path, {"agent": _required_string(payload, "agent")})
+            return
+        if path == "/tui/select-variant":
+            self._send_control_enqueued(path, {"variant": _required_string(payload, "variant")})
             return
         if path == "/tui/execute-command":
             command = _required_string(payload, "command")
@@ -402,6 +428,41 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _optional_string(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    value = value.strip()
+    return value or None
+
+
+def _start_runtime_turn(
+    runtime: Any,
+    *,
+    session_id: str,
+    user_text: str,
+    model_id: str | None,
+    provider_id: str | None,
+    agent_name: str | None,
+    variant: str | None,
+) -> Any:
+    try:
+        return runtime.start_turn(
+            session_id=session_id,
+            user_text=user_text,
+            model_id=model_id,
+            provider_id=provider_id,
+            agent_name=agent_name,
+            variant=variant,
+        )
+    except TypeError as error:
+        if "unexpected keyword" not in str(error):
+            raise
+        return runtime.start_turn(session_id=session_id, user_text=user_text)
+
+
 def _publish_to_control(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     topic = payload.get("type") or payload.get("topic") or payload.get("event") or payload.get("method")
     if not isinstance(topic, str) or not topic:
@@ -427,6 +488,17 @@ def _publish_to_control(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "toast.show", result
     if topic == "tui.session.select":
         return "session.select", {"sessionID": _required_string(params, "sessionID")}
+    if topic == "tui.model.select":
+        result = {"modelID": _required_string(params, "modelID")}
+        if "providerID" in params and params["providerID"] is not None:
+            result["providerID"] = _required_string(params, "providerID")
+        return "model.select", result
+    if topic == "tui.agent.select":
+        return "agent.select", {"agent": _required_string(params, "agent")}
+    if topic == "tui.agent.cycle":
+        return "agent.cycle", {}
+    if topic == "tui.variant.select":
+        return "variant.select", {"variant": _required_string(params, "variant")}
     raise ValueError(f"unsupported publish type: {topic}")
 
 

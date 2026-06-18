@@ -156,15 +156,38 @@ class RemoteAppBridgeRuntime:
         sessions = payload.get("sessions")
         return [dict(item) for item in sessions if isinstance(item, dict)] if isinstance(sessions, list) else []
 
+    def list_models(self) -> list[dict[str, object]]:
+        payload = app_bridge_get_json(self.server_url, "/api/models", auth_token=self.auth_token)
+        models = payload.get("models")
+        return [dict(item) for item in models if isinstance(item, dict)] if isinstance(models, list) else []
+
     def get_session(self, session_id: str) -> dict[str, object]:
         payload = app_bridge_get_json(self.server_url, f"/api/sessions/{quote_path(session_id)}", auth_token=self.auth_token)
         return _session_from_payload(payload)
 
-    def start_turn(self, *, session_id: str, user_text: str) -> RemoteTurnRecord:
+    def start_turn(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        model_id: str | None = None,
+        provider_id: str | None = None,
+        agent_name: str | None = None,
+        variant: str | None = None,
+    ) -> RemoteTurnRecord:
+        body: dict[str, object] = {"input": user_text}
+        for key, value in {
+            "model_id": model_id,
+            "provider_id": provider_id,
+            "agent_name": agent_name,
+            "variant": variant,
+        }.items():
+            if value:
+                body[key] = value
         payload = app_bridge_post_json(
             self.server_url,
             f"/api/sessions/{quote_path(session_id)}/turns",
-            {"input": user_text},
+            body,
             auth_token=self.auth_token,
         )
         raw_turn = payload.get("turn")

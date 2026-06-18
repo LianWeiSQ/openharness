@@ -94,6 +94,27 @@ class SessionRuntime(DummyRuntime):
         return {"id": session_id, "messages": self.messages.get(session_id, [])}
 
 
+class SelectorRuntime(DummyRuntime):
+    def __init__(self, *, workspace: Path) -> None:
+        super().__init__(workspace=workspace)
+        self.last_options: dict[str, object] = {}
+
+    def list_models(self):
+        return [
+            {"id": "alpha", "provider_id": "openai", "name": "Alpha", "variants": []},
+            {"id": "beta", "provider_id": "openai", "name": "Beta", "variants": ["fast", "deep"]},
+        ]
+
+    def list_agents(self):
+        return [{"id": "build"}, {"id": "plan"}, {"id": "explore"}]
+
+    def start_turn(self, *, session_id: str, user_text: str, **kwargs):
+        self.last_session_id = session_id
+        self.last_user_text = user_text
+        self.last_options = dict(kwargs)
+        return CapturingTurn()
+
+
 class TuiFormattingTests(unittest.TestCase):
     def _make_temp_dir(self) -> Path:
         tmp_root = Path("openagent/tests/workdir")
@@ -226,7 +247,71 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertFalse(state.submit())
         timeline_text = "\n".join(line.text for line in state.timeline)
         self.assertIn("session: session_live", timeline_text)
+        self.assertIn("model: auto", timeline_text)
+        self.assertIn("agent: build", timeline_text)
         self.assertIn(f"workspace: {workspace}", timeline_text)
+
+    def test_tui_model_agent_variant_pickers_affect_next_turn(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SelectorRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        state.input_buffer = "/models"
+        self.assertFalse(state.submit())
+        self.assertTrue(state.model_picker_open)
+        self.assertFalse(_handle_key(ord("j"), state))
+        self.assertFalse(_handle_key(10, state))
+        self.assertFalse(state.model_picker_open)
+        self.assertEqual(state.selected_model_id, "beta")
+        self.assertEqual(state.selected_provider_id, "openai")
+
+        state.input_buffer = "/agents"
+        self.assertFalse(state.submit())
+        self.assertTrue(state.agent_picker_open)
+        self.assertFalse(_handle_key(ord("j"), state))
+        self.assertFalse(_handle_key(10, state))
+        self.assertEqual(state.selected_agent, "plan")
+
+        state.input_buffer = "/variants"
+        self.assertFalse(state.submit())
+        self.assertTrue(state.variant_picker_open)
+        self.assertFalse(_handle_key(ord("j"), state))
+        self.assertFalse(_handle_key(10, state))
+        self.assertEqual(state.selected_variant, "fast")
+
+        state.input_buffer = "use selected runtime"
+        self.assertTrue(state.submit())
+
+        self.assertEqual(runtime.last_options["model_id"], "beta")
+        self.assertEqual(runtime.last_options["provider_id"], "openai")
+        self.assertEqual(runtime.last_options["agent_name"], "plan")
+        self.assertEqual(runtime.last_options["variant"], "fast")
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("model selected: openai/beta", timeline_text)
+        self.assertIn("agent selected: plan", timeline_text)
+        self.assertIn("variant selected: fast", timeline_text)
+
+    def test_tui_model_agent_variant_control_actions(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SelectorRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        model_open = state.apply_control_request({"path": "/tui/open-models", "body": {}})
+        model_select = state.apply_control_request({"path": "/tui/select-model", "body": {"modelID": "beta", "providerID": "openai"}})
+        agent_open = state.apply_control_request({"path": "/tui/open-agents", "body": {}})
+        agent_select = state.apply_control_request({"path": "/tui/select-agent", "body": {"agent": "explore"}})
+        variant_open = state.apply_control_request({"path": "/tui/open-variants", "body": {}})
+        variant_select = state.apply_control_request({"path": "/tui/select-variant", "body": {"variant": "deep"}})
+
+        self.assertTrue(model_open["applied"])
+        self.assertTrue(model_select["applied"])
+        self.assertTrue(agent_open["applied"])
+        self.assertTrue(agent_select["applied"])
+        self.assertTrue(variant_open["applied"])
+        self.assertTrue(variant_select["applied"])
+        self.assertEqual(state.model_label, "openai/beta")
+        self.assertEqual(state.agent_label, "explore")
+        self.assertEqual(state.variant_label, "deep")
 
     def test_tui_sessions_and_resume_by_prefix(self) -> None:
         workspace = self._make_temp_dir()

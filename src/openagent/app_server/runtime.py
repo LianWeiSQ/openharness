@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from openagent.core.agent.universal import UniversalAgent
+from openagent.core.agent.plan import PlanAgent
+from openagent.core.agent.explore import ExploreAgent
 from openagent.core.id import new_id
 from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
@@ -66,6 +68,10 @@ class TurnRecord:
     final_answer: str = ""
     error: str | None = None
     trace: dict[str, Any] | None = None
+    model_id: str | None = None
+    provider_id: str | None = None
+    agent_name: str | None = None
+    variant: str | None = None
     interrupt_requested: bool = False
     events: list[AppEvent] = field(default_factory=list)
     _event_publisher: Callable[[AppEvent], None] | None = field(default=None, repr=False)
@@ -230,6 +236,10 @@ class TurnRecord:
             "final_answer": self.final_answer,
             "error": self.error,
             "trace": self.trace,
+            "model_id": self.model_id,
+            "provider_id": self.provider_id,
+            "agent_name": self.agent_name,
+            "variant": self.variant,
             "event_count": len(self.events),
             "interrupt_requested": self.interrupt_requested,
             "pending_approval_count": len(self._pending_approvals),
@@ -297,12 +307,37 @@ class OpenAgentAppRuntime:
 
         return asyncio.run(_list())
 
-    def start_turn(self, *, session_id: str, user_text: str) -> TurnRecord:
+    def list_agents(self) -> list[dict[str, str]]:
+        return [
+            {"id": "build", "name": "Build"},
+            {"id": "plan", "name": "Plan"},
+            {"id": "explore", "name": "Explore"},
+        ]
+
+    def start_turn(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        model_id: str | None = None,
+        provider_id: str | None = None,
+        agent_name: str | None = None,
+        variant: str | None = None,
+    ) -> TurnRecord:
         text = user_text.strip()
         if not text:
             raise ValueError("user_text is required")
         session = self._get_session(session_id)
-        turn = TurnRecord(id=new_id("turn"), session_id=session.id, input=text, _event_publisher=self._append_global_event)
+        turn = TurnRecord(
+            id=new_id("turn"),
+            session_id=session.id,
+            input=text,
+            model_id=model_id,
+            provider_id=provider_id,
+            agent_name=agent_name,
+            variant=variant,
+            _event_publisher=self._append_global_event,
+        )
         with self._lock:
             self._turns[turn.id] = turn
         thread = threading.Thread(target=self._run_turn_thread, args=(turn.id,), daemon=True)
@@ -411,10 +446,12 @@ class OpenAgentAppRuntime:
             )
         )
 
-        model_metadata = (await self.provider.list_models())[0]
+        model_metadata = await self._select_model(model_id=turn.model_id, provider_id=turn.provider_id)
+        turn.model_id = model_metadata.id
+        turn.provider_id = model_metadata.provider_id
         language_model = await self._language_model(model_metadata)
-        agent_config = self._agent_config(model_metadata)
-        agent = UniversalAgent(config=agent_config, model=language_model, system_prompt="")
+        agent_config = self._agent_config(model_metadata, agent_name=turn.agent_name, variant=turn.variant)
+        agent = _agent_for_name(agent_config.name)(config=agent_config, model=language_model, system_prompt="")
         permission_manager = PermissionManager(ask_user_func=turn.request_approval)
         loop = AgentLoop(agent=agent, session=session, permission_manager=permission_manager)
         text_chunks: list[str] = []
@@ -463,9 +500,26 @@ class OpenAgentAppRuntime:
             return await value  # type: ignore[no-any-return]
         return value  # type: ignore[return-value]
 
-    def _agent_config(self, model: Model) -> AgentConfig:
+    async def _select_model(self, *, model_id: str | None = None, provider_id: str | None = None) -> Model:
+        models = await self.provider.list_models()
+        if not models:
+            raise ValueError("no models available")
+        if not model_id:
+            return models[0]
+        for model in models:
+            if model.id == model_id and (not provider_id or model.provider_id == provider_id):
+                return model
+        for model in models:
+            if model.id.startswith(model_id) and (not provider_id or model.provider_id == provider_id):
+                return model
+        provider_label = f"{provider_id}/" if provider_id else ""
+        raise ValueError(f"unknown model: {provider_label}{model_id}")
+
+    def _agent_config(self, model: Model, *, agent_name: str | None = None, variant: str | None = None) -> AgentConfig:
+        selected_agent = (agent_name or os.getenv("OPENAGENT_APP_AGENT_NAME") or "build").strip() or "build"
+        selected_variant = (variant or os.getenv("OPENAGENT_VARIANT") or "default").strip() or "default"
         return AgentConfig(
-            name=os.getenv("OPENAGENT_APP_AGENT_NAME") or "openagent-app",
+            name=selected_agent,
             model=model,
             tools=_tools_from_env(),
             permission=_permission_from_env(),
@@ -482,6 +536,7 @@ class OpenAgentAppRuntime:
                 "runtime_warnings": {
                     "enabled": True,
                 },
+                "variant": selected_variant,
             },
         )
 
@@ -540,6 +595,15 @@ def _permission_from_env() -> str:
     if value not in {"FULL", "READONLY", "PLAN_ONLY", "NONE"}:
         return "FULL"
     return value
+
+
+def _agent_for_name(name: str) -> type[UniversalAgent]:
+    normalized = name.strip().lower()
+    if normalized == "plan":
+        return PlanAgent  # type: ignore[return-value]
+    if normalized == "explore":
+        return ExploreAgent  # type: ignore[return-value]
+    return UniversalAgent
 
 
 def _tools_from_env() -> list[str] | str:

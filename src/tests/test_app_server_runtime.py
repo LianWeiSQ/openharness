@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from openagent.core.provider.base import LanguageModel
 from openagent.core.provider.anthropic import AnthropicProvider
+from openagent.core.types import Model
 from openagent.app_server.runtime import OpenAgentAppRuntime
 
 from _mock_model import ScriptedLanguageModel
@@ -42,6 +43,14 @@ class InterruptibleLanguageModel(LanguageModel):
             await asyncio.sleep(0.01)
         yield {"type": "text-delta", "id": "t2", "text": "after interrupt"}
         yield {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}}
+
+
+class FakeProvider:
+    async def list_models(self) -> list[Model]:
+        return [
+            Model(id="alpha", provider_id="fake", name="Alpha", context_window=1000, max_output=100),
+            Model(id="beta", provider_id="fake", name="Beta", context_window=2000, max_output=200),
+        ]
 
 
 class AppServerRuntimeTests(unittest.TestCase):
@@ -110,6 +119,47 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertIsInstance(runtime.provider, AnthropicProvider)
         self.assertEqual(models[0]["provider_id"], "anthropic")
         self.assertEqual(models[0]["id"], "claude-runtime")
+
+    def test_runtime_turn_uses_selected_model_agent_and_variant(self) -> None:
+        workspace = self._make_temp_dir()
+        selected_models: list[Model] = []
+
+        def factory(model: Model) -> ScriptedLanguageModel:
+            selected_models.append(model)
+            return ScriptedLanguageModel(
+                script=[
+                    [
+                        {"type": "text-delta", "id": "t1", "text": "selected"},
+                        {"type": "finish", "finish_reason": "stop", "usage": {}},
+                    ]
+                ]
+            )
+
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=factory,
+        )
+        runtime.provider = FakeProvider()  # type: ignore[assignment]
+
+        session = runtime.start_session()
+        turn = runtime.start_turn(
+            session_id=session["id"],
+            user_text="use selection",
+            model_id="beta",
+            provider_id="fake",
+            agent_name="plan",
+            variant="fast",
+        )
+
+        self.assertTrue(turn.wait_until_terminal(timeout_s=10.0))
+        self.assertEqual(selected_models[0].id, "beta")
+        self.assertEqual(selected_models[0].provider_id, "fake")
+        self.assertEqual(turn.model_id, "beta")
+        self.assertEqual(turn.provider_id, "fake")
+        self.assertEqual(turn.agent_name, "plan")
+        self.assertEqual(turn.variant, "fast")
+        self.assertEqual(turn.to_dict()["agent_name"], "plan")
 
     def test_runtime_interrupts_running_turn_at_event_boundary(self) -> None:
         workspace = self._make_temp_dir()
