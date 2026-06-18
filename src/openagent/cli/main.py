@@ -303,7 +303,9 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_show.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
     mcp_auth = mcp_subparsers.add_parser("auth", help="inspect and update remote MCP authentication")
-    mcp_auth_subparsers = mcp_auth.add_subparsers(dest="mcp_auth_command", required=True)
+    add_mcp_options(mcp_auth)
+    mcp_auth.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+    mcp_auth_subparsers = mcp_auth.add_subparsers(dest="mcp_auth_command", required=False)
 
     mcp_auth_list = mcp_auth_subparsers.add_parser("list", aliases=["ls"], help="list MCP auth status")
     add_mcp_options(mcp_auth_list)

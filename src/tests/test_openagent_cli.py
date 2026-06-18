@@ -1241,6 +1241,73 @@ Create component $1 for $ARGUMENTS.
             self.assertNotIn("Authorization", raw["mcpServers"]["demo"]["headers"])
             self.assertEqual(raw["mcpServers"]["demo"]["headers"]["X-Team"], "platform")
 
+    def test_mcp_auth_without_subcommand_lists_status_and_sanitizes_url(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "demo": {
+                                "url": "https://client:basic-secret@example.com/mcp?token=url-secret&safe=1",
+                                "oauth": {"clientId": "client-id", "clientSecret": "client-secret"},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = parser.parse_args(["mcp", "auth", "--config", str(config_path), "--format", "json"])
+            stdout = io.StringIO()
+
+            self.assertEqual(run_mcp_command(args, stdout=stdout, stderr=io.StringIO()), 0)
+
+            payload = json.loads(stdout.getvalue())
+            server = payload["servers"][0]
+            self.assertEqual(server["status"], "needs_auth")
+            self.assertTrue(server["has_client_registration"])
+            self.assertTrue(server["client_id_set"])
+            self.assertTrue(server["client_secret_set"])
+            self.assertIn("https://[redacted]@example.com", server["url"])
+            self.assertIn("token=[redacted]", server["url"])
+            self.assertNotIn("basic-secret", stdout.getvalue())
+            self.assertNotIn("url-secret", stdout.getvalue())
+            self.assertNotIn("client-secret", stdout.getvalue())
+
+    def test_mcp_read_surfaces_redact_url_userinfo(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "demo": {
+                                "url": "https://client:basic-secret@example.com/mcp?token=url-secret&safe=1",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            commands = [
+                ["mcp", "list", "--config", str(config_path), "--format", "json"],
+                ["mcp", "show", "demo", "--config", str(config_path), "--format", "json"],
+                ["mcp", "auth", "--config", str(config_path), "--format", "json"],
+                ["mcp", "debug", "demo", "--config", str(config_path), "--format", "json"],
+            ]
+            for command in commands:
+                with self.subTest(command=command):
+                    stdout = io.StringIO()
+                    self.assertEqual(run_mcp_command(parser.parse_args(command), stdout=stdout, stderr=io.StringIO()), 0)
+                    output = stdout.getvalue()
+                    self.assertIn("https://[redacted]@example.com", output)
+                    self.assertIn("token=[redacted]", output)
+                    self.assertNotIn("basic-secret", output)
+                    self.assertNotIn("url-secret", output)
+
     def test_mcp_auth_set_token_stdin_custom_header_redacts_secret(self) -> None:
         parser = build_parser()
         sentinel = "stdin-sentinel-token"
@@ -1285,6 +1352,7 @@ Create component $1 for $ARGUMENTS.
             "key-secret",
             "api-secret",
             "oauth-secret",
+            "refresh-secret",
             "client-secret",
             "top-secret",
             "nested-secret",
@@ -1304,9 +1372,19 @@ Create component $1 for $ARGUMENTS.
                                     "Api-Key": "api-secret",
                                     "X-Team": "platform",
                                 },
-                                "oauth": {"access_token": "oauth-secret", "client_secret": "client-secret"},
+                                "oauth": {
+                                    "issuer": "https://issuer.example",
+                                    "scopes": ["tools"],
+                                    "access_token": "oauth-secret",
+                                    "refresh_token": "refresh-secret",
+                                    "client_secret": "client-secret",
+                                },
                                 "token": "top-secret",
-                                "client": {"client_secret": "nested-secret"},
+                                "client": {
+                                    "client_id": "nested-client-id",
+                                    "client_secret": "nested-secret",
+                                    "registration_url": "https://issuer.example/register",
+                                },
                                 "client_id": "client-id",
                             }
                         }
@@ -1320,18 +1398,24 @@ Create component $1 for $ARGUMENTS.
             self.assertEqual(run_mcp_command(args, stdout=stdout, stderr=io.StringIO()), 0)
 
             payload = json.loads(stdout.getvalue())
-            self.assertEqual(payload["server"]["status"], "not_authenticated")
+            self.assertEqual(payload["server"]["status"], "needs_auth")
             self.assertEqual(payload["removed_headers"], ["Api-Key", "Authorization", "Proxy-Authorization", "X-API-Key"])
-            self.assertEqual(payload["removed_fields"], ["client", "client_id", "oauth", "token"])
+            self.assertEqual(
+                payload["removed_fields"],
+                ["client.client_secret", "oauth.access_token", "oauth.client_secret", "oauth.refresh_token", "token"],
+            )
             for secret in secret_values:
                 self.assertNotIn(secret, stdout.getvalue())
             raw = json.loads(config_path.read_text(encoding="utf-8"))
             server = raw["mcpServers"]["demo"]
             self.assertEqual(server["headers"], {"X-Team": "platform"})
-            self.assertNotIn("oauth", server)
+            self.assertEqual(server["oauth"], {"issuer": "https://issuer.example", "scopes": ["tools"]})
             self.assertNotIn("token", server)
-            self.assertNotIn("client", server)
-            self.assertNotIn("client_id", server)
+            self.assertEqual(
+                server["client"],
+                {"client_id": "nested-client-id", "registration_url": "https://issuer.example/register"},
+            )
+            self.assertEqual(server["client_id"], "client-id")
 
     def test_mcp_debug_refresh_failure_is_structured_and_redacted(self) -> None:
         parser = build_parser()
@@ -1366,6 +1450,33 @@ Create component $1 for $ARGUMENTS.
             self.assertEqual(payload["runtime_status"]["last_error"], "network down")
             self.assertNotIn(sentinel, stdout.getvalue())
             self.assertNotIn("Traceback", stdout.getvalue())
+
+            stdout = io.StringIO()
+            with patch(
+                "openagent.cli.mcp.RemoteMcpManager.refresh_all_sync",
+                side_effect=RuntimeError(f"failed with token={sentinel} and Bearer {sentinel}"),
+            ):
+                exit_code = run_mcp_command(args, stdout=stdout, stderr=io.StringIO())
+            self.assertEqual(exit_code, 2)
+            self.assertNotIn(sentinel, stdout.getvalue())
+            self.assertIn("token=[redacted]", stdout.getvalue())
+            self.assertIn("Bearer [redacted]", stdout.getvalue())
+
+            stdout = io.StringIO()
+            with patch(
+                "openagent.cli.mcp.RemoteMcpManager.refresh_all_sync",
+                side_effect=RuntimeError('{"access_token":"json-secret","state":"state-secret"}'),
+            ):
+                exit_code = run_mcp_command(args, stdout=stdout, stderr=io.StringIO())
+            self.assertEqual(exit_code, 2)
+            self.assertNotIn("json-secret", stdout.getvalue())
+            self.assertNotIn("state-secret", stdout.getvalue())
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["refresh_error"], '{"access_token":"[redacted]","state":"[redacted]"}')
+            self.assertEqual(
+                payload["runtime_status"]["last_error"],
+                '{"access_token":"[redacted]","state":"[redacted]"}',
+            )
 
     def test_mcp_debug_missing_and_non_remote_fail_cleanly(self) -> None:
         parser = build_parser()

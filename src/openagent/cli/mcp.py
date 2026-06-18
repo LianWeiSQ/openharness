@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,12 +29,7 @@ SECRET_FIELD_KEYS = AUTH_TOKEN_FIELD_KEYS | {
     "secret",
 }
 LOGOUT_FIELD_KEYS = SECRET_FIELD_KEYS | {
-    "auth",
     "authorization",
-    "client",
-    "clientid",
-    "oauth",
-    "oauth2",
 }
 OAUTH_MARKER_KEYS = {
     "authorizationurl",
@@ -46,6 +42,19 @@ OAUTH_MARKER_KEYS = {
     "scopes",
     "tokenurl",
 }
+SENSITIVE_TEXT_REPLACEMENTS = (
+    re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^/\s@]+@)"),
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"),
+    re.compile(
+        r"(?i)\b(access[_-]?token|refresh[_-]?token|id[_-]?token|bearer[_-]?token|auth[_-]?token|api[_-]?key|client[_-]?secret|secret|token|code|state)=([^&\s\"']+)"
+    ),
+    re.compile(
+        r"(?i)([\"'](?:access[_-]?token|refresh[_-]?token|id[_-]?token|bearer[_-]?token|auth[_-]?token|api[_-]?key|client[_-]?secret|secret|token|code|state)[\"']\s*:\s*[\"'])([^\"']+)([\"'])"
+    ),
+    re.compile(
+        r"(?i)\b(access[_-]?token|refresh[_-]?token|id[_-]?token|bearer[_-]?token|auth[_-]?token|api[_-]?key|client[_-]?secret|secret|token|code|state):\s*([^,\s\"'}]+)"
+    ),
+)
 
 
 def run_mcp_command(args: argparse.Namespace, *, stdout: object | None = None, stderr: object | None = None) -> int:
@@ -62,8 +71,8 @@ def run_mcp_command(args: argparse.Namespace, *, stdout: object | None = None, s
             print_mcp_payload(payload, output_format=str(getattr(args, "format", "table")), stdout=out, table_kind="show")
             return 0
         if command == "auth":
-            auth_command = str(getattr(args, "mcp_auth_command", ""))
-            if auth_command in {"list", "ls"}:
+            auth_command = str(getattr(args, "mcp_auth_command", "") or "")
+            if not auth_command or auth_command in {"list", "ls"}:
                 payload = list_mcp_auth(args)
                 print_mcp_payload(payload, output_format=str(getattr(args, "format", "table")), stdout=out, table_kind="auth_list")
                 return 0
@@ -98,10 +107,10 @@ def run_mcp_command(args: argparse.Namespace, *, stdout: object | None = None, s
             print_mcp_payload(payload, output_format=str(getattr(args, "format", "table")), stdout=out, table_kind="debug")
             return 0 if bool(payload.get("ok", False)) else 2
     except (FileNotFoundError, KeyError) as error:
-        print(str(error), file=err)
+        print(sanitize_secret_text(str(error)), file=err)
         return 1
     except ValueError as error:
-        print(str(error), file=err)
+        print(sanitize_secret_text(str(error)), file=err)
         return 2
 
     print(f"Unknown MCP command: {command}", file=err)
@@ -245,7 +254,7 @@ def doctor_mcp(args: argparse.Namespace) -> dict[str, object]:
             "config_path": str(path),
             "configured": False,
             "ok": False,
-            "error": str(error),
+            "error": sanitize_secret_text(str(error)),
             "servers": [],
         }
 
@@ -255,11 +264,12 @@ def doctor_mcp(args: argparse.Namespace) -> dict[str, object]:
         try:
             manager.refresh_all_sync()
         except Exception as error:  # noqa: BLE001 - network/client failures are doctor status, not tracebacks.
-            refresh_error = str(error)
+            refresh_error = sanitize_secret_text(str(error))
     snapshot = manager.snapshot().to_dict()
     servers = []
     for server in snapshot["servers"]:
         item = dict(server)
+        sanitize_mcp_runtime_item(item)
         status = str(item.get("status") or "")
         item["ok"] = bool(item.get("enabled") is False or status not in {"error"})
         servers.append(item)
@@ -310,7 +320,7 @@ def debug_mcp_server(args: argparse.Namespace) -> dict[str, object]:
     try:
         config = load_mcp_config(scoped_raw)
     except ValueError as error:
-        payload["config_status"] = {"ok": False, "error": str(error)}
+        payload["config_status"] = {"ok": False, "error": sanitize_secret_text(str(error))}
         return payload
 
     payload["config_status"] = {"ok": True, "error": None}
@@ -320,7 +330,7 @@ def debug_mcp_server(args: argparse.Namespace) -> dict[str, object]:
         try:
             manager.refresh_all_sync()
         except Exception as error:  # noqa: BLE001 - debug reports network/client failures structurally.
-            refresh_error = str(error)
+            refresh_error = sanitize_secret_text(str(error))
 
     runtime_server = next(
         (dict(item) for item in manager.snapshot().to_dict()["servers"] if item.get("name") == name),
@@ -329,7 +339,10 @@ def debug_mcp_server(args: argparse.Namespace) -> dict[str, object]:
     if runtime_server is None:
         runtime_server = {"name": name, "status": "error", "last_error": "MCP server missing from runtime snapshot.", "ok": False}
     else:
+        sanitize_mcp_runtime_item(runtime_server)
         runtime_server["ok"] = bool(runtime_server.get("enabled") is False or runtime_server.get("status") != "error")
+        if runtime_server.get("last_error"):
+            runtime_server["last_error"] = sanitize_secret_text(str(runtime_server.get("last_error") or ""))
     if refresh_error:
         runtime_server["status"] = "error"
         runtime_server["last_error"] = refresh_error
@@ -452,7 +465,7 @@ def redact_server(name: str, raw: Any) -> dict[str, object]:
     header_names = sorted(str(key) for key in headers)
     return {
         "name": name,
-        "url": str(value.get("url") or ""),
+        "url": sanitize_secret_text(str(value.get("url") or "")),
         "transport": str(value.get("transport") or infer_transport(value)),
         "enabled": bool(value.get("enabled", True)),
         "timeout_ms": int(value.get("timeout_ms") or 30000),
@@ -483,10 +496,18 @@ def mcp_auth_status_item(name: str, raw: Any) -> dict[str, object]:
     header_names = sorted(str(key) for key in headers)
     auth_header_names = [header for header in header_names if is_auth_header_name(header)]
     token_fields = collect_field_paths(raw, AUTH_TOKEN_FIELD_KEYS)
+    client_fields = collect_field_paths(raw, {"clientid", "clientsecret"})
     secret_field_count = len(collect_field_paths(raw, SECRET_FIELD_KEYS))
     remote, remote_error = inspect_remote_server(raw)
     oauth_capable, oauth_enabled = inspect_oauth_state(raw)
     enabled = bool(raw.get("enabled", True))
+    has_header_token = bool(auth_header_names)
+    has_oauth_tokens = bool(token_fields)
+    has_refresh_token = any("refresh" in normalize_config_key(path) for path in token_fields)
+    has_client_registration = bool(client_fields)
+    client_id_set = any("clientid" in normalize_config_key(path) for path in client_fields)
+    client_secret_set = any("clientsecret" in normalize_config_key(path) for path in client_fields)
+    method = "header" if has_header_token else ("oauth" if has_oauth_tokens else None)
 
     if not enabled:
         status = "disabled"
@@ -512,13 +533,20 @@ def mcp_auth_status_item(name: str, raw: Any) -> dict[str, object]:
 
     return {
         "name": name,
-        "url": str(raw.get("url") or ""),
+        "url": sanitize_secret_text(str(raw.get("url") or "")),
         "transport": str(raw.get("transport") or infer_transport(raw)),
         "enabled": enabled,
         "remote": remote,
         "oauth_capable": oauth_capable,
         "oauth_enabled": oauth_enabled,
         "status": status,
+        "method": method,
+        "has_header_token": has_header_token,
+        "has_oauth_tokens": has_oauth_tokens,
+        "has_refresh_token": has_refresh_token,
+        "has_client_registration": has_client_registration,
+        "client_id_set": client_id_set,
+        "client_secret_set": client_secret_set,
         "error": error,
         "header_names": header_names,
         "auth_header_names": auth_header_names,
@@ -594,17 +622,36 @@ def remove_auth_fields(value: Any, *, prefix: str = "") -> list[str]:
         if not prefix and key == "headers":
             continue
         path = f"{prefix}.{key}" if prefix else key
-        if normalize_config_key(key) in LOGOUT_FIELD_KEYS:
+        normalized = normalize_config_key(key)
+        child = value[raw_key]
+        if normalized in LOGOUT_FIELD_KEYS or (normalized == "auth" and not isinstance(child, (dict, list))):
             removed.append(path)
             del value[raw_key]
             continue
-        removed.extend(remove_auth_fields(value[raw_key], prefix=path))
+        removed.extend(remove_auth_fields(child, prefix=path))
     return sorted(removed)
 
 
 def redacted_headers(value: dict[str, Any]) -> dict[str, str]:
     headers = value.get("headers") if isinstance(value.get("headers"), dict) else {}
     return {str(header): redact_header_value(str(header)) for header in sorted(headers)}
+
+
+def sanitize_mcp_runtime_item(item: dict[str, Any]) -> None:
+    if item.get("url"):
+        item["url"] = sanitize_secret_text(str(item.get("url") or ""))
+    if item.get("last_error"):
+        item["last_error"] = sanitize_secret_text(str(item.get("last_error") or ""))
+
+
+def sanitize_secret_text(value: str) -> str:
+    redacted = value
+    redacted = SENSITIVE_TEXT_REPLACEMENTS[0].sub(lambda match: f"{match.group(1)}[redacted]@", redacted)
+    redacted = SENSITIVE_TEXT_REPLACEMENTS[1].sub("Bearer [redacted]", redacted)
+    redacted = SENSITIVE_TEXT_REPLACEMENTS[2].sub(lambda match: f"{match.group(1)}=[redacted]", redacted)
+    redacted = SENSITIVE_TEXT_REPLACEMENTS[3].sub(lambda match: f"{match.group(1)}[redacted]{match.group(3)}", redacted)
+    redacted = SENSITIVE_TEXT_REPLACEMENTS[4].sub(lambda match: f"{match.group(1)}: [redacted]", redacted)
+    return redacted
 
 
 def is_auth_header_name(header: str) -> bool:
