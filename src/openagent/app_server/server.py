@@ -40,11 +40,16 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
-        if _is_api_path(path) and not self._authorize_api_request():
+        if _is_authenticated_app_path(path) and not self._authorize_api_request():
             return
         try:
             if path == "/api/health":
                 self._send_json({"ok": True, "service": "openagent-app-server", "ui_enabled": self.serve_static, "auth_required": bool(self.auth_token)})
+            elif path == "/tui/control/next":
+                query = parse_qs(parsed.query)
+                timeout_s = min(5.0, max(0.0, _query_float(query, "timeout", 0.25)))
+                request = self.runtime.wait_for_tui_control(timeout_s=timeout_s)
+                self._send_json({"ok": True, "request": request.to_dict() if request is not None else None})
             elif path == "/api/models":
                 self._send_json({"models": self.runtime.list_models()})
             elif path == "/api/sessions":
@@ -70,7 +75,7 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
             else:
                 self._serve_static(path)
-        except KeyError as error:
+        except (FileNotFoundError, KeyError) as error:
             self._send_error(HTTPStatus.NOT_FOUND, str(error))
         except Exception as error:  # noqa: BLE001
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
@@ -78,11 +83,13 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         path = parsed.path
-        if _is_api_path(path) and not self._authorize_api_request():
+        if _is_authenticated_app_path(path) and not self._authorize_api_request():
             return
         try:
             payload = self._read_json()
-            if path == "/api/sessions":
+            if path.startswith("/tui/"):
+                self._handle_tui_post(path, payload)
+            elif path == "/api/sessions":
                 session = self.runtime.start_session(cwd=payload.get("cwd"))
                 self._send_json({"session": session}, status=HTTPStatus.CREATED)
             elif path.startswith("/api/sessions/") and path.endswith("/turns"):
@@ -102,7 +109,7 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
         except ValueError as error:
             self._send_error(HTTPStatus.BAD_REQUEST, str(error))
-        except KeyError as error:
+        except (FileNotFoundError, KeyError) as error:
             self._send_error(HTTPStatus.NOT_FOUND, str(error))
         except Exception as error:  # noqa: BLE001
             self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(error))
@@ -167,6 +174,76 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 sequence = global_sequence + 1
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             return
+
+    def _handle_tui_post(self, path: str, payload: dict[str, Any]) -> None:
+        if path == "/tui/append-prompt":
+            text = _required_string(payload, "text")
+            self._send_control_enqueued("prompt.append", {"text": text})
+            return
+        if path == "/tui/submit-prompt":
+            self._send_control_enqueued("prompt.submit", {})
+            return
+        if path == "/tui/clear-prompt":
+            self._send_control_enqueued("prompt.clear", {})
+            return
+        if path == "/tui/open-help":
+            self._send_control_enqueued("help.open", {})
+            return
+        if path == "/tui/open-sessions":
+            self._send_control_enqueued("sessions.open", {})
+            return
+        if path == "/tui/execute-command":
+            command = _required_string(payload, "command")
+            self._send_control_enqueued("command.execute", {"command": command})
+            return
+        if path == "/tui/show-toast":
+            message = _required_string(payload, "message")
+            params: dict[str, Any] = {"message": message}
+            for key in ("title", "variant"):
+                if key in payload and payload[key] is not None:
+                    if not isinstance(payload[key], str):
+                        raise ValueError(f"{key} must be a string")
+                    params[key] = payload[key]
+            if "duration" in payload and payload["duration"] is not None:
+                if not isinstance(payload["duration"], int | float):
+                    raise ValueError("duration must be a number")
+                params["duration"] = payload["duration"]
+            self._send_control_enqueued("toast.show", params)
+            return
+        if path == "/tui/select-session":
+            session_id = _required_string(payload, "sessionID")
+            self._verify_tui_session_exists(session_id)
+            self._send_control_enqueued("session.select", {"sessionID": session_id})
+            return
+        if path == "/tui/publish":
+            action, params = _publish_to_control(payload)
+            if action == "session.select":
+                self._verify_tui_session_exists(str(params.get("sessionID") or ""))
+            self._send_control_enqueued(action, params)
+            return
+        if path == "/tui/control/response":
+            request_id = _control_response_id(payload)
+            response = self.runtime.record_tui_control_response(request_id, {key: value for key, value in payload.items() if key not in {"id", "request_id", "requestID"}})
+            self._send_json({"ok": True, "response": response})
+            return
+        self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
+
+    def _send_control_enqueued(self, action: str, params: dict[str, Any]) -> None:
+        request = self.runtime.enqueue_tui_control(action, params)
+        self._send_json({"ok": True, "request": request.to_dict()})
+
+    def _verify_tui_session_exists(self, session_id: str) -> None:
+        if not session_id:
+            raise ValueError("sessionID is required")
+        get_session = getattr(self.runtime, "get_session", None)
+        if callable(get_session):
+            get_session(session_id)
+            return
+        list_sessions = getattr(self.runtime, "list_sessions", None)
+        if callable(list_sessions):
+            sessions = list_sessions()
+            if isinstance(sessions, list) and not any(str(item.get("id") or "") == session_id for item in sessions if isinstance(item, dict)):
+                raise KeyError(f"Unknown session: {session_id}")
 
     def _serve_static(self, path: str) -> None:
         target = "index.html" if path in {"", "/"} else path.lstrip("/")
@@ -277,8 +354,8 @@ def main(argv: list[str] | None = None) -> None:
     )
 
 
-def _is_api_path(path: str) -> bool:
-    return path.startswith("/api/")
+def _is_authenticated_app_path(path: str) -> bool:
+    return path.startswith("/api/") or path.startswith("/tui/")
 
 
 def _parse_turn_approval_path(path: str) -> tuple[str, str]:
@@ -296,11 +373,55 @@ def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:
         return default
 
 
+def _query_float(query: dict[str, list[str]], key: str, default: float) -> float:
+    try:
+        return float((query.get(key) or [default])[0])
+    except (TypeError, ValueError):
+        return default
+
+
 def _header_int(value: str | None, default: int) -> int:
     try:
         return int(value or default)
     except (TypeError, ValueError):
         return default
+
+
+def _required_string(payload: dict[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} is required")
+    return value
+
+
+def _control_response_id(payload: dict[str, Any]) -> str:
+    for key in ("id", "request_id", "requestID"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    raise ValueError("control response id is required")
+
+
+def _publish_to_control(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    topic = payload.get("type") or payload.get("topic") or payload.get("event") or payload.get("method")
+    if not isinstance(topic, str) or not topic:
+        raise ValueError("publish type is required")
+    raw_payload = payload.get("payload")
+    params = dict(raw_payload) if isinstance(raw_payload, dict) else {key: value for key, value in payload.items() if key not in {"type", "topic", "event", "method"}}
+    if topic == "tui.prompt.append":
+        return "prompt.append", {"text": _required_string(params, "text")}
+    if topic == "tui.command.execute":
+        return "command.execute", {"command": _required_string(params, "command")}
+    if topic == "tui.toast.show":
+        message = _required_string(params, "message")
+        result: dict[str, Any] = {"message": message}
+        for key in ("title", "variant", "duration"):
+            if key in params and params[key] is not None:
+                result[key] = params[key]
+        return "toast.show", result
+    if topic == "tui.session.select":
+        return "session.select", {"sessionID": _required_string(params, "sessionID")}
+    raise ValueError(f"unsupported publish type: {topic}")
 
 
 if __name__ == "__main__":

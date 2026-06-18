@@ -130,8 +130,14 @@ class RemoteAppBridgeRuntime:
         self._global_stream_started = False
         self._global_stream_lock = threading.Lock()
         self._global_stream_stop = threading.Event()
+        self._control_requests: list[dict[str, object]] = []
+        self._control_condition = threading.Condition()
+        self._control_poll_started = False
+        self._control_poll_unavailable = False
+        self._control_poll_stop = threading.Event()
         if use_global_events:
             self._ensure_global_stream()
+        self._ensure_tui_control_poll()
 
     def start_session(self, *, cwd: str | Path | None = None) -> dict[str, object]:
         payload = app_bridge_post_json(
@@ -205,6 +211,27 @@ class RemoteAppBridgeRuntime:
         )
         event = payload.get("event")
         return dict(event) if isinstance(event, dict) else payload
+
+    def drain_control_requests(self) -> list[dict[str, object]]:
+        with self._control_condition:
+            requests = list(self._control_requests)
+            self._control_requests.clear()
+        return requests
+
+    def post_control_response(
+        self,
+        request_id: str,
+        *,
+        ok: bool = True,
+        result: dict[str, object] | None = None,
+        error: str | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {"id": request_id, "ok": ok}
+        if result is not None:
+            payload["result"] = result
+        if error:
+            payload["error"] = error
+        return app_bridge_post_json(self.server_url, "/tui/control/response", payload, auth_token=self.auth_token)
 
     def _consume_turn_events(self, turn: RemoteTurnRecord) -> None:
         try:
@@ -285,6 +312,31 @@ class RemoteAppBridgeRuntime:
             return True
         with self._global_stream_lock:
             return self._global_stream_unavailable or not self._global_stream_active
+
+    def _ensure_tui_control_poll(self) -> None:
+        with self._control_condition:
+            if self._control_poll_started or self._control_poll_unavailable:
+                return
+            self._control_poll_started = True
+        thread = threading.Thread(target=self._poll_tui_control, daemon=True)
+        thread.start()
+
+    def _poll_tui_control(self) -> None:
+        while not self._control_poll_stop.is_set():
+            try:
+                payload = app_bridge_get_json(self.server_url, "/tui/control/next?timeout=0.25", auth_token=self.auth_token)
+            except Exception:  # noqa: BLE001 - older or closing servers should disable remote TUI control polling.
+                with self._control_condition:
+                    self._control_poll_unavailable = True
+                    self._control_condition.notify_all()
+                return
+            request = payload.get("request")
+            if isinstance(request, dict):
+                with self._control_condition:
+                    self._control_requests.append(dict(request))
+                    self._control_condition.notify_all()
+            else:
+                time.sleep(0.05)
 
 
 def _session_from_payload(payload: dict[str, object]) -> dict[str, object]:

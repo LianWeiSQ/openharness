@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 from uuid import uuid4
 
-from openagent.app_server.protocol import AppEvent
+from openagent.app_server.protocol import AppEvent, TuiControlRequest
 from openagent.app_server.server import create_server
 
 
@@ -35,12 +35,19 @@ class FakeRuntime:
                 global_sequence=3,
             ),
         ]
+        self.control_requests: list[TuiControlRequest] = []
+        self.control_responses: dict[str, dict[str, object]] = {}
 
     def list_models(self):
         return []
 
     def list_sessions(self):
-        return []
+        return [{"id": "session_existing", "status": "ready", "message_count": 0}]
+
+    def get_session(self, session_id: str):
+        if session_id != "session_existing":
+            raise KeyError(f"Unknown session: {session_id}")
+        return {"id": session_id, "status": "ready", "message_count": 0}
 
     def interrupt_turn(self, turn_id: str):
         return {"id": turn_id, "status": "interrupting", "interrupt_requested": True}
@@ -61,6 +68,22 @@ class FakeRuntime:
         if 1 <= sequence <= len(self.global_events):
             return self.global_events[sequence - 1]
         return None
+
+    def enqueue_tui_control(self, action: str, params: dict[str, object] | None = None):
+        request = TuiControlRequest(id=f"tui_ctrl_{len(self.control_requests) + 1}", action=action, params=dict(params or {}))
+        self.control_requests.append(request)
+        return request
+
+    def wait_for_tui_control(self, *, timeout_s: float = 0.25):
+        del timeout_s
+        if not self.control_requests:
+            return None
+        return self.control_requests.pop(0)
+
+    def record_tui_control_response(self, request_id: str, payload: dict[str, object] | None = None):
+        response = {"id": request_id, **dict(payload or {})}
+        self.control_responses[request_id] = response
+        return response
 
 
 class AppServerServerTests(unittest.TestCase):
@@ -263,6 +286,119 @@ class AppServerServerTests(unittest.TestCase):
         self.assertEqual(payload["event"]["params"]["approval"]["request_id"], "approval_456")
         self.assertEqual(payload["event"]["params"]["approval"]["action"], "allow")
 
+    def test_tui_routes_require_bearer_token_when_configured(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=FakeRuntime(),  # type: ignore[arg-type]
+            auth_token="server-secret",
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        try:
+            _post_json(f"{base_url}/tui/append-prompt", {"text": "hello"})
+        except urllib.error.HTTPError as error:
+            self.assertEqual(error.code, 401)
+            error.close()
+        else:
+            self.fail("server should reject unauthenticated TUI control requests")
+
+        payload = _post_json(
+            f"{base_url}/tui/append-prompt",
+            {"text": "hello"},
+            headers={"Authorization": "Bearer server-secret"},
+        )
+
+        self.assertEqual(payload["ok"], True)
+        self.assertEqual(payload["request"]["action"], "prompt.append")
+
+    def test_tui_control_routes_validate_body_and_queue_next_shape(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=FakeRuntime(),  # type: ignore[arg-type]
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        try:
+            _post_json(f"{base_url}/tui/append-prompt", {})
+        except urllib.error.HTTPError as error:
+            self.assertEqual(error.code, 400)
+            error.close()
+        else:
+            self.fail("append-prompt should require text")
+
+        _post_json(f"{base_url}/tui/append-prompt", {"text": "hello"})
+        queued = _get_json(f"{base_url}/tui/control/next?timeout=0")
+        empty = _get_json(f"{base_url}/tui/control/next?timeout=0")
+
+        self.assertEqual(queued["ok"], True)
+        self.assertEqual(queued["request"]["action"], "prompt.append")
+        self.assertEqual(queued["request"]["params"], {"text": "hello"})
+        self.assertIsNone(empty["request"])
+
+    def test_tui_control_routes_map_actions_and_record_response(self) -> None:
+        workspace = self._make_temp_dir()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=FakeRuntime(),  # type: ignore[arg-type]
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        cases = [
+            ("/tui/submit-prompt", {}, "prompt.submit", {}),
+            ("/tui/clear-prompt", {}, "prompt.clear", {}),
+            ("/tui/open-help", {}, "help.open", {}),
+            ("/tui/open-sessions", {}, "sessions.open", {}),
+            ("/tui/execute-command", {"command": "status"}, "command.execute", {"command": "status"}),
+            ("/tui/show-toast", {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}, "toast.show", {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}),
+            ("/tui/publish", {"type": "tui.command.execute", "payload": {"command": "help"}}, "command.execute", {"command": "help"}),
+            ("/tui/select-session", {"sessionID": "session_existing"}, "session.select", {"sessionID": "session_existing"}),
+        ]
+
+        for path, body, action, params in cases:
+            _post_json(f"{base_url}{path}", body)
+            queued = _get_json(f"{base_url}/tui/control/next?timeout=0")
+            self.assertEqual(queued["request"]["action"], action)
+            self.assertEqual(queued["request"]["params"], params)
+
+        try:
+            _post_json(f"{base_url}/tui/select-session", {"sessionID": "missing"})
+        except urllib.error.HTTPError as error:
+            self.assertEqual(error.code, 404)
+            error.close()
+        else:
+            self.fail("select-session should reject unknown sessions when runtime can check")
+
+        response = _post_json(f"{base_url}/tui/control/response", {"id": "tui_ctrl_1", "ok": True, "result": {"applied": True}})
+        self.assertEqual(response["ok"], True)
+        self.assertEqual(response["response"]["id"], "tui_ctrl_1")
+        self.assertEqual(response["response"]["result"], {"applied": True})
+
 
 def _read_sse_events(url: str, *, count: int, headers: dict[str, str] | None = None) -> list[dict[str, object]]:
     request_headers = {"Connection": "close", **(headers or {})}
@@ -299,6 +435,21 @@ def _read_sse_events(url: str, *, count: int, headers: dict[str, str] | None = N
             elif line.startswith("data:"):
                 data_lines.append(line.removeprefix("data:").lstrip())
     return events
+
+
+def _get_json(url: str, *, headers: dict[str, str] | None = None) -> dict[str, object]:
+    request = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local test server.
+        value = json.loads(response.read().decode("utf-8"))
+    return value if isinstance(value, dict) else {}
+
+
+def _post_json(url: str, payload: dict[str, object], *, headers: dict[str, str] | None = None) -> dict[str, object]:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json", **(headers or {})})
+    with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local test server.
+        value = json.loads(response.read().decode("utf-8"))
+    return value if isinstance(value, dict) else {}
 
 
 if __name__ == "__main__":

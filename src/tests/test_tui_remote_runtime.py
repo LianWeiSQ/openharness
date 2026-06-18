@@ -16,7 +16,13 @@ from openagent.tui.state import TuiState
 
 
 class RemoteRuntimeServer:
-    def __init__(self, *, required_token: str | None = None, global_events: list[dict[str, object]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        required_token: str | None = None,
+        global_events: list[dict[str, object]] | None = None,
+        control_requests: list[dict[str, object]] | None = None,
+    ) -> None:
         self.records: list[dict[str, object]] = []
         self.sessions: dict[str, dict[str, object]] = {
             "session_existing": {
@@ -31,6 +37,8 @@ class RemoteRuntimeServer:
         }
         self.required_token = required_token
         self.global_events = global_events
+        self.control_requests = list(control_requests or [])
+        self.control_responses: list[dict[str, object]] = []
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -39,6 +47,10 @@ class RemoteRuntimeServer:
                     return
                 owner.records.append({"method": "GET", "path": self.path, "authorization": self.headers.get("Authorization") or ""})
                 parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/tui/control/next" and control_requests is not None:
+                    request = owner.control_requests.pop(0) if owner.control_requests else None
+                    self._send_json({"ok": True, "request": request})
+                    return
                 if parsed.path == "/api/events" and owner.global_events is not None:
                     query = urllib.parse.parse_qs(parsed.query)
                     try:
@@ -86,6 +98,10 @@ class RemoteRuntimeServer:
                     return
                 payload = self._read_json()
                 owner.records.append({"method": "POST", "path": self.path, "payload": payload, "authorization": self.headers.get("Authorization") or ""})
+                if self.path == "/tui/control/response":
+                    owner.control_responses.append(payload)
+                    self._send_json({"ok": True, "response": payload})
+                    return
                 if self.path == "/api/sessions":
                     session = {"id": "session_new", "status": "ready", "message_count": 0, "messages": []}
                     owner.sessions["session_new"] = session
@@ -224,6 +240,28 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         self.assertEqual([event.method for event in turn.events], ["turn/started", "item/agentMessage/delta", "turn/completed"])
         self.assertFalse(any(record["path"] == "/api/turns/turn_global/events" for record in server.records))
 
+    def test_remote_runtime_polls_tui_control_with_auth_and_posts_response(self) -> None:
+        server = RemoteRuntimeServer(
+            required_token="secret",
+            control_requests=[
+                {"id": "tui_ctrl_1", "action": "prompt.append", "params": {"text": "hello"}},
+            ],
+        )
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url, auth_token="secret")
+
+        requests = _wait_for_control_requests(runtime)
+        response = runtime.post_control_response("tui_ctrl_1", ok=True, result={"applied": True})
+
+        self.assertEqual(requests, [{"id": "tui_ctrl_1", "action": "prompt.append", "params": {"text": "hello"}}])
+        self.assertEqual(response["ok"], True)
+        control_get = next(record for record in server.records if str(record["path"]).startswith("/tui/control/next"))
+        control_post = next(record for record in server.records if record["path"] == "/tui/control/response")
+        self.assertEqual(control_get["authorization"], "Bearer secret")
+        self.assertEqual(control_post["authorization"], "Bearer secret")
+        self.assertEqual(server.control_responses[0]["id"], "tui_ctrl_1")
+        self.assertEqual(server.control_responses[0]["result"], {"applied": True})
+
     def test_start_turn_reuses_existing_global_stream_record(self) -> None:
         runtime = RemoteAppBridgeRuntime(server_url="http://127.0.0.1:9", use_global_events=False)
         runtime._route_global_event(  # noqa: SLF001 - regression covers internal global-stream routing race.
@@ -319,6 +357,16 @@ def _wait_for_remote_turn(runtime: RemoteAppBridgeRuntime, turn_id: str, *, time
         except KeyError:
             time.sleep(0.02)
     raise AssertionError(f"remote turn was not routed from global stream: {turn_id}")
+
+
+def _wait_for_control_requests(runtime: RemoteAppBridgeRuntime, *, timeout_s: float = 5.0) -> list[dict[str, object]]:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        requests = runtime.drain_control_requests()
+        if requests:
+            return requests
+        time.sleep(0.02)
+    raise AssertionError("remote TUI control request was not polled")
 
 
 if __name__ == "__main__":

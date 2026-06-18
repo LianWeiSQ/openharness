@@ -73,6 +73,81 @@ class TuiState:
         self.timeline.append(TimelineLine("user", f"> {display_text}", important=True))
         return True
 
+    def apply_control_request(self, request: dict[str, Any]) -> dict[str, object]:
+        action = str(request.get("action") or request.get("type") or "")
+        params = request.get("params")
+        params = dict(params) if isinstance(params, dict) else {}
+        if action == "publish":
+            action, params = self._control_publish_to_action(params)
+        action = _normalize_control_action(action)
+
+        if action == "prompt.append":
+            text = str(params.get("text") or "")
+            self.input_buffer += text
+            self.refresh_file_picker()
+            self.status = "prompt updated"
+            return {"applied": True, "action": action}
+        if action == "prompt.submit":
+            submitted = self.submit()
+            return {"applied": submitted, "action": action}
+        if action == "prompt.clear":
+            self.input_buffer = ""
+            self.close_file_picker(update_status=False)
+            self.status = "prompt cleared"
+            return {"applied": True, "action": action}
+        if action == "help.open":
+            self._show_help()
+            return {"applied": True, "action": action}
+        if action == "sessions.open":
+            opened = self.open_session_picker(announce=True)
+            return {"applied": opened, "action": action}
+        if action == "session.select":
+            session_id = str(params.get("sessionID") or params.get("session_id") or "")
+            if not session_id:
+                self.timeline.append(TimelineLine("error", "control request missing sessionID", important=True))
+                self.status = "control invalid"
+                return {"applied": False, "action": action, "error": "sessionID is required"}
+            self._resume_session_id(session_id)
+            return {"applied": self.session_id == session_id, "action": action}
+        if action == "toast.show":
+            message = str(params.get("message") or "")
+            if not message:
+                self.status = "control invalid"
+                return {"applied": False, "action": action, "error": "message is required"}
+            title = str(params.get("title") or "toast")
+            variant = str(params.get("variant") or "status").lower()
+            kind = "error" if variant in {"error", "danger"} else ("warning" if variant in {"warn", "warning"} else "status")
+            self.timeline.append(TimelineLine(kind, f"{title}: {message}", important=True))
+            self.status = title
+            return {"applied": True, "action": action}
+        if action == "command.execute":
+            command = str(params.get("command") or "")
+            if not command:
+                self.status = "control invalid"
+                return {"applied": False, "action": action, "error": "command is required"}
+            self.input_buffer = command if command.startswith("/") else f"/{command}"
+            submitted = self.submit()
+            return {"applied": submitted, "action": action}
+        if action.startswith("model.") or action.startswith("theme.") or action.startswith("palette."):
+            self.timeline.append(TimelineLine("warning", f"TUI control unsupported: {action}", important=True))
+            self.status = "control unsupported"
+            return {"applied": False, "action": action, "unsupported": True}
+
+        self.timeline.append(TimelineLine("warning", f"unknown TUI control: {action or '-'}", important=True))
+        self.status = "control unknown"
+        return {"applied": False, "action": action, "unsupported": True}
+
+    def _control_publish_to_action(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        topic = str(params.get("type") or params.get("topic") or params.get("event") or params.get("method") or "")
+        payload = params.get("payload")
+        body = dict(payload) if isinstance(payload, dict) else {key: value for key, value in params.items() if key not in {"type", "topic", "event", "method"}}
+        return {
+            "tui.prompt.append": "prompt.append",
+            "tui.command.execute": "command.execute",
+            "tui.toast.show": "toast.show",
+            "tui.session.select": "session.select",
+        }.get(topic, topic), body
+
     def _prepare_submission(self, raw_text: str) -> tuple[str, str, bool]:
         if not raw_text or not raw_text.startswith("/") or raw_text.startswith("//"):
             text = raw_text[1:] if raw_text.startswith("//") else raw_text
@@ -626,3 +701,16 @@ def _file_match_score(path: str, query: str) -> tuple[int, int, str]:
     else:
         rank = 3
     return rank, len(path), path
+
+
+def _normalize_control_action(action: str) -> str:
+    return {
+        "append-prompt": "prompt.append",
+        "submit-prompt": "prompt.submit",
+        "clear-prompt": "prompt.clear",
+        "open-help": "help.open",
+        "open-sessions": "sessions.open",
+        "select-session": "session.select",
+        "show-toast": "toast.show",
+        "execute-command": "command.execute",
+    }.get(action, action)

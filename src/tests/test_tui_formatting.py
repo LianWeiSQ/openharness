@@ -453,6 +453,46 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("file context", runtime.last_user_text or "")
         self.assertIn("> review @README.md", "\n".join(line.text for line in state.timeline))
 
+    def test_tui_state_applies_prompt_session_toast_and_publish_controls(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SessionRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        append_result = state.apply_control_request({"id": "1", "action": "prompt.append", "params": {"text": "hello"}})
+        clear_result = state.apply_control_request({"id": "2", "action": "prompt.clear", "params": {}})
+        help_result = state.apply_control_request({"id": "3", "action": "help.open", "params": {}})
+        sessions_result = state.apply_control_request({"id": "4", "action": "sessions.open", "params": {}})
+        select_result = state.apply_control_request({"id": "5", "action": "session.select", "params": {"sessionID": "session_alpha123"}})
+        toast_result = state.apply_control_request({"id": "6", "action": "toast.show", "params": {"title": "Saved", "message": "Session selected", "variant": "success"}})
+        publish_result = state.apply_control_request({"id": "7", "action": "publish", "params": {"type": "tui.prompt.append", "payload": {"text": " next"}}})
+        unsupported_result = state.apply_control_request({"id": "8", "action": "theme.select", "params": {"theme": "dark"}})
+
+        self.assertEqual(append_result["applied"], True)
+        self.assertEqual(clear_result["applied"], True)
+        self.assertEqual(help_result["applied"], True)
+        self.assertEqual(sessions_result["applied"], True)
+        self.assertEqual(select_result["applied"], True)
+        self.assertEqual(toast_result["applied"], True)
+        self.assertEqual(publish_result["applied"], True)
+        self.assertEqual(unsupported_result["unsupported"], True)
+        self.assertEqual(state.session_id, "session_alpha123")
+        self.assertEqual(state.input_buffer, " next")
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("resumed session: session_alpha123", timeline_text)
+        self.assertIn("Saved: Session selected", timeline_text)
+        self.assertIn("TUI control unsupported: theme.select", timeline_text)
+
+    def test_tui_state_control_execute_command_uses_slash_commands(self) -> None:
+        workspace = self._make_temp_dir()
+        state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
+
+        result = state.apply_control_request({"id": "cmd", "action": "command.execute", "params": {"command": "help"}})
+
+        self.assertEqual(result["applied"], False)
+        self.assertEqual(state.input_buffer, "")
+        self.assertEqual(state.status, "help listed")
+        self.assertIn("/sessions - open recent session picker", "\n".join(line.text for line in state.timeline))
+
     def test_tui_submit_runs_openagent_loop_and_tool_event(self) -> None:
         workspace = self._make_temp_dir()
         (workspace / "sample.txt").write_text("hello", encoding="utf-8")

@@ -69,6 +69,7 @@ def _run(stdscr, state: TuiState) -> None:
 
     while True:
         state.poll_events()
+        _drain_control_requests(state)
         _render(stdscr, state)
         key = stdscr.getch()
         if key == -1:
@@ -166,6 +167,31 @@ def _handle_key(key: int, state: TuiState) -> bool:
         state.input_buffer += chr(key)
         state.refresh_file_picker()
     return False
+
+
+def _drain_control_requests(state: TuiState) -> None:
+    drain = getattr(state.runtime, "drain_control_requests", None)
+    if not callable(drain):
+        return
+    try:
+        requests = drain()
+    except Exception as error:  # noqa: BLE001 - attached control failures should stay visible.
+        state.timeline.append(TimelineLine("error", f"TUI control failed: {error}", important=True))
+        state.status = "control failed"
+        return
+    post_response = getattr(state.runtime, "post_control_response", None)
+    for request in requests:
+        request_id = str(request.get("id") or "")
+        try:
+            result = state.apply_control_request(request)
+        except Exception as error:  # noqa: BLE001 - keep the TUI alive on bad remote control messages.
+            state.timeline.append(TimelineLine("error", f"TUI control failed: {error}", important=True))
+            state.status = "control failed"
+            if callable(post_response) and request_id:
+                post_response(request_id, ok=False, error=str(error))
+            continue
+        if callable(post_response) and request_id:
+            post_response(request_id, ok=True, result=result)
 
 
 def _render(stdscr, state: TuiState) -> None:

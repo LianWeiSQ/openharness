@@ -4,6 +4,7 @@ import asyncio
 import os
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,7 @@ from openagent.core.session.session import Session
 from openagent.core.session.store import DEFAULT_SESSION_STORE_ROOT, FileSessionStore
 from openagent.core.types import AgentConfig, Model, StreamEvent
 
-from .protocol import AppEvent, lifecycle_event, stream_event_to_app_event
+from .protocol import AppEvent, TuiControlRequest, lifecycle_event, stream_event_to_app_event
 
 LanguageModelFactory = Callable[[Model], LanguageModel | Awaitable[LanguageModel]]
 
@@ -257,6 +258,9 @@ class OpenAgentAppRuntime:
         self._lock = threading.Lock()
         self._global_events: list[AppEvent] = []
         self._global_condition = threading.Condition()
+        self._tui_control_requests: deque[TuiControlRequest] = deque()
+        self._tui_control_responses: dict[str, dict[str, Any]] = {}
+        self._tui_control_condition = threading.Condition()
 
     def start_session(self, *, cwd: str | Path | None = None) -> dict[str, Any]:
         session = Session(directory=Path(cwd or self.workspace).resolve())
@@ -319,6 +323,42 @@ class OpenAgentAppRuntime:
                     return None
                 self._global_condition.wait(timeout=remaining)
             return self._global_events[sequence - 1]
+
+    def enqueue_tui_control(self, action: str, params: dict[str, Any] | None = None) -> TuiControlRequest:
+        request = TuiControlRequest(id=new_id("tui_ctrl"), action=action, params=dict(params or {}))
+        with self._tui_control_condition:
+            self._tui_control_requests.append(request)
+            self._tui_control_condition.notify_all()
+        return request
+
+    def wait_for_tui_control(self, *, timeout_s: float = 0.25) -> TuiControlRequest | None:
+        deadline = time.time() + max(0.0, timeout_s)
+        with self._tui_control_condition:
+            while not self._tui_control_requests:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                self._tui_control_condition.wait(timeout=remaining)
+            return self._tui_control_requests.popleft()
+
+    def record_tui_control_response(self, request_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        request_id = request_id.strip()
+        if not request_id:
+            raise ValueError("control response id is required")
+        response = {
+            "id": request_id,
+            "created_at_ms": int(time.time() * 1000),
+            **dict(payload or {}),
+        }
+        with self._tui_control_condition:
+            self._tui_control_responses[request_id] = response
+            self._tui_control_condition.notify_all()
+        return response
+
+    def get_tui_control_response(self, request_id: str) -> dict[str, Any] | None:
+        with self._tui_control_condition:
+            response = self._tui_control_responses.get(request_id)
+        return dict(response) if response is not None else None
 
     def _append_global_event(self, event: AppEvent) -> None:
         with self._global_condition:

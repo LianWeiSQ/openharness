@@ -239,6 +239,27 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(resolved[0].params["approval"]["action"], "deny")
         self.assertEqual(resolved[0].params["approval"]["reason"], "interrupt")
 
+    def test_runtime_tui_control_queue_and_response_store(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda _model: ScriptedLanguageModel(script=[]),
+        )
+
+        request = runtime.enqueue_tui_control("prompt.append", {"text": "hello"})
+        received = runtime.wait_for_tui_control(timeout_s=0.0)
+        empty = runtime.wait_for_tui_control(timeout_s=0.0)
+        response = runtime.record_tui_control_response(request.id, {"ok": True, "result": {"applied": True}})
+
+        self.assertIsNotNone(received)
+        assert received is not None
+        self.assertEqual(received.to_dict()["action"], "prompt.append")
+        self.assertEqual(received.to_dict()["params"], {"text": "hello"})
+        self.assertIsNone(empty)
+        self.assertEqual(response["id"], request.id)
+        self.assertEqual(runtime.get_tui_control_response(request.id), response)
+
     def _wait_for_method(self, turn, method: str):
         deadline = time.time() + 10.0
         sequence = 1

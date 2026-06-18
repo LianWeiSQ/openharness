@@ -29,6 +29,24 @@ class AppEvent:
         return payload
 
 
+@dataclass(frozen=True, slots=True)
+class TuiControlRequest:
+    """Server-side TUI control request consumed by attached terminal UIs."""
+
+    id: str
+    action: str
+    params: dict[str, Any] = field(default_factory=dict)
+    created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "action": self.action,
+            "params": _json_safe(self.params),
+            "created_at_ms": self.created_at_ms,
+        }
+
+
 def stream_event_to_app_method(event_type: str) -> str:
     if event_type == "step-start":
         return "item/step/started"
