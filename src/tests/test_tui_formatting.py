@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import curses
 import hashlib
 import shutil
 import unittest
@@ -739,6 +740,50 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("Attached file:", runtime.last_user_text or "")
         self.assertIn("file context", runtime.last_user_text or "")
         self.assertIn("> review @README.md", "\n".join(line.text for line in state.timeline))
+
+    def test_tui_composer_history_and_draft_stash(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+
+        state.input_buffer = "first task"
+        self.assertTrue(state.submit())
+        state.input_buffer = "second task"
+        self.assertTrue(state.submit())
+
+        self.assertEqual(state.prompt_history, ["first task", "second task"])
+        self.assertFalse(_handle_key(curses.KEY_UP, state))
+        self.assertEqual(state.input_buffer, "second task")
+        self.assertFalse(_handle_key(curses.KEY_UP, state))
+        self.assertEqual(state.input_buffer, "first task")
+        self.assertFalse(_handle_key(curses.KEY_DOWN, state))
+        self.assertEqual(state.input_buffer, "second task")
+        self.assertFalse(_handle_key(curses.KEY_DOWN, state))
+        self.assertEqual(state.input_buffer, "")
+
+        for char in "draft prompt":
+            self.assertFalse(_handle_key(ord(char), state))
+        self.assertFalse(_handle_key(19, state))  # Ctrl-S
+        self.assertEqual(state.input_buffer, "")
+        self.assertEqual(state.draft_stash, ["draft prompt"])
+        self.assertFalse(_handle_key(16, state))  # Ctrl-P
+        self.assertEqual(state.input_buffer, "draft prompt")
+        self.assertEqual(state.draft_stash, [])
+
+        state.input_buffer = "/stash push saved draft"
+        self.assertFalse(state.submit())
+        self.assertEqual(state.draft_stash, ["saved draft"])
+        state.input_buffer = "/stash pop"
+        self.assertFalse(state.submit())
+        self.assertEqual(state.input_buffer, "saved draft")
+        self.assertEqual(state.status, "draft restored")
+
+        state.input_buffer = "/history 2"
+        self.assertFalse(state.submit())
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("prompt history:", timeline_text)
+        self.assertIn("1. first task", timeline_text)
+        self.assertIn("2. second task", timeline_text)
 
     def test_tui_state_applies_prompt_session_toast_and_publish_controls(self) -> None:
         workspace = self._make_temp_dir()

@@ -14,6 +14,8 @@ from .formatting import TimelineLine, format_event
 
 DEFAULT_TRANSCRIPT_LIMIT = 30
 MAX_TRANSCRIPT_LIMIT = 100
+MAX_PROMPT_HISTORY = 100
+MAX_DRAFT_STASH = 30
 
 BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "show TUI commands"),
@@ -27,6 +29,8 @@ BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/variant <name>", "select the active model variant label"),
     ("/diff [file|index|all]", "show the latest workspace patch diff"),
     ("/revert [file|index|all]", "safely revert files from the latest patch"),
+    ("/history [limit]", "show recent submitted prompts"),
+    ("/stash [push <text>|pop|list|clear]", "stash or restore composer drafts"),
     ("/transcript [limit]", "show recent messages from the current session"),
     ("/new", "start a new session"),
     ("/clear", "clear the visible timeline"),
@@ -45,6 +49,11 @@ class TuiState:
     next_event_index: int = 0
     timeline: list[TimelineLine] = field(default_factory=list)
     input_buffer: str = ""
+    prompt_history: list[str] = field(default_factory=list)
+    prompt_history_index: int | None = None
+    prompt_history_draft: str = ""
+    draft_stash: list[str] = field(default_factory=list)
+    preserve_input_after_command: bool = False
     status: str = "idle"
     scroll: int = 0
     session_picker_open: bool = False
@@ -96,14 +105,20 @@ class TuiState:
         raw_text = self.input_buffer.strip()
         text, display_text, handled = self._prepare_submission(raw_text)
         if handled:
-            self.input_buffer = ""
+            if self.preserve_input_after_command:
+                self.preserve_input_after_command = False
+            else:
+                self.input_buffer = ""
             return False
         if not text or self.is_running:
             return False
         session_id = self.ensure_session()
         self.active_turn = self._start_turn(session_id=session_id, user_text=text)
         self.next_event_index = 0
+        self._record_prompt_history(display_text)
         self.input_buffer = ""
+        self.prompt_history_index = None
+        self.prompt_history_draft = ""
         self.status = "running"
         self.timeline.append(TimelineLine("user", f"> {display_text}", important=True))
         return True
@@ -127,6 +142,7 @@ class TuiState:
         if action == "prompt.append":
             text = str(params.get("text") or "")
             self.input_buffer += text
+            self._reset_prompt_history_cursor()
             self.refresh_file_picker()
             self.status = "prompt updated"
             return {"applied": True, "action": action}
@@ -135,6 +151,7 @@ class TuiState:
             return {"applied": submitted, "action": action}
         if action == "prompt.clear":
             self.input_buffer = ""
+            self._reset_prompt_history_cursor()
             self.close_file_picker(update_status=False)
             self.status = "prompt cleared"
             return {"applied": True, "action": action}
@@ -285,6 +302,12 @@ class TuiState:
             return True
         if name in {"revert", "undo"}:
             self._revert_from_command(arguments)
+            return True
+        if name == "history":
+            self._history_from_command(arguments)
+            return True
+        if name == "stash":
+            self._stash_from_command(arguments)
             return True
         if name in {"resume", "continue"}:
             self._resume_from_command(arguments)
@@ -1020,6 +1043,8 @@ class TuiState:
             f"agent: {self.agent_label}",
             f"variant: {self.variant_label}",
             f"patches: {len(self.patch_records)}",
+            f"prompt_history: {len(self.prompt_history)}",
+            f"draft_stash: {len(self.draft_stash)}",
             f"events: {len(turn.events) if turn is not None else 0}",
         ]
         workspace = getattr(self.runtime, "workspace", None)
@@ -1065,6 +1090,7 @@ class TuiState:
         self.active_turn = None
         self.next_event_index = 0
         self.input_buffer = ""
+        self._reset_prompt_history_cursor()
         self.active_approval = None
         self.approval_note_mode = False
         self.approval_note = ""
@@ -1078,6 +1104,163 @@ class TuiState:
         self.scroll = 0
         self._close_pickers(update_status=False)
         self.status = "cleared"
+
+    def prompt_history_previous(self) -> bool:
+        if not self.prompt_history:
+            self.status = "history empty"
+            return False
+        if self.prompt_history_index is None:
+            self.prompt_history_draft = self.input_buffer
+            self.prompt_history_index = len(self.prompt_history) - 1
+        else:
+            self.prompt_history_index = max(0, self.prompt_history_index - 1)
+        self.input_buffer = self.prompt_history[self.prompt_history_index]
+        self.refresh_file_picker()
+        self.status = f"history {self.prompt_history_index + 1}/{len(self.prompt_history)}"
+        return True
+
+    def prompt_history_next(self) -> bool:
+        if self.prompt_history_index is None:
+            self.status = "history current"
+            return False
+        if self.prompt_history_index >= len(self.prompt_history) - 1:
+            self.input_buffer = self.prompt_history_draft
+            self._reset_prompt_history_cursor()
+            self.refresh_file_picker()
+            self.status = "history current"
+            return True
+        self.prompt_history_index += 1
+        self.input_buffer = self.prompt_history[self.prompt_history_index]
+        self.refresh_file_picker()
+        self.status = f"history {self.prompt_history_index + 1}/{len(self.prompt_history)}"
+        return True
+
+    def append_input_char(self, value: str) -> None:
+        self.input_buffer += value
+        self._reset_prompt_history_cursor()
+        self.refresh_file_picker()
+
+    def backspace_input(self) -> None:
+        self.input_buffer = self.input_buffer[:-1]
+        self._reset_prompt_history_cursor()
+        self.refresh_file_picker()
+
+    def stash_current_draft(self) -> bool:
+        draft = self.input_buffer.strip()
+        if not draft:
+            self.timeline.append(TimelineLine("warning", "no draft to stash", important=True))
+            self.status = "stash empty"
+            return False
+        self._stash_draft(self.input_buffer)
+        self.input_buffer = ""
+        self._reset_prompt_history_cursor()
+        self.close_file_picker(update_status=False)
+        self.timeline.append(TimelineLine("status", f"draft stashed ({len(self.draft_stash)})", important=True))
+        self.status = "draft stashed"
+        return True
+
+    def pop_draft_stash(self) -> bool:
+        if not self.draft_stash:
+            self.timeline.append(TimelineLine("warning", "draft stash is empty", important=True))
+            self.status = "stash empty"
+            return False
+        if self.input_buffer.strip():
+            self.timeline.append(TimelineLine("warning", "clear or stash the current draft before popping", important=True))
+            self.status = "stash blocked"
+            return False
+        self.input_buffer = self.draft_stash.pop()
+        self._reset_prompt_history_cursor()
+        self.refresh_file_picker()
+        self.timeline.append(TimelineLine("status", f"draft restored ({len(self.draft_stash)} remaining)", important=True))
+        self.status = "draft restored"
+        return True
+
+    def _stash_draft(self, value: str) -> None:
+        self.draft_stash.append(value)
+        self.draft_stash = self.draft_stash[-MAX_DRAFT_STASH:]
+
+    def _history_from_command(self, arguments: list[str]) -> None:
+        limit = self._parse_history_limit(arguments)
+        if limit is None:
+            return
+        if not self.prompt_history:
+            self.timeline.append(TimelineLine("status", "prompt history is empty", important=True))
+            self.status = "history empty"
+            return
+        start = max(0, len(self.prompt_history) - limit)
+        lines = [f"{index + 1}. {item}" for index, item in enumerate(self.prompt_history[start:], start=start)]
+        self.timeline.append(TimelineLine("status", "prompt history:\n" + "\n".join(lines), important=True))
+        self.status = "history listed"
+
+    def _parse_history_limit(self, arguments: list[str]) -> int | None:
+        if not arguments:
+            return 20
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /history [limit]", important=True))
+            self.status = "history invalid"
+            return None
+        try:
+            limit = int(arguments[0])
+        except ValueError:
+            self.timeline.append(TimelineLine("error", f"invalid history limit: {arguments[0]}", important=True))
+            self.status = "history invalid"
+            return None
+        if limit < 1 or limit > MAX_PROMPT_HISTORY:
+            self.timeline.append(TimelineLine("error", f"history limit must be between 1 and {MAX_PROMPT_HISTORY}", important=True))
+            self.status = "history invalid"
+            return None
+        return limit
+
+    def _stash_from_command(self, arguments: list[str]) -> None:
+        action = arguments[0] if arguments else "list"
+        if action not in {"push", "pop", "list", "clear"}:
+            self.timeline.append(TimelineLine("warning", "usage: /stash [push <text>|pop|list|clear]", important=True))
+            self.status = "stash invalid"
+            return
+        if action == "push":
+            if len(arguments) == 1:
+                self.timeline.append(TimelineLine("warning", "use Ctrl-S to stash the current draft or /stash push <text>", important=True))
+                self.status = "stash invalid"
+                return
+            self._stash_draft(" ".join(arguments[1:]))
+            self.timeline.append(TimelineLine("status", f"draft stashed ({len(self.draft_stash)})", important=True))
+            self.status = "draft stashed"
+            return
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /stash [push <text>|pop|list|clear]", important=True))
+            self.status = "stash invalid"
+            return
+        if action == "pop":
+            self.input_buffer = ""
+            self.pop_draft_stash()
+            self.preserve_input_after_command = True
+            return
+        if action == "clear":
+            count = len(self.draft_stash)
+            self.draft_stash.clear()
+            self.timeline.append(TimelineLine("status", f"cleared {count} stashed draft(s)", important=True))
+            self.status = "stash cleared"
+            return
+        if not self.draft_stash:
+            self.timeline.append(TimelineLine("status", "draft stash is empty", important=True))
+            self.status = "stash empty"
+            return
+        lines = [f"{index}. {draft}" for index, draft in enumerate(self.draft_stash, start=1)]
+        self.timeline.append(TimelineLine("status", "draft stash:\n" + "\n".join(lines), important=True))
+        self.status = "stash listed"
+
+    def _record_prompt_history(self, value: str) -> None:
+        normalized = value.strip()
+        if not normalized:
+            return
+        if self.prompt_history and self.prompt_history[-1] == normalized:
+            return
+        self.prompt_history.append(normalized)
+        self.prompt_history = self.prompt_history[-MAX_PROMPT_HISTORY:]
+
+    def _reset_prompt_history_cursor(self) -> None:
+        self.prompt_history_index = None
+        self.prompt_history_draft = ""
 
     def poll_events(self) -> None:
         turn = self.active_turn

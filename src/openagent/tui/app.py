@@ -217,6 +217,12 @@ def _handle_key(key: int, state: TuiState) -> bool:
     if key in {14}:  # Ctrl-N
         state.new_session()
         return False
+    if key in {19}:  # Ctrl-S
+        state.stash_current_draft()
+        return False
+    if key in {16}:  # Ctrl-P
+        state.pop_draft_stash()
+        return False
     if key in {18}:  # Ctrl-R
         state.open_session_picker(announce=True)
         return False
@@ -228,8 +234,13 @@ def _handle_key(key: int, state: TuiState) -> bool:
         state.close_file_picker(update_status=False)
         return False
     if key in {curses.KEY_BACKSPACE, 127, 8}:
-        state.input_buffer = state.input_buffer[:-1]
-        state.refresh_file_picker()
+        state.backspace_input()
+        return False
+    if key == curses.KEY_UP:
+        state.prompt_history_previous()
+        return False
+    if key == curses.KEY_DOWN:
+        state.prompt_history_next()
         return False
     if key == curses.KEY_PPAGE:
         state.scroll += 8
@@ -240,8 +251,7 @@ def _handle_key(key: int, state: TuiState) -> bool:
     if key == curses.KEY_RESIZE:
         return False
     if 32 <= key <= 126:
-        state.input_buffer += chr(key)
-        state.refresh_file_picker()
+        state.append_input_char(chr(key))
     return False
 
 
@@ -433,7 +443,7 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
 
 
 def _render_footer(stdscr, state: TuiState, y: int, width: int) -> None:
-    controls = "Enter send | /help | /sessions | /resume <id> | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll | Ctrl-C/Esc/Ctrl-D quit"
+    controls = "Enter send | Up/Down history | Ctrl-S stash | Ctrl-P pop | /help | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll"
     if state.active_approval is not None:
         controls = "approval note: type reason | Enter deny | Esc cancel" if state.approval_note_mode else "approval: a/y allow once | A always | d/n/Esc deny | r deny note | Ctrl-C deny + interrupt"
     elif state.file_picker_open:
