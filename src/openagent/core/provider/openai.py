@@ -482,7 +482,7 @@ class OpenAILanguageModel(LanguageModel):
             tools=tools,
             model=Model(
                 id=self.model_id,
-                provider_id=self.provider_id,
+                provider_id="openai",
                 name=self.model_id,
                 context_window=0,
                 max_output=0,

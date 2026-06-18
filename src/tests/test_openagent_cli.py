@@ -546,7 +546,7 @@ Create component $1 for $ARGUMENTS.
                 self.assertEqual(row["source"], "env")
                 self.assertEqual(row["type"], "env")
                 self.assertTrue(row["has_api_key"])
-                self.assertIn("****", row["api_key"])
+                self.assertEqual(row["api_key"], "")
                 self.assertEqual(row["model"], "openrouter/test-model")
                 self.assertEqual(row["env"]["api_key"], "OPENROUTER_API_KEY")
                 self.assertEqual(row["env_status"]["api_key"]["status"], "set")

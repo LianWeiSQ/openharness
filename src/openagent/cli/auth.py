@@ -125,7 +125,6 @@ def list_providers(path: str | Path | None = None) -> list[dict[str, Any]]:
                 "provider": provider,
                 "type": "env",
                 "source": "env",
-                "api_key": os.getenv(env["api_key"]),
                 "base_url": os.getenv(env["base_url"]) or provider_default_base_url(provider),
                 "model": os.getenv(env["model"]) or provider_default_model(provider),
                 "wire_api": os.getenv(env["wire_api"]),
@@ -165,14 +164,17 @@ def load_auth_env(path: str | None = None) -> Path | None:
 def public_provider_record(record: dict[str, Any]) -> dict[str, Any]:
     provider = normalize_provider(str(record.get("provider") or DEFAULT_PROVIDER))
     env = normalize_env_mapping(record.get("env"), provider=provider)
-    api_key = record.get("api_key") or os.getenv(env["api_key"])
+    source = str(record.get("source") or "auth_file")
+    stored_api_key = record.get("api_key")
+    env_api_key = os.getenv(env["api_key"])
+    api_key = stored_api_key if stored_api_key else (env_api_key if source != "env" else "")
     auth_methods = provider_auth_method_overview(provider)
     return {
         "provider": provider,
         "type": str(record.get("type") or "api"),
-        "source": str(record.get("source") or "auth_file"),
+        "source": source,
         "api_key": mask_secret(str(api_key or "")),
-        "has_api_key": bool(api_key),
+        "has_api_key": bool(stored_api_key or env_api_key),
         "base_url": record.get("base_url") or os.getenv(env["base_url"]) or provider_default_base_url(provider),
         "model": record.get("model") or os.getenv(env["model"]) or provider_default_model(provider),
         "wire_api": record.get("wire_api") or os.getenv(env["wire_api"]),
