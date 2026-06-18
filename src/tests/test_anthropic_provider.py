@@ -185,6 +185,12 @@ class AnthropicProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(provider, OpenAIProvider)
         self.assertEqual(provider.provider_id, "openrouter")
 
+        with patch.dict("os.environ", {"OPENAGENT_PROVIDER": "bad provider"}, clear=True):
+            provider = create_provider()
+
+        self.assertIsInstance(provider, OpenAIProvider)
+        self.assertEqual(provider.provider_id, "openai")
+
 
 if __name__ == "__main__":
     unittest.main()

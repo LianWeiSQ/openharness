@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import secrets
@@ -54,6 +55,9 @@ class DoctorReport:
     healthy: bool
     base_url: str | None
     wire_api: str | None
+    dependency_checked: bool
+    dependency_ok: bool
+    dependency_message: str | None
     model_endpoint_checked: bool
     model_endpoint_ok: bool
     model_endpoint_message: str
@@ -122,8 +126,16 @@ def build_doctor_report() -> DoctorReport:
         model = os.getenv(env["model"]) or provider_default_model(provider) or ""
         wire_api = "messages"
         api_key_set = bool(os.getenv(env["api_key"]))
-        models_ok = bool(api_key_set and model)
-        models_message = "skipped OpenAI-compatible /models probe for native provider"
+        dependency_ok, dependency_message = _native_provider_dependency_status(provider)
+        models_ok = bool(api_key_set and model and dependency_ok)
+        if not api_key_set:
+            models_message = f"missing {env['api_key']}; skipped OpenAI-compatible /models probe for native provider"
+        elif not model:
+            models_message = "missing model; skipped OpenAI-compatible /models probe for native provider"
+        elif not dependency_ok:
+            models_message = dependency_message
+        else:
+            models_message = "skipped OpenAI-compatible /models probe for native provider"
         model_endpoint_checked = False
     else:
         base_url = os.getenv("OPENAI_BASE_URL") or os.getenv(env["base_url"]) or provider_default_base_url(provider) or DEFAULT_BASE_URL
@@ -132,6 +144,8 @@ def build_doctor_report() -> DoctorReport:
         api_key_set = bool(os.getenv("OPENAI_API_KEY") or os.getenv(env["api_key"]))
         models_ok, models_message = check_models_endpoint(base_url=base_url)
         model_endpoint_checked = True
+        dependency_ok = True
+        dependency_message = None
     healthy = bool(models_ok)
     return DoctorReport(
         provider=provider,
@@ -143,6 +157,9 @@ def build_doctor_report() -> DoctorReport:
         api_key_set=api_key_set,
         native=native,
         healthy=healthy,
+        dependency_checked=native,
+        dependency_ok=dependency_ok,
+        dependency_message=dependency_message,
         model_endpoint_checked=model_endpoint_checked,
         model_endpoint_ok=models_ok,
         model_endpoint_message=models_message,
@@ -160,6 +177,9 @@ def doctor_report_to_dict(report: DoctorReport) -> dict[str, object]:
         "api_key_set": report.api_key_set,
         "native": report.native,
         "healthy": report.healthy,
+        "dependency_checked": report.dependency_checked,
+        "dependency_ok": report.dependency_ok,
+        "dependency_message": report.dependency_message,
         "model_endpoint_checked": report.model_endpoint_checked,
         "model_endpoint_ok": report.model_endpoint_ok,
         "model_endpoint_message": report.model_endpoint_message,
@@ -182,6 +202,7 @@ def print_doctor_report(report: DoctorReport, *, output_format: str = "text", st
         print(f"- api key: {'set' if report.api_key_set else 'missing'} ({report.api_key_env})", file=stdout)
         if report.base_url:
             print(f"- base_url: {report.base_url}", file=stdout)
+        print(f"- dependency: {'ok' if report.dependency_ok else 'missing'} ({report.dependency_message})", file=stdout)
         print(f"- model endpoint: skipped ({report.model_endpoint_message})", file=stdout)
         return
     print(f"- OPENAI_BASE_URL: {report.base_url}", file=stdout)
@@ -498,6 +519,19 @@ def _active_provider() -> str:
 
 def _is_native_provider(provider: str) -> bool:
     return normalize_provider(provider) == "anthropic"
+
+
+def _native_provider_dependency_status(provider: str) -> tuple[bool, str]:
+    normalized = normalize_provider(provider)
+    if normalized != "anthropic":
+        return True, "native dependency is not required"
+    package = "anthropic"
+    if importlib.util.find_spec(package) is None:
+        return (
+            False,
+            "optional dependency 'anthropic' is not installed; install it to use OPENAGENT_PROVIDER=anthropic",
+        )
+    return True, "optional dependency 'anthropic' is installed"
 
 
 def apply_model_env(args: argparse.Namespace, *, defaults: OpenAgentCliDefaults = OpenAgentCliDefaults()) -> None:
@@ -1008,8 +1042,8 @@ def run_models_command(
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     factory = runtime_factory or OpenAgentAppRuntime
-    runtime = factory(workspace=getattr(args, "workspace", None), session_store_root=getattr(args, "session_root", None))
     try:
+        runtime = factory(workspace=getattr(args, "workspace", None), session_store_root=getattr(args, "session_root", None))
         models = runtime.list_models()  # type: ignore[attr-defined]
     except Exception as error:  # noqa: BLE001 - CLI should report provider failures compactly.
         print(f"Could not list models: {error}", file=err)

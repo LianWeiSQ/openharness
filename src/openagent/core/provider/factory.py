@@ -9,7 +9,13 @@ from .openai import OpenAIProvider
 
 
 def create_provider(provider: str | None = None) -> ProviderBase:
-    normalized = normalize_provider(provider) if provider is not None else selected_provider()
+    if provider is None:
+        try:
+            normalized = selected_provider()
+        except ValueError:
+            return OpenAIProvider()
+    else:
+        normalized = normalize_provider(provider)
     if normalized == "anthropic":
         return AnthropicProvider()
     if provider is None:

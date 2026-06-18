@@ -157,6 +157,9 @@ class OpenAgentCliTests(unittest.TestCase):
                 "api_key_set": True,
                 "native": False,
                 "healthy": False,
+                "dependency_checked": False,
+                "dependency_ok": True,
+                "dependency_message": None,
                 "model_endpoint_checked": True,
                 "model_endpoint_ok": False,
                 "model_endpoint_message": "connection refused",
@@ -178,8 +181,9 @@ class OpenAgentCliTests(unittest.TestCase):
             },
             clear=True,
         ), patch("openagent.cli.main.check_models_endpoint") as check_endpoint:
-            apply_model_env(args)
-            exit_code = run_doctor_command(args, stdout=stdout)
+            with patch("openagent.cli.main._native_provider_dependency_status", return_value=(True, "optional dependency 'anthropic' is installed")):
+                apply_model_env(args)
+                exit_code = run_doctor_command(args, stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
@@ -191,9 +195,49 @@ class OpenAgentCliTests(unittest.TestCase):
         self.assertEqual(payload["api_key_set"], True)
         self.assertEqual(payload["native"], True)
         self.assertEqual(payload["healthy"], True)
+        self.assertEqual(payload["dependency_checked"], True)
+        self.assertEqual(payload["dependency_ok"], True)
+        self.assertEqual(payload["dependency_message"], "optional dependency 'anthropic' is installed")
         self.assertEqual(payload["model_endpoint_checked"], False)
         self.assertEqual(payload["model_endpoint_ok"], True)
         self.assertIn("skipped", payload["model_endpoint_message"])
+        self.assertNotIn("anthropic-private-key", stdout.getvalue())
+        check_endpoint.assert_not_called()
+
+    def test_doctor_anthropic_json_fails_when_optional_sdk_is_missing(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["doctor", "--format", "json"])
+        stdout = io.StringIO()
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAGENT_PROVIDER": "anthropic",
+                "ANTHROPIC_API_KEY": "anthropic-private-key",
+                "ANTHROPIC_MODEL": "claude-test",
+            },
+            clear=True,
+        ), patch("openagent.cli.main.check_models_endpoint") as check_endpoint:
+            with patch(
+                "openagent.cli.main._native_provider_dependency_status",
+                return_value=(False, "optional dependency 'anthropic' is not installed"),
+            ):
+                apply_model_env(args)
+                exit_code = run_doctor_command(args, stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(payload["provider"], "anthropic")
+        self.assertEqual(payload["model"], "claude-test")
+        self.assertEqual(payload["api_key_set"], True)
+        self.assertEqual(payload["native"], True)
+        self.assertEqual(payload["healthy"], False)
+        self.assertEqual(payload["dependency_checked"], True)
+        self.assertEqual(payload["dependency_ok"], False)
+        self.assertEqual(payload["dependency_message"], "optional dependency 'anthropic' is not installed")
+        self.assertEqual(payload["model_endpoint_checked"], False)
+        self.assertEqual(payload["model_endpoint_ok"], False)
+        self.assertIn("not installed", payload["model_endpoint_message"])
         self.assertNotIn("anthropic-private-key", stdout.getvalue())
         check_endpoint.assert_not_called()
 
@@ -851,6 +895,20 @@ Create component $1 for $ARGUMENTS.
         self.assertEqual(payload["models"][0]["id"], "claude-native")
         self.assertIn("Anthropic", payload["models"][0]["name"])
         self.assertNotIn("anthropic-secret", stdout.getvalue())
+
+    def test_models_command_falls_back_for_invalid_active_provider_env(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["models", "--format", "json"])
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch.dict(os.environ, {"OPENAGENT_PROVIDER": "bad provider"}, clear=True):
+            exit_code = run_models_command(args, stdout=stdout, stderr=stderr)
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["models"][0]["provider_id"], "openai")
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_providers_alias_uses_auth_commands(self) -> None:
         parser = build_parser()
