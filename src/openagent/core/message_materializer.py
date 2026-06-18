@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 from typing import Any
 
+from .provider.metadata import OPENAI_COMPATIBLE_PROVIDER_IDS
 from .types import ChatMessage, Model, ToolSchema
 
-OPENAI_COMPATIBLE_PROVIDER_IDS = frozenset({"openai"})
 RUNTIME_OPTION_KEYS = frozenset(
     {
         "context_budget",

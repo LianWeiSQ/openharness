@@ -15,6 +15,7 @@ from pathlib import Path
 
 from openagent.cli.auth import list_providers, load_auth_env, login_provider, logout_provider, resolve_auth_file
 from openagent.cli.custom_commands import discover_commands, render_command, resolve_command
+from openagent.core.provider.metadata import known_provider_ids, normalize_provider, provider_auth_methods
 
 DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_MODEL = "gpt-5.5"
@@ -392,6 +393,10 @@ def add_auth_parser(subparsers: argparse._SubParsersAction, name: str, *, help_t
     auth_list = auth_subparsers.add_parser("list", aliases=["ls"], help="list authenticated providers")
     add_auth_options(auth_list)
     auth_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    auth_methods = auth_subparsers.add_parser("methods", help="list provider auth methods")
+    auth_methods.add_argument("provider", nargs="?", default=None, help="optional provider id")
+    auth_methods.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
     auth_logout = auth_subparsers.add_parser("logout", help="remove stored provider credentials")
     add_auth_options(auth_logout)
@@ -1157,6 +1162,21 @@ def run_auth_command(
         else:
             print_auth_table(providers, stdout=out)
         return 0
+    if command == "methods":
+        try:
+            provider = normalize_provider(getattr(args, "provider", None)) if getattr(args, "provider", None) else None
+            rows = provider_method_rows(provider)
+        except ValueError as error:
+            print(str(error), file=err)
+            return 2
+        if getattr(args, "format", "table") == "json":
+            if provider:
+                print(json.dumps({"provider": provider, "methods": rows[0]["methods"] if rows else []}, ensure_ascii=False, sort_keys=True), file=out)
+            else:
+                print(json.dumps({"providers": rows}, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_auth_methods_table(rows, stdout=out)
+        return 0
     if command == "logout":
         try:
             result = logout_provider(provider=str(getattr(args, "provider", "openai")), path=auth_file)
@@ -1387,6 +1407,36 @@ def print_auth_table(rows: list[dict[str, object]], *, stdout: object) -> None:
                 str(row.get("wire_api") or ""),
             ]
         )
+    print_table(table, stdout=stdout)
+
+
+def provider_method_rows(provider: str | None = None) -> list[dict[str, object]]:
+    provider_ids = [provider] if provider else known_provider_ids()
+    return [{"provider": provider_id, "methods": provider_auth_methods(provider_id)} for provider_id in provider_ids]
+
+
+def print_auth_methods_table(rows: list[dict[str, object]], *, stdout: object) -> None:
+    if not rows:
+        print("No provider auth methods found.", file=stdout)
+        return
+    table = [["provider", "method", "type", "env_api_key", "status", "default_base_url"]]
+    for row in rows:
+        provider = str(row.get("provider") or "")
+        methods = row.get("methods") if isinstance(row.get("methods"), list) else []
+        for method in methods:
+            if not isinstance(method, dict):
+                continue
+            env = method.get("env") if isinstance(method.get("env"), dict) else {}
+            table.append(
+                [
+                    provider,
+                    str(method.get("id") or ""),
+                    str(method.get("type") or ""),
+                    str(env.get("api_key") or ""),
+                    str(method.get("status") or ""),
+                    str(method.get("default_base_url") or ""),
+                ]
+            )
     print_table(table, stdout=stdout)
 
 

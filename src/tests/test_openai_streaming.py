@@ -45,6 +45,26 @@ class OpenAIStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(model, OpenAILanguageModel)
         self.assertEqual(model.timeout_s, 240)
 
+    async def test_provider_models_reflect_active_provider_metadata(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "OPENAGENT_PROVIDER": "openrouter",
+                "OPENROUTER_API_KEY": "test",
+                "OPENROUTER_MODEL": "openrouter/test-model",
+            },
+            clear=True,
+        ):
+            provider = OpenAIProvider()
+            models = await provider.list_models()
+            language_model = await provider.get_language_model(models[0])
+
+        self.assertEqual(models[0].provider_id, "openrouter")
+        self.assertEqual(models[0].id, "openrouter/test-model")
+        self.assertIn("OpenRouter", models[0].name)
+        self.assertIsInstance(language_model, OpenAILanguageModel)
+        self.assertEqual(language_model.provider_id, "openrouter")
+
     def test_parse_tool_arguments_recovers_from_repeated_cumulative_snapshot(self) -> None:
         malformed = (
             '{"query":"climate tipping points Arctic ice sheet Amazon rainforest permafrost feedback cascade",'
