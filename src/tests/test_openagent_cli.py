@@ -23,6 +23,7 @@ from openagent.cli.main import (
     run_auth_command,
     run_client_command,
     run_config_command,
+    run_doctor_command,
     run_models_command,
     run_custom_command,
     run_non_interactive,
@@ -81,6 +82,78 @@ class OpenAgentCliTests(unittest.TestCase):
             candidate_model_urls("http://localhost:8080/v1"),
             ["http://localhost:8080/v1/models"],
         )
+
+    def test_doctor_default_text_output(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["doctor"])
+        stdout = io.StringIO()
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_BASE_URL": "http://gateway.test",
+                "OPENAI_MODEL": "gpt-test",
+                "OPENAI_WIRE_API": "chat",
+            },
+            clear=True,
+        ), patch(
+            "openagent.cli.main.check_models_endpoint",
+            return_value=(True, "http://gateway.test/v1/models"),
+        ) as check_endpoint:
+            exit_code = run_doctor_command(args, stdout=stdout)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(args.format, "text")
+        check_endpoint.assert_called_once_with(base_url="http://gateway.test")
+        self.assertEqual(
+            stdout.getvalue(),
+            "\n".join(
+                [
+                    "OpenAgent doctor",
+                    "- OPENAI_BASE_URL: http://gateway.test",
+                    "- OPENAI_MODEL: gpt-test",
+                    "- OPENAI_WIRE_API: chat",
+                    "- OPENAI_API_KEY: missing",
+                    "- model endpoint: ok (http://gateway.test/v1/models)",
+                    "",
+                ]
+            ),
+        )
+
+    def test_doctor_json_output_is_machine_readable(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["doctor", "--format", "json"])
+        stdout = io.StringIO()
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "private-key",
+                "OPENAI_BASE_URL": "http://gateway.test",
+                "OPENAI_MODEL": "gpt-test",
+                "OPENAI_WIRE_API": "responses",
+            },
+            clear=True,
+        ), patch(
+            "openagent.cli.main.check_models_endpoint",
+            return_value=(False, "connection refused"),
+        ):
+            exit_code = run_doctor_command(args, stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(
+            payload,
+            {
+                "base_url": "http://gateway.test",
+                "model": "gpt-test",
+                "wire_api": "responses",
+                "api_key_set": True,
+                "model_endpoint_ok": False,
+                "model_endpoint_message": "connection refused",
+            },
+        )
+        self.assertNotIn("private-key", stdout.getvalue())
 
     def test_load_local_env_sets_missing_values_only(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp:

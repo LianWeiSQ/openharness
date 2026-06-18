@@ -32,6 +32,16 @@ class OpenAgentCliDefaults:
     max_steps: str = DEFAULT_MAX_STEPS
 
 
+@dataclass(frozen=True, slots=True)
+class DoctorReport:
+    base_url: str
+    model: str
+    wire_api: str
+    api_key_set: bool
+    model_endpoint_ok: bool
+    model_endpoint_message: str
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -41,8 +51,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if command == "doctor":
         apply_model_env(args)
-        ok = doctor(verbose=True)
-        raise SystemExit(0 if ok else 2)
+        raise SystemExit(run_doctor_command(args))
     if command == "serve":
         apply_model_env(args)
         run_serve(args)
@@ -83,21 +92,63 @@ def main(argv: list[str] | None = None) -> None:
     parser.error(f"unknown command: {command}")
 
 
-def doctor(*, verbose: bool = False) -> bool:
+def build_doctor_report() -> DoctorReport:
     base_url = os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
     model = os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
     wire_api = os.getenv("OPENAI_WIRE_API") or DEFAULT_WIRE_API
     api_key_set = bool(os.getenv("OPENAI_API_KEY"))
     models_ok, models_message = check_models_endpoint(base_url=base_url)
+    return DoctorReport(
+        base_url=base_url,
+        model=model,
+        wire_api=wire_api,
+        api_key_set=api_key_set,
+        model_endpoint_ok=models_ok,
+        model_endpoint_message=models_message,
+    )
 
+
+def doctor_report_to_dict(report: DoctorReport) -> dict[str, object]:
+    return {
+        "base_url": report.base_url,
+        "model": report.model,
+        "wire_api": report.wire_api,
+        "api_key_set": report.api_key_set,
+        "model_endpoint_ok": report.model_endpoint_ok,
+        "model_endpoint_message": report.model_endpoint_message,
+    }
+
+
+def print_doctor_report(report: DoctorReport, *, output_format: str = "text", stdout: object | None = None) -> None:
+    if stdout is None:
+        stdout = sys.stdout
+    if output_format == "json":
+        print(json.dumps(doctor_report_to_dict(report), sort_keys=True), file=stdout)
+        return
+    if output_format != "text":
+        raise ValueError(f"unsupported doctor output format: {output_format}")
+
+    print("OpenAgent doctor", file=stdout)
+    print(f"- OPENAI_BASE_URL: {report.base_url}", file=stdout)
+    print(f"- OPENAI_MODEL: {report.model}", file=stdout)
+    print(f"- OPENAI_WIRE_API: {report.wire_api}", file=stdout)
+    print(f"- OPENAI_API_KEY: {'set' if report.api_key_set else 'missing'}", file=stdout)
+    print(
+        f"- model endpoint: {'ok' if report.model_endpoint_ok else 'failed'} ({report.model_endpoint_message})",
+        file=stdout,
+    )
+
+
+def doctor(*, verbose: bool = False, output_format: str = "text", stdout: object | None = None) -> bool:
+    report = build_doctor_report()
     if verbose:
-        print("OpenAgent doctor")
-        print(f"- OPENAI_BASE_URL: {base_url}")
-        print(f"- OPENAI_MODEL: {model}")
-        print(f"- OPENAI_WIRE_API: {wire_api}")
-        print(f"- OPENAI_API_KEY: {'set' if api_key_set else 'missing'}")
-        print(f"- model endpoint: {'ok' if models_ok else 'failed'} ({models_message})")
-    return models_ok
+        print_doctor_report(report, output_format=output_format, stdout=stdout)
+    return report.model_endpoint_ok
+
+
+def run_doctor_command(args: argparse.Namespace, *, stdout: object | None = None) -> int:
+    ok = doctor(verbose=True, output_format=getattr(args, "format", "text") or "text", stdout=stdout)
+    return 0 if ok else 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -245,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor", help="check local model gateway configuration")
     add_common_model_options(doctor_parser)
+    doctor_parser.add_argument("--format", choices=["text", "json"], default="text", help="output format")
     return parser
 
 
