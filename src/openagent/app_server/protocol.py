@@ -15,14 +15,18 @@ class AppEvent:
     method: str
     params: dict[str, Any]
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+    global_sequence: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "sequence": self.sequence,
             "method": self.method,
             "params": self.params,
             "created_at_ms": self.created_at_ms,
         }
+        if self.global_sequence is not None:
+            payload["global_sequence"] = self.global_sequence
+        return payload
 
 
 def stream_event_to_app_method(event_type: str) -> str:

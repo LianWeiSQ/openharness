@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import threading
 import time
+import urllib.error
+import urllib.request
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from openagent.app_server.protocol import AppEvent
 from openagent.cli.main import (
+    AppBridgeClientError,
     app_bridge_get_json,
     app_bridge_post_json,
+    format_http_error,
+    join_server_url,
     normalize_server_url,
+    parse_sse_response,
     quote_path,
     stream_app_bridge_events,
 )
@@ -29,6 +36,7 @@ class RemoteTurnRecord:
     error: str | None = None
     trace: dict[str, Any] | None = None
     events: list[AppEvent] = field(default_factory=list)
+    _seen_event_keys: set[tuple[object, ...]] = field(default_factory=set, repr=False)
     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
 
     @classmethod
@@ -42,11 +50,16 @@ class RemoteTurnRecord:
             trace=dict(payload.get("trace")) if isinstance(payload.get("trace"), dict) else None,
         )
 
-    def append_event(self, event: AppEvent) -> None:
+    def append_event(self, event: AppEvent) -> bool:
         with self._condition:
+            key = _remote_event_key(event, default_turn_id=self.id)
+            if key in self._seen_event_keys:
+                return False
+            self._seen_event_keys.add(key)
             self.events.append(event)
             self._apply_event_locked(event)
             self._condition.notify_all()
+            return True
 
     def mark_failed(self, error: str) -> None:
         with self._condition:
@@ -104,11 +117,21 @@ class RemoteAppBridgeRuntime:
         server_url: str,
         workspace: str | Path | None = None,
         auth_token: str | None = None,
+        use_global_events: bool = True,
     ) -> None:
         self.server_url = normalize_server_url(server_url)
         self.workspace = Path(workspace or Path.cwd()).expanduser().resolve()
         self.auth_token = auth_token
         self._turns: dict[str, RemoteTurnRecord] = {}
+        self._turns_lock = threading.Lock()
+        self._use_global_events = use_global_events
+        self._global_stream_active = False
+        self._global_stream_unavailable = not use_global_events
+        self._global_stream_started = False
+        self._global_stream_lock = threading.Lock()
+        self._global_stream_stop = threading.Event()
+        if use_global_events:
+            self._ensure_global_stream()
 
     def start_session(self, *, cwd: str | Path | None = None) -> dict[str, object]:
         payload = app_bridge_post_json(
@@ -144,9 +167,18 @@ class RemoteAppBridgeRuntime:
         turn = RemoteTurnRecord.from_payload(raw_turn, session_id=session_id)
         if not turn.id:
             raise ValueError("server returned a turn without an id")
-        self._turns[turn.id] = turn
-        thread = threading.Thread(target=self._consume_turn_events, args=(turn,), daemon=True)
-        thread.start()
+        with self._turns_lock:
+            self._turns[turn.id] = turn
+        if self._should_start_turn_stream():
+            thread = threading.Thread(target=self._consume_turn_events, args=(turn,), daemon=True)
+            thread.start()
+        return turn
+
+    def get_turn(self, turn_id: str) -> RemoteTurnRecord:
+        with self._turns_lock:
+            turn = self._turns.get(turn_id)
+        if turn is None:
+            raise KeyError(f"Unknown turn: {turn_id}")
         return turn
 
     def interrupt_turn(self, turn_id: str) -> dict[str, object]:
@@ -169,7 +201,80 @@ class RemoteAppBridgeRuntime:
             for raw_event in stream_app_bridge_events(self.server_url, turn.id, auth_token=self.auth_token):
                 turn.append_event(_app_event_from_dict(raw_event, default_sequence=len(turn.events) + 1))
         except Exception as error:  # noqa: BLE001 - remote failures need to surface in the TUI.
-            turn.mark_failed(str(error))
+            if not self._is_global_stream_active():
+                turn.mark_failed(str(error))
+
+    def _ensure_global_stream(self) -> None:
+        with self._global_stream_lock:
+            if self._global_stream_started or self._global_stream_unavailable:
+                return
+            self._global_stream_started = True
+        thread = threading.Thread(target=self._consume_global_events, daemon=True)
+        thread.start()
+
+    def _consume_global_events(self) -> None:
+        last_sequence = 0
+        while not self._global_stream_stop.is_set():
+            try:
+                for raw_event in self._stream_global_events(last_sequence=last_sequence):
+                    event = _app_event_from_dict(raw_event, default_sequence=0)
+                    if event.global_sequence is not None:
+                        last_sequence = max(last_sequence, event.global_sequence)
+                    self._route_global_event(event)
+            except Exception:  # noqa: BLE001 - a missing global endpoint should fall back silently.
+                with self._global_stream_lock:
+                    had_active_stream = self._global_stream_active or last_sequence > 0
+                    self._global_stream_active = False
+                    if not had_active_stream:
+                        self._global_stream_unavailable = True
+                        return
+                time.sleep(0.25)
+                continue
+            time.sleep(0.1)
+
+    def _stream_global_events(self, *, last_sequence: int) -> Iterator[dict[str, object]]:
+        headers = {"Accept": "text/event-stream"}
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+        if last_sequence > 0:
+            headers["Last-Event-ID"] = str(last_sequence)
+        path = "/api/events" if last_sequence <= 0 else f"/api/events?last_sequence={last_sequence}"
+        request = urllib.request.Request(url=join_server_url(self.server_url, path), headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310 - user-selected local/remote App Bridge URL.
+                self._mark_global_stream_active()
+                yield from parse_sse_response(response)
+        except urllib.error.HTTPError as error:
+            raise AppBridgeClientError(format_http_error("GET", path, error)) from error
+        except urllib.error.URLError as error:
+            raise AppBridgeClientError(str(error.reason)) from error
+
+    def _route_global_event(self, event: AppEvent) -> None:
+        turn_id = _event_turn_id(event)
+        if not turn_id:
+            return
+        session_id = _event_session_id(event)
+        with self._turns_lock:
+            turn = self._turns.get(turn_id)
+            if turn is None:
+                turn = RemoteTurnRecord(id=turn_id, session_id=session_id)
+                self._turns[turn_id] = turn
+        turn.append_event(event)
+
+    def _mark_global_stream_active(self) -> None:
+        with self._global_stream_lock:
+            self._global_stream_active = True
+            self._global_stream_unavailable = False
+
+    def _is_global_stream_active(self) -> bool:
+        with self._global_stream_lock:
+            return self._global_stream_active
+
+    def _should_start_turn_stream(self) -> bool:
+        if not self._use_global_events:
+            return True
+        with self._global_stream_lock:
+            return self._global_stream_unavailable or not self._global_stream_active
 
 
 def _session_from_payload(payload: dict[str, object]) -> dict[str, object]:
@@ -182,9 +287,31 @@ def _session_from_payload(payload: dict[str, object]) -> dict[str, object]:
 def _app_event_from_dict(payload: dict[str, object], *, default_sequence: int) -> AppEvent:
     params = payload.get("params")
     created_at_ms = payload.get("created_at_ms")
+    global_sequence = payload.get("global_sequence")
     return AppEvent(
         sequence=int(payload.get("sequence") or default_sequence),
         method=str(payload.get("method") or ""),
         params=dict(params) if isinstance(params, dict) else {},
         created_at_ms=int(created_at_ms) if isinstance(created_at_ms, int | float) else int(time.time() * 1000),
+        global_sequence=int(global_sequence) if isinstance(global_sequence, int | float) else None,
     )
+
+
+def _event_turn_id(event: AppEvent) -> str:
+    raw_turn_id = event.params.get("turn_id")
+    if raw_turn_id:
+        return str(raw_turn_id)
+    approval = event.params.get("approval")
+    if isinstance(approval, dict) and approval.get("turn_id"):
+        return str(approval["turn_id"])
+    return ""
+
+
+def _event_session_id(event: AppEvent) -> str:
+    return str(event.params.get("thread_id") or event.params.get("session_id") or "")
+
+
+def _remote_event_key(event: AppEvent, *, default_turn_id: str) -> tuple[object, ...]:
+    if event.global_sequence is not None:
+        return ("global", event.global_sequence)
+    return ("turn", _event_turn_id(event) or default_turn_id, event.sequence, event.method)

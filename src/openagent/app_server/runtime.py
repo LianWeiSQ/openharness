@@ -66,13 +66,19 @@ class TurnRecord:
     trace: dict[str, Any] | None = None
     interrupt_requested: bool = False
     events: list[AppEvent] = field(default_factory=list)
+    _event_publisher: Callable[[AppEvent], None] | None = field(default=None, repr=False)
     _pending_approvals: dict[str, _PendingApproval] = field(default_factory=dict, repr=False)
     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
 
     def append(self, event: AppEvent) -> None:
         with self._condition:
-            self.events.append(event)
+            self._append_event_locked(event)
             self._condition.notify_all()
+
+    def _append_event_locked(self, event: AppEvent) -> None:
+        self.events.append(event)
+        if self._event_publisher is not None:
+            self._event_publisher(event)
 
     def next_sequence(self) -> int:
         with self._condition:
@@ -116,11 +122,11 @@ class TurnRecord:
                 turn_id=self.id,
                 status=self.status,
             )
-            self.events.append(event)
+            self._append_event_locked(event)
             approvals_to_resolve = list(self._pending_approvals.values())
             self._pending_approvals.clear()
             for pending in approvals_to_resolve:
-                self.events.append(
+                self._append_event_locked(
                     self._approval_resolved_event(
                         pending=pending,
                         action=PermissionAction.DENY,
@@ -153,7 +159,7 @@ class TurnRecord:
                 return PermissionAction.DENY
             self._pending_approvals[request.request_id] = _PendingApproval(request=request, loop=loop, future=future)
             self.status = "waiting_approval"
-            self.events.append(
+            self._append_event_locked(
                 lifecycle_event(
                     sequence=len(self.events) + 1,
                     method="turn/approval_requested",
@@ -179,7 +185,7 @@ class TurnRecord:
                 raise KeyError(f"Unknown approval request: {request_id}")
             self.status = "running"
             event = self._approval_resolved_event(pending=pending, action=action, status=self.status)
-            self.events.append(event)
+            self._append_event_locked(event)
             self._condition.notify_all()
 
         self._set_approval_result(pending, action)
@@ -249,6 +255,8 @@ class OpenAgentAppRuntime:
         self._sessions: dict[str, Session] = {}
         self._turns: dict[str, TurnRecord] = {}
         self._lock = threading.Lock()
+        self._global_events: list[AppEvent] = []
+        self._global_condition = threading.Condition()
 
     def start_session(self, *, cwd: str | Path | None = None) -> dict[str, Any]:
         session = Session(directory=Path(cwd or self.workspace).resolve())
@@ -289,7 +297,7 @@ class OpenAgentAppRuntime:
         if not text:
             raise ValueError("user_text is required")
         session = self._get_session(session_id)
-        turn = TurnRecord(id=new_id("turn"), session_id=session.id, input=text)
+        turn = TurnRecord(id=new_id("turn"), session_id=session.id, input=text, _event_publisher=self._append_global_event)
         with self._lock:
             self._turns[turn.id] = turn
         thread = threading.Thread(target=self._run_turn_thread, args=(turn.id,), daemon=True)
@@ -301,6 +309,23 @@ class OpenAgentAppRuntime:
             if turn_id not in self._turns:
                 raise KeyError(f"Unknown turn: {turn_id}")
             return self._turns[turn_id]
+
+    def wait_for_global_sequence(self, sequence: int, *, timeout_s: float = 15.0) -> AppEvent | None:
+        deadline = time.time() + timeout_s
+        with self._global_condition:
+            while len(self._global_events) < sequence:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                self._global_condition.wait(timeout=remaining)
+            return self._global_events[sequence - 1]
+
+    def _append_global_event(self, event: AppEvent) -> None:
+        with self._global_condition:
+            if event.global_sequence is None:
+                event.global_sequence = len(self._global_events) + 1
+            self._global_events.append(event)
+            self._global_condition.notify_all()
 
     def interrupt_turn(self, turn_id: str) -> dict[str, Any]:
         turn = self.get_turn(turn_id)

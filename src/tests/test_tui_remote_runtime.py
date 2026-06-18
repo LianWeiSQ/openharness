@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import time
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from openagent.app_server.protocol import AppEvent
 from openagent.tui.remote_runtime import RemoteAppBridgeRuntime, RemoteTurnRecord
 from openagent.tui.state import TuiState
 
 
 class RemoteRuntimeServer:
-    def __init__(self, *, required_token: str | None = None) -> None:
+    def __init__(self, *, required_token: str | None = None, global_events: list[dict[str, object]] | None = None) -> None:
         self.records: list[dict[str, object]] = []
         self.sessions: dict[str, dict[str, object]] = {
             "session_existing": {
@@ -26,6 +29,7 @@ class RemoteRuntimeServer:
             }
         }
         self.required_token = required_token
+        self.global_events = global_events
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -33,6 +37,28 @@ class RemoteRuntimeServer:
                 if not self._authorized():
                     return
                 owner.records.append({"method": "GET", "path": self.path, "authorization": self.headers.get("Authorization") or ""})
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == "/api/events" and owner.global_events is not None:
+                    query = urllib.parse.parse_qs(parsed.query)
+                    try:
+                        last_sequence = int((query.get("last_sequence") or [self.headers.get("Last-Event-ID") or "0"])[0])
+                    except ValueError:
+                        last_sequence = 0
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    for event in owner.global_events:
+                        global_sequence = int(event.get("global_sequence") or event.get("sequence") or 0)
+                        if global_sequence <= last_sequence:
+                            continue
+                        self.wfile.write(
+                            (
+                                f"id: {global_sequence}\n"
+                                f"event: {event.get('method') or 'message'}\n"
+                                f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                            ).encode("utf-8")
+                        )
+                    return
                 if self.path == "/api/sessions":
                     self._send_json({"sessions": list(owner.sessions.values())})
                     return
@@ -162,6 +188,61 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         create_record = next(record for record in server.records if record["path"] == "/api/sessions" and record["method"] == "POST")
         self.assertEqual(create_record["payload"]["cwd"], str(workspace))
 
+    def test_remote_runtime_consumes_global_events_for_remote_turn(self) -> None:
+        server = RemoteRuntimeServer(
+            global_events=[
+                {
+                    "sequence": 1,
+                    "global_sequence": 1,
+                    "method": "turn/started",
+                    "params": {"thread_id": "session_existing", "turn_id": "turn_global", "status": "running"},
+                },
+                {
+                    "sequence": 2,
+                    "global_sequence": 2,
+                    "method": "item/agentMessage/delta",
+                    "params": {"thread_id": "session_existing", "turn_id": "turn_global", "event": {"text": "from global"}},
+                },
+                {
+                    "sequence": 3,
+                    "global_sequence": 3,
+                    "method": "turn/completed",
+                    "params": {"thread_id": "session_existing", "turn_id": "turn_global", "status": "completed", "final_answer": "from global"},
+                },
+            ]
+        )
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url)
+
+        turn = _wait_for_remote_turn(runtime, "turn_global")
+        self.assertTrue(turn.wait_until_terminal(timeout_s=5.0))
+
+        self.assertEqual(turn.session_id, "session_existing")
+        self.assertEqual(turn.status, "completed")
+        self.assertEqual(turn.final_answer, "from global")
+        self.assertEqual([event.method for event in turn.events], ["turn/started", "item/agentMessage/delta", "turn/completed"])
+        self.assertFalse(any(record["path"] == "/api/turns/turn_global/events" for record in server.records))
+
+    def test_remote_turn_record_deduplicates_replayed_global_events(self) -> None:
+        turn = RemoteTurnRecord(id="turn_remote", session_id="session_existing")
+        event = AppEvent(
+            sequence=1,
+            global_sequence=11,
+            method="turn/started",
+            params={"thread_id": "session_existing", "turn_id": "turn_remote", "status": "running"},
+        )
+        duplicate = AppEvent(
+            sequence=1,
+            global_sequence=11,
+            method="turn/started",
+            params={"thread_id": "session_existing", "turn_id": "turn_remote", "status": "running"},
+        )
+
+        self.assertTrue(turn.append_event(event))
+        self.assertFalse(turn.append_event(duplicate))
+
+        self.assertEqual(len(turn.events), 1)
+
     def test_tui_state_sends_remote_approval_and_interrupt(self) -> None:
         server = RemoteRuntimeServer()
         self.addCleanup(server.close)
@@ -202,6 +283,16 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         self.assertIn("> hello", timeline_text)
         self.assertIn("hello remote", timeline_text)
         self.assertIn("approval required: write", timeline_text)
+
+
+def _wait_for_remote_turn(runtime: RemoteAppBridgeRuntime, turn_id: str, *, timeout_s: float = 5.0) -> RemoteTurnRecord:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            return runtime.get_turn(turn_id)
+        except KeyError:
+            time.sleep(0.02)
+    raise AssertionError(f"remote turn was not routed from global stream: {turn_id}")
 
 
 if __name__ == "__main__":
