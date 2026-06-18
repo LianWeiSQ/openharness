@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 from openagent.app_server.runtime import TurnRecord
 from openagent.cli.custom_commands import discover_commands, inject_file_references, render_command, resolve_command
 
-from .formatting import TimelineLine, format_event
+from .formatting import TimelineLine, format_event, format_patch_lines, short_id
 
 DEFAULT_TRANSCRIPT_LIMIT = 30
 MAX_TRANSCRIPT_LIMIT = 100
@@ -25,6 +26,8 @@ BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/model [id]", "list or select the active model"),
     ("/agent [build|plan|explore]", "show or select the active agent"),
     ("/variant [name|off]", "show, set, or clear the model variant"),
+    ("/diff [last|hash]", "show the latest detected workspace patch"),
+    ("/revert [last|hash]", "reverse-apply a detected workspace patch"),
     ("/commands", "list project/global custom commands"),
 )
 
@@ -48,6 +51,7 @@ class TuiState:
     selected_model_id: str | None = None
     selected_agent: str = "build"
     selected_variant: str | None = None
+    patches: list[dict[str, Any]] = field(default_factory=list)
     file_picker_open: bool = False
     file_picker_index: int = 0
     file_picker_query: str = ""
@@ -270,6 +274,12 @@ class TuiState:
             return True
         if name == "variant":
             self._variant_from_command(arguments)
+            return True
+        if name == "diff":
+            self._diff_from_command(arguments)
+            return True
+        if name == "revert":
+            self._revert_from_command(arguments)
             return True
         return False
 
@@ -568,6 +578,56 @@ class TuiState:
             return
         self._set_variant(arguments[0])
 
+    def _diff_from_command(self, arguments: list[str]) -> None:
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /diff [last|hash]", important=True))
+            self.status = "diff invalid"
+            return
+        patch = self._resolve_patch(arguments[0] if arguments else "last")
+        if patch is None:
+            self.timeline.append(TimelineLine("warning", "no matching patch detected", important=True))
+            self.status = "diff missing"
+            return
+        self.timeline.append(TimelineLine("patch", "\n".join(format_patch_lines(patch, include_diff=True, diff_line_limit=120)), True))
+        self.status = "diff shown"
+
+    def _revert_from_command(self, arguments: list[str]) -> None:
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /revert [last|hash]", important=True))
+            self.status = "revert invalid"
+            return
+        patch = self._resolve_patch(arguments[0] if arguments else "last")
+        if patch is None:
+            self.timeline.append(TimelineLine("warning", "no matching patch detected", important=True))
+            self.status = "revert missing"
+            return
+        diff = self._patch_diff_text(patch)
+        if not diff.strip():
+            self.timeline.append(TimelineLine("warning", "patch has no reversible text diff", important=True))
+            self.status = "revert empty"
+            return
+        try:
+            result = subprocess.run(
+                ["git", "apply", "-R", "--whitespace=nowarn"],
+                cwd=self._workspace(),
+                input=diff,
+                text=True,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+        except Exception as error:  # noqa: BLE001 - revert failures should stay visible in the TUI.
+            self.timeline.append(TimelineLine("error", f"revert failed: {error}", important=True))
+            self.status = "revert failed"
+            return
+        if result.returncode != 0:
+            error_text = (result.stderr or result.stdout or "git apply failed").strip()
+            self.timeline.append(TimelineLine("error", f"revert failed:\n{error_text}", important=True))
+            self.status = "revert failed"
+            return
+        self.timeline.append(TimelineLine("status", f"reverted patch: {short_id(str(patch.get('hash') or ''))}", important=True))
+        self.status = "patch reverted"
+
     def _show_models(self) -> None:
         list_models = getattr(self.runtime, "list_models", None)
         if not callable(list_models):
@@ -662,6 +722,36 @@ class TuiState:
             if isinstance(model, dict) and str(model.get("id") or "").strip()
         ]
 
+    def _record_patch_event(self, event: AppEvent) -> None:
+        raw = event.params.get("event") if isinstance(event.params.get("event"), dict) else {}
+        if str(raw.get("type") or "") != "patch":
+            return
+        files = raw.get("files")
+        if not isinstance(files, list):
+            return
+        patch = dict(raw)
+        patch["files"] = [dict(item) for item in files if isinstance(item, dict)]
+        patch["sequence"] = event.sequence
+        self.patches.append(patch)
+        self.patches = self.patches[-20:]
+
+    def _resolve_patch(self, query: str) -> dict[str, Any] | None:
+        if not self.patches:
+            return None
+        normalized = query.strip().lower() or "last"
+        if normalized in {"last", "latest", "head"}:
+            return self.patches[-1]
+        for patch in reversed(self.patches):
+            patch_hash = str(patch.get("hash") or "").lower()
+            if patch_hash and patch_hash.startswith(normalized):
+                return patch
+        return None
+
+    def _patch_diff_text(self, patch: dict[str, Any]) -> str:
+        files = patch.get("files") if isinstance(patch.get("files"), list) else []
+        parts = [str(item.get("diff") or "") for item in files if isinstance(item, dict) and str(item.get("diff") or "").strip()]
+        return "\n".join(parts) + ("\n" if parts else "")
+
     def _resume_session_id(self, session_id: str) -> None:
         try:
             session = self.runtime.resume_session(session_id)
@@ -673,6 +763,7 @@ class TuiState:
         self.active_turn = None
         self.next_event_index = 0
         self.input_buffer = ""
+        self.patches.clear()
         self.timeline.clear()
         self._load_session_messages(self.session_id)
         self.timeline.append(TimelineLine("status", f"resumed session: {self.session_id}", important=True))
@@ -816,6 +907,7 @@ class TuiState:
         self.next_event_index = 0
         self.input_buffer = ""
         self.active_approval = None
+        self.patches.clear()
         self.close_file_picker(update_status=False)
         self.timeline.clear()
         self.status = "new session"
@@ -835,6 +927,7 @@ class TuiState:
             event = turn.events[self.next_event_index]
             self.timeline.extend(format_event(event))
             self._apply_control_event(event)
+            self._record_patch_event(event)
             self.next_event_index += 1
         if turn.status in {"completed", "failed", "interrupted"}:
             self.active_approval = None

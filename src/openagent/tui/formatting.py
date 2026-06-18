@@ -41,8 +41,7 @@ def format_event(event: AppEvent) -> list[TimelineLine]:
     if method == "turn/approval_requested":
         approval = params.get("approval") if isinstance(params.get("approval"), dict) else {}
         tool_name = str(approval.get("tool_name") or "tool")
-        tool_input = _compact_json(approval.get("tool_input") or {})
-        return [TimelineLine("warning", f"approval required: {tool_name} {tool_input}", True)]
+        return [TimelineLine("warning", f"approval required: {tool_name}\n" + "\n".join(_approval_summary_lines(tool_name, approval)), True)]
     if method == "turn/approval_resolved":
         approval = params.get("approval") if isinstance(params.get("approval"), dict) else {}
         tool_name = str(approval.get("tool_name") or "tool")
@@ -89,8 +88,7 @@ def format_event(event: AppEvent) -> list[TimelineLine]:
         cost = raw.get("cost")
         return [TimelineLine("step", f"step finished: {finish} tokens={_compact_json(tokens)} cost={cost}")]
     if event_type == "patch":
-        files = raw.get("files") if isinstance(raw.get("files"), list) else []
-        return [TimelineLine("patch", f"patch detected: {len(files)} files hash={short_id(str(raw.get('hash') or ''))}", True)]
+        return [TimelineLine("patch", "\n".join(format_patch_lines(raw, include_diff=True, diff_line_limit=24)), True)]
     if event_type == "error" or method == "turn/error":
         return [TimelineLine("error", f"error: {raw.get('error') or params.get('error')}", True)]
     if event_type in {"text-start", "text-end"}:
@@ -117,6 +115,55 @@ def _compact_json(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except TypeError:
         return str(value)
+
+
+def _approval_summary_lines(tool_name: str, approval: dict[str, Any]) -> list[str]:
+    tool_input = approval.get("tool_input") if isinstance(approval.get("tool_input"), dict) else {}
+    assert isinstance(tool_input, dict)
+    lines = [f"tool: {tool_name}"]
+    for key in ("file_path", "path", "command"):
+        value = tool_input.get(key)
+        if value:
+            lines.append(f"{key}: {value}")
+    if "old_string" in tool_input or "new_string" in tool_input:
+        old_value = str(tool_input.get("old_string") or "")
+        new_value = str(tool_input.get("new_string") or "")
+        lines.append(f"old: {_trim(old_value, limit=180)}")
+        lines.append(f"new: {_trim(new_value, limit=180)}")
+    elif "content" in tool_input:
+        lines.append(f"content: {_trim(str(tool_input.get('content') or ''), limit=220)}")
+    else:
+        lines.append(_compact_json(tool_input))
+    return lines
+
+
+def format_patch_lines(raw: dict[str, Any], *, include_diff: bool, diff_line_limit: int = 80) -> list[str]:
+    files = raw.get("files") if isinstance(raw.get("files"), list) else []
+    patch_hash = short_id(str(raw.get("hash") or ""))
+    lines = [f"patch detected: {len(files)} files hash={patch_hash}"]
+    diff_lines_used = 0
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "-")
+        status = str(item.get("status") or "modified")
+        lines.append(f"{_status_marker(status)} {path}")
+        if not include_diff:
+            continue
+        diff = str(item.get("diff") or "")
+        if not diff:
+            continue
+        for diff_line in diff.splitlines():
+            if diff_lines_used >= diff_line_limit:
+                lines.append("... diff truncated ...")
+                return lines
+            lines.append(diff_line)
+            diff_lines_used += 1
+    return lines
+
+
+def _status_marker(status: str) -> str:
+    return {"added": "A", "deleted": "D", "modified": "M"}.get(status, status[:1].upper() or "M")
 
 
 def _trim(value: str, *, limit: int = 1200) -> str:

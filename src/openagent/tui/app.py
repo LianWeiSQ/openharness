@@ -420,6 +420,7 @@ def _addstr(stdscr, y: int, x: int, value: str, attr: int = 0) -> None:
 
 
 def _approval_lines(approval: dict[str, Any]) -> list[str]:
+    tool_input = approval.get("tool_input") if isinstance(approval.get("tool_input"), dict) else {}
     lines = [
         f"tool: {approval.get('tool_name') or 'tool'}",
         f"request: {short_id(str(approval.get('request_id') or ''))}",
@@ -427,7 +428,19 @@ def _approval_lines(approval: dict[str, Any]) -> list[str]:
     call_id = approval.get("call_id")
     if call_id:
         lines.append(f"call: {short_id(str(call_id))}")
-    lines.append(_compact_json(approval.get("tool_input") or {}))
+    if isinstance(tool_input, dict):
+        for key in ("file_path", "path", "command"):
+            if tool_input.get(key):
+                lines.append(f"{key}: {tool_input[key]}")
+        if "old_string" in tool_input or "new_string" in tool_input:
+            lines.append(f"old: {str(tool_input.get('old_string') or '')[:180]}")
+            lines.append(f"new: {str(tool_input.get('new_string') or '')[:180]}")
+        elif "content" in tool_input:
+            lines.append(f"content: {str(tool_input.get('content') or '')[:220]}")
+        elif len(lines) <= 3:
+            lines.append(_compact_json(tool_input))
+    else:
+        lines.append(_compact_json(tool_input))
     return lines
 
 

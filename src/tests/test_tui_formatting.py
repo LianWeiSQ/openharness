@@ -198,9 +198,38 @@ class TuiFormattingTests(unittest.TestCase):
         )
 
         self.assertEqual(requested[0].kind, "warning")
-        self.assertIn("approval required: write", requested[0].text)
+        self.assertIn("approval required:", requested[0].text)
+        self.assertIn("tool: write", requested[0].text)
+        self.assertIn("file_path: a.txt", requested[0].text)
         self.assertEqual(resolved[0].kind, "warning")
         self.assertEqual(resolved[0].text, "approval deny: write")
+
+    def test_formats_patch_event_with_diff_context(self) -> None:
+        lines = format_event(
+            AppEvent(
+                sequence=1,
+                method="item/step/completed",
+                params={
+                    "event": {
+                        "type": "patch",
+                        "hash": "abcdef123456",
+                        "files": [
+                            {
+                                "path": "a.txt",
+                                "status": "modified",
+                                "diff": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
+                            }
+                        ],
+                    }
+                },
+            )
+        )
+
+        self.assertEqual(lines[0].kind, "patch")
+        self.assertIn("patch detected: 1 files hash=abcdef123456", lines[0].text)
+        self.assertIn("M a.txt", lines[0].text)
+        self.assertIn("-old", lines[0].text)
+        self.assertIn("+new", lines[0].text)
 
     def test_helpers(self) -> None:
         self.assertEqual(short_id("abcdef", keep=10), "abcdef")
@@ -273,6 +302,48 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertEqual(state.selected_model_id, "gpt-a")
         self.assertEqual(state.selected_agent, "explore")
         self.assertIsNone(state.selected_variant)
+
+    def test_tui_diff_and_revert_commands_use_recorded_patch(self) -> None:
+        workspace = self._make_temp_dir()
+        target = workspace / "a.txt"
+        target.write_text("new\n", encoding="utf-8")
+        state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
+        state.active_turn = CapturingTurn(
+            status="completed",
+            events=[
+                AppEvent(
+                    sequence=1,
+                    method="item/step/completed",
+                    params={
+                        "event": {
+                            "type": "patch",
+                            "hash": "abcdef123456",
+                            "files": [
+                                {
+                                    "path": "a.txt",
+                                    "status": "modified",
+                                    "diff": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
+                                }
+                            ],
+                        }
+                    },
+                )
+            ],
+        )
+
+        state.poll_events()
+        self.assertEqual(len(state.patches), 1)
+
+        state.input_buffer = "/diff abcdef"
+        self.assertFalse(state.submit())
+        self.assertEqual(state.status, "diff shown")
+        self.assertIn("+new", "\n".join(line.text for line in state.timeline))
+
+        state.input_buffer = "/revert last"
+        self.assertFalse(state.submit())
+
+        self.assertEqual(state.status, "patch reverted")
+        self.assertEqual(target.read_text(encoding="utf-8"), "old\n")
 
     def test_tui_builtin_help_and_status_are_local(self) -> None:
         workspace = self._make_temp_dir()
