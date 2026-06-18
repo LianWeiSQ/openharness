@@ -759,6 +759,41 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertEqual(state.status, "command not found")
         self.assertIn("slash command not found", "\n".join(line.text for line in state.timeline))
 
+    def test_tui_shell_bang_runs_command_and_injects_context(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "!printf shell-out"
+
+        self.assertTrue(state.submit())
+
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertIn("$ printf shell-out", timeline_text)
+        self.assertIn("shell-out", runtime.last_user_text or "")
+        self.assertIn("exit_code: 0", runtime.last_user_text or "")
+        self.assertEqual(state.status, "running")
+
+    def test_tui_shell_bang_blocks_destructive_commands(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "!rm important.txt"
+
+        self.assertFalse(state.submit())
+
+        self.assertIsNone(runtime.last_user_text)
+        self.assertEqual(state.status, "shell command blocked")
+
+    def test_tui_double_bang_escapes_shell_mode(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "!!literal bang"
+
+        self.assertTrue(state.submit())
+
+        self.assertEqual(runtime.last_user_text, "!literal bang")
+
     def test_tui_file_picker_inserts_file_mention(self) -> None:
         workspace = self._make_temp_dir()
         (workspace / "README.md").write_text("hello", encoding="utf-8")

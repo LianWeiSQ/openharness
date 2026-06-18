@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import hashlib
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from openagent.app_server.runtime import TurnRecord
 from openagent.cli.custom_commands import discover_commands, inject_file_references, render_command, resolve_command
+from openagent.core.execution.runtime import CommandResult, LocalWorkspaceRuntime
+from openagent.core.tool.builtin.shell import FORBIDDEN_COMMAND_RE
 
 from .formatting import TimelineLine, format_event
 
@@ -16,8 +20,11 @@ DEFAULT_TRANSCRIPT_LIMIT = 30
 MAX_TRANSCRIPT_LIMIT = 100
 MAX_PROMPT_HISTORY = 100
 MAX_DRAFT_STASH = 30
+DEFAULT_TUI_SHELL_TIMEOUT_MS = 30_000
+DEFAULT_TUI_SHELL_OUTPUT_LIMIT = 8_000
 
 BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("!<command>", "run a shell command and send the output as context"),
     ("/help", "show TUI commands"),
     ("/sessions", "open recent session picker"),
     ("/session <rename|archive|delete|fork|info> ...", "manage sessions"),
@@ -246,6 +253,11 @@ class TuiState:
         }.get(topic, topic), body
 
     def _prepare_submission(self, raw_text: str) -> tuple[str, str, bool]:
+        if raw_text.startswith("!!"):
+            text = raw_text[1:]
+            return inject_file_references(text, workspace=self._workspace()), raw_text, False
+        if raw_text.startswith("!"):
+            return self._prepare_shell_submission(raw_text)
         if not raw_text or not raw_text.startswith("/") or raw_text.startswith("//"):
             text = raw_text[1:] if raw_text.startswith("//") else raw_text
             return inject_file_references(text, workspace=self._workspace()), raw_text, False
@@ -269,6 +281,42 @@ class TuiState:
             return "", raw_text, True
         self.timeline.append(TimelineLine("status", f"slash command: /{name}", important=True))
         return rendered, raw_text, False
+
+    def _prepare_shell_submission(self, raw_text: str) -> tuple[str, str, bool]:
+        command = raw_text[1:].strip()
+        if not command:
+            self.timeline.append(TimelineLine("warning", "usage: !<shell command>", important=True))
+            self.status = "shell command invalid"
+            return "", raw_text, True
+        blocked = _blocked_shell_command(command)
+        if blocked:
+            self.timeline.append(TimelineLine("warning", f"{blocked} command is disabled for TUI shell commands", important=True))
+            self.status = "shell command blocked"
+            return "", raw_text, True
+        timeout_ms = _tui_shell_timeout_ms()
+        runtime = LocalWorkspaceRuntime(self._workspace())
+        try:
+            result = asyncio.run(runtime.run_command(command, None, timeout_ms))
+        except subprocess.TimeoutExpired:
+            self.timeline.append(TimelineLine("error", f"shell command timed out after {timeout_ms}ms: {command}", important=True))
+            self.status = "shell command timed out"
+            return "", raw_text, True
+        except Exception as error:  # noqa: BLE001 - direct TUI shell failures should stay visible.
+            self.timeline.append(TimelineLine("error", f"shell command failed: {command}\n{error}", important=True))
+            self.status = "shell command failed"
+            return "", raw_text, True
+
+        output = _shell_output(result)
+        trimmed = _trim_tui_shell_output(output)
+        self.timeline.append(
+            TimelineLine(
+                "tool",
+                f"$ {command}\n{trimmed}\nexit_code: {result.returncode}",
+                important=True,
+            )
+        )
+        self.status = "shell command ready" if result.returncode == 0 else "shell command failed"
+        return _shell_context_prompt(command, result, trimmed), raw_text, False
 
     def _handle_builtin_command(self, name: str, arguments: list[str]) -> bool:
         if name in {"help", "?"}:
@@ -1729,6 +1777,54 @@ def _resolve_workspace_file(workspace: Path, rel: str) -> Path:
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _blocked_shell_command(command: str) -> str | None:
+    match = FORBIDDEN_COMMAND_RE.search(command)
+    return match.group(1) if match else None
+
+
+def _tui_shell_timeout_ms() -> int:
+    return _positive_env_int("OPENAGENT_TUI_SHELL_TIMEOUT_MS", DEFAULT_TUI_SHELL_TIMEOUT_MS)
+
+
+def _tui_shell_output_limit() -> int:
+    return _positive_env_int("OPENAGENT_TUI_SHELL_OUTPUT_LIMIT", DEFAULT_TUI_SHELL_OUTPUT_LIMIT)
+
+
+def _positive_env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _shell_output(result: CommandResult) -> str:
+    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    return output or f"Command exited with return code {result.returncode}."
+
+
+def _trim_tui_shell_output(value: str) -> str:
+    limit = _tui_shell_output_limit()
+    if len(value) <= limit:
+        return value
+    head = max(0, limit // 2)
+    tail = max(0, limit - head)
+    omitted = len(value) - head - tail
+    return value[:head].rstrip() + f"\n... output truncated ({omitted} chars omitted) ...\n" + value[-tail:].lstrip()
+
+
+def _shell_context_prompt(command: str, result: CommandResult, output: str) -> str:
+    return (
+        "A shell command was run from the TUI before this message. "
+        "Use the command output as context for the next response.\n\n"
+        f"$ {command}\n"
+        f"cwd: {result.cwd}\n"
+        f"exit_code: {result.returncode}\n"
+        "output:\n"
+        f"{output}"
+    )
 
 
 def _bounded_index(index: int, count: int) -> int:
