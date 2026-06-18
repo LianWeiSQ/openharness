@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> None:
             print("\nGateway check failed. Start your local OpenAI-compatible service, or rerun with --skip-doctor.", file=sys.stderr)
             raise SystemExit(2)
         raise SystemExit(run_non_interactive(args))
-    if command == "session":
+    if command in {"session", "export", "import"}:
         raise SystemExit(run_session_command(args))
     if command == "models":
         apply_model_env(args)
@@ -296,12 +296,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     session_export = session_subparsers.add_parser("export", help="export one stored session as JSON")
     add_session_store_options(session_export)
-    session_export.add_argument("session_id", help="session id to export")
+    session_export.add_argument("session_id", nargs="?", default=None, help="session id to export; defaults to latest session")
     session_export.add_argument("--sanitize", action="store_true", help="redact message content and local paths")
+
+    session_import = session_subparsers.add_parser("import", help="import a session export JSON file")
+    add_session_store_options(session_import)
+    session_import.add_argument("file", help="path to an OpenAgent session export JSON file")
+    session_import.add_argument("--force", action="store_true", help="overwrite an existing imported session")
+    session_import.add_argument("--format", choices=["text", "json"], default="text", help="output format")
 
     session_delete = session_subparsers.add_parser("delete", aliases=["rm"], help="delete one stored session")
     add_session_store_options(session_delete)
     session_delete.add_argument("session_id", help="session id to delete")
+
+    export_alias = subparsers.add_parser("export", help="export one stored session as JSON")
+    add_session_store_options(export_alias)
+    export_alias.add_argument("session_id", nargs="?", default=None, help="session id to export; defaults to latest session")
+    export_alias.add_argument("--sanitize", action="store_true", help="redact message content and local paths")
+    export_alias.set_defaults(session_command="export")
+
+    import_alias = subparsers.add_parser("import", help="import a session export JSON file")
+    add_session_store_options(import_alias)
+    import_alias.add_argument("file", help="path to an OpenAgent session export JSON file")
+    import_alias.add_argument("--force", action="store_true", help="overwrite an existing imported session")
+    import_alias.add_argument("--format", choices=["text", "json"], default="text", help="output format")
+    import_alias.set_defaults(session_command="import")
 
     models = subparsers.add_parser("models", help="list configured model metadata")
     add_common_model_options(models)
@@ -873,6 +892,23 @@ class AppBridgeClientError(Exception):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class SessionImportRunPlan:
+    run_id: str
+    run_record: dict[str, object]
+    run_summary: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class SessionImportPlan:
+    session_id: str
+    session_dir: Path
+    state: dict[str, object]
+    session_record: dict[str, object]
+    transcript: list[dict[str, object]]
+    runs: list[SessionImportRunPlan]
+
+
 def app_bridge_get_json(server_url: str, path: str, *, auth_token: str | None = None) -> dict[str, object]:
     return app_bridge_request_json("GET", server_url, path, auth_token=auth_token)
 
@@ -1000,7 +1036,11 @@ def run_session_command(args: argparse.Namespace, *, stdout: object | None = Non
             print_session_table(rows, stdout=out)
         return 0
     if command == "export":
-        session_id = str(getattr(args, "session_id", ""))
+        try:
+            session_id = resolve_export_session_id(root, getattr(args, "session_id", None))
+        except FileNotFoundError:
+            print("No sessions found.", file=err)
+            return 1
         try:
             payload = export_session_record(root, session_id)
         except ValueError as error:
@@ -1012,6 +1052,23 @@ def run_session_command(args: argparse.Namespace, *, stdout: object | None = Non
         if getattr(args, "sanitize", False):
             payload = sanitize_export_payload(payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), file=out)
+        return 0
+    if command == "import":
+        try:
+            payload = import_session_record(root, Path(str(getattr(args, "file", ""))).expanduser(), force=bool(getattr(args, "force", False)))
+        except ValueError as error:
+            print(str(error), file=err)
+            return 2
+        except FileExistsError as error:
+            print(str(error), file=err)
+            return 1
+        except FileNotFoundError as error:
+            print(str(error), file=err)
+            return 1
+        if getattr(args, "format", "text") == "json":
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print(f"Imported session: {payload['session_id']}", file=out)
         return 0
     if command in {"delete", "rm"}:
         session_id = str(getattr(args, "session_id", ""))
@@ -1404,6 +1461,171 @@ def export_session_record(root: Path, session_id: str) -> dict[str, object]:
     }
 
 
+def resolve_export_session_id(root: Path, session_id: object | None) -> str:
+    value = str(session_id or "").strip()
+    if value:
+        return value
+    sessions = load_session_records(root)
+    if not sessions:
+        raise FileNotFoundError("No sessions found")
+    return str(sessions[0].get("session_id") or "")
+
+
+def import_session_record(root: Path, source: Path, *, force: bool = False) -> dict[str, object]:
+    if not source.exists():
+        raise FileNotFoundError(f"File not found: {source}")
+    payload = read_json_file(source)
+    plan = build_session_import_plan(root, payload)
+    session_dir = plan.session_dir
+    if session_dir.exists() and not force:
+        raise FileExistsError(f"Session already exists: {plan.session_id}; rerun with --force to overwrite")
+    stage_session_import(root, plan, force=force)
+    return {
+        "imported": True,
+        "session_id": plan.session_id,
+        "session_root": str(root),
+        "session_dir": str(session_dir),
+        "message_count": len([item for item in plan.state.get("messages") or [] if isinstance(item, dict)]),
+        "run_count": len(plan.runs),
+    }
+
+
+def build_session_import_plan(root: Path, payload: dict[str, object] | None) -> SessionImportPlan:
+    if not payload:
+        raise ValueError("Session import file must be a JSON object")
+    if payload.get("schema_version") != "openagent.session_export.v1":
+        raise ValueError("Unsupported session export schema")
+    state = payload.get("session")
+    if not isinstance(state, dict):
+        raise ValueError("Session export is missing a session object")
+    session_id = str(state.get("session_id") or "")
+    session_dir = session_dir_for_id(root, session_id)
+    session_record = payload.get("session_record") if isinstance(payload.get("session_record"), dict) else {}
+    raw_transcript = payload.get("transcript") or []
+    if not isinstance(raw_transcript, list):
+        raise ValueError("Session export transcript must be a list")
+    transcript = [item for item in raw_transcript if isinstance(item, dict)]
+    if len(transcript) != len(raw_transcript):
+        raise ValueError("Session export transcript entries must be objects")
+    raw_runs = payload.get("runs") or []
+    if not isinstance(raw_runs, list):
+        raise ValueError("Session export runs must be a list")
+    runs: list[SessionImportRunPlan] = []
+    for run in raw_runs:
+        if not isinstance(run, dict):
+            raise ValueError("Session export run entries must be objects")
+        run_id = str(run.get("run_id") or "")
+        child_dir_for_id(session_dir / "runs", run_id, kind="run")
+        runs.append(
+            SessionImportRunPlan(
+                run_id=run_id,
+                run_record=normalize_imported_run_record(run, session_id=session_id, run_id=run_id),
+                run_summary=normalize_imported_run_summary(run, session_id=session_id, run_id=run_id),
+            )
+        )
+    return SessionImportPlan(
+        session_id=session_id,
+        session_dir=session_dir,
+        state=dict(state),
+        session_record=normalize_imported_session_record(session_record, state=state, session_id=session_id),
+        transcript=transcript,
+        runs=runs,
+    )
+
+
+def stage_session_import(root: Path, plan: SessionImportPlan, *, force: bool) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    session_dir = plan.session_dir
+    tmp_dir = root / f".{plan.session_id}.import-{secrets.token_hex(8)}"
+    backup_dir = root / f".{plan.session_id}.backup-{secrets.token_hex(8)}"
+    try:
+        write_session_import_dir(tmp_dir, plan)
+        if session_dir.exists():
+            if not force:
+                raise FileExistsError(f"Session already exists: {plan.session_id}; rerun with --force to overwrite")
+            session_dir.replace(backup_dir)
+        tmp_dir.replace(session_dir)
+    except Exception:
+        if not session_dir.exists() and backup_dir.exists():
+            backup_dir.replace(session_dir)
+        raise
+    finally:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir)
+
+
+def write_session_import_dir(session_dir: Path, plan: SessionImportPlan) -> None:
+    write_json_file(session_dir / "state.latest.json", plan.state)
+    write_json_file(session_dir / "session.json", plan.session_record)
+    write_jsonl_file(session_dir / "transcript.jsonl", plan.transcript)
+    for run in plan.runs:
+        run_dir = child_dir_for_id(session_dir / "runs", run.run_id, kind="run")
+        write_json_file(run_dir / "run.json", run.run_record)
+        write_json_file(run_dir / "summary.json", run.run_summary)
+
+
+def normalize_imported_session_record(session_record: dict[str, object], *, state: dict[str, object], session_id: str) -> dict[str, object]:
+    record = dict(session_record)
+    record.setdefault("schema_version", "openagent.session.v1")
+    record["session_id"] = session_id
+    record.setdefault("workspace", state.get("workspace") or "")
+    record.setdefault("status", state.get("status") or "")
+    record.setdefault("created_at_ms", state.get("updated_at_ms") or 0)
+    record.setdefault("updated_at_ms", state.get("updated_at_ms") or 0)
+    record.setdefault("active_run_id", state.get("run_id") or "")
+    return record
+
+
+def normalize_imported_run_record(run: dict[str, object], *, session_id: str, run_id: str) -> dict[str, object]:
+    return {
+        "schema_version": "openagent.run.v1",
+        "session_id": session_id,
+        "run_id": run_id,
+        "trace_id": run.get("trace_id"),
+        "agent_name": run.get("agent_name"),
+        "model_id": run.get("model_id"),
+        "provider_id": run.get("provider_id"),
+        "permission": run.get("permission"),
+        "max_steps": run.get("max_steps"),
+        "status": run.get("status") or "",
+        "started_at_ms": run.get("started_at_ms"),
+        "ended_at_ms": run.get("ended_at_ms"),
+    }
+
+
+def normalize_imported_run_summary(run: dict[str, object], *, session_id: str, run_id: str) -> dict[str, object]:
+    return {
+        "schema_version": "openagent.run_summary.v1",
+        "session_id": session_id,
+        "run_id": run_id,
+        "status": run.get("status") or "",
+        "message_count": coerce_import_int(run.get("message_count"), field="message_count"),
+        "step_count": coerce_import_int(run.get("step_count"), field="step_count"),
+        "tool_call_count": coerce_import_int(run.get("tool_call_count"), field="tool_call_count"),
+        "runtime_warning_count": coerce_import_int(run.get("runtime_warning_count"), field="runtime_warning_count"),
+        "patch_count": coerce_import_int(run.get("patch_count"), field="patch_count"),
+        "total_input_tokens": coerce_import_int(run.get("total_input_tokens"), field="total_input_tokens"),
+        "total_output_tokens": coerce_import_int(run.get("total_output_tokens"), field="total_output_tokens"),
+        "total_cost": coerce_import_float(run.get("total_cost"), field="total_cost"),
+    }
+
+
+def coerce_import_int(value: object, *, field: str) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid imported run {field}: {value}") from error
+
+
+def coerce_import_float(value: object, *, field: str) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid imported run {field}: {value}") from error
+
+
 def collect_session_stats(root: Path, *, days: int | None = None) -> dict[str, object]:
     sessions = load_session_records(root)
     min_updated_at = None
@@ -1602,6 +1824,16 @@ def session_dir_for_id(root: Path, session_id: str) -> Path:
     raise ValueError(f"Invalid session id: {session_id}")
 
 
+def child_dir_for_id(root: Path, child_id: str, *, kind: str) -> Path:
+    if not child_id or Path(child_id).name != child_id or child_id in {".", ".."}:
+        raise ValueError(f"Invalid {kind} id: {child_id}")
+    child_dir = (root / child_id).resolve()
+    root_dir = root.resolve()
+    if child_dir != root_dir and root_dir in child_dir.parents:
+        return child_dir
+    raise ValueError(f"Invalid {kind} id: {child_id}")
+
+
 def sanitize_export_payload(value: object) -> object:
     if isinstance(value, dict):
         sanitized: dict[str, object] = {}
@@ -1626,6 +1858,13 @@ def read_json_file(path: Path) -> dict[str, object] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def write_json_file(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
 def read_jsonl_file(path: Path) -> list[dict[str, object]]:
     if not path.exists():
         return []
@@ -1637,6 +1876,13 @@ def read_jsonl_file(path: Path) -> list[dict[str, object]]:
         if isinstance(payload, dict):
             rows.append(payload)
     return rows
+
+
+def write_jsonl_file(path: Path, rows: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
 
 
 def check_models_endpoint(*, base_url: str, timeout_s: float = 3.0) -> tuple[bool, str]:

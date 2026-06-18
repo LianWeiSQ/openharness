@@ -387,6 +387,125 @@ class OpenAgentCliTests(unittest.TestCase):
             self.assertEqual(run_session_command(delete_args, stdout=delete_stdout, stderr=io.StringIO()), 0)
             self.assertFalse((root / session.id).exists())
 
+    def test_session_import_and_top_level_export_import_aliases(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            source_root = Path(raw_tmp) / "source-sessions"
+            dest_root = Path(raw_tmp) / "dest-sessions"
+            session = create_persisted_session(source_root)
+
+            export_stdout = io.StringIO()
+            export_args = parser.parse_args(["export", "--session-root", str(source_root)])
+            self.assertEqual(run_session_command(export_args, stdout=export_stdout, stderr=io.StringIO()), 0)
+            exported = json.loads(export_stdout.getvalue())
+            self.assertEqual(exported["session"]["session_id"], session.id)
+
+            export_file = Path(raw_tmp) / "session-export.json"
+            export_file.write_text(export_stdout.getvalue(), encoding="utf-8")
+
+            import_stdout = io.StringIO()
+            import_args = parser.parse_args(["import", str(export_file), "--session-root", str(dest_root), "--format", "json"])
+            self.assertEqual(run_session_command(import_args, stdout=import_stdout, stderr=io.StringIO()), 0)
+            imported = json.loads(import_stdout.getvalue())
+            self.assertEqual(imported["session_id"], session.id)
+            self.assertEqual(imported["message_count"], 1)
+            self.assertTrue((dest_root / session.id / "state.latest.json").exists())
+            loaded = FileSessionStore(dest_root).load_session(session.id)
+            self.assertEqual(loaded.id, session.id)
+            self.assertEqual(loaded.messages[0].content, "private prompt")
+
+            list_stdout = io.StringIO()
+            list_args = parser.parse_args(["session", "list", "--session-root", str(dest_root), "--format", "json"])
+            self.assertEqual(run_session_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            listed = json.loads(list_stdout.getvalue())
+            self.assertEqual(listed["sessions"][0]["session_id"], session.id)
+
+            duplicate_stderr = io.StringIO()
+            duplicate_args = parser.parse_args(["session", "import", str(export_file), "--session-root", str(dest_root)])
+            self.assertEqual(run_session_command(duplicate_args, stdout=io.StringIO(), stderr=duplicate_stderr), 1)
+            self.assertIn("--force", duplicate_stderr.getvalue())
+
+            force_stdout = io.StringIO()
+            force_args = parser.parse_args(["session", "import", str(export_file), "--session-root", str(dest_root), "--force"])
+            self.assertEqual(run_session_command(force_args, stdout=force_stdout, stderr=io.StringIO()), 0)
+            self.assertIn(f"Imported session: {session.id}", force_stdout.getvalue())
+
+    def test_session_import_force_is_atomic_when_payload_is_invalid(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            source_root = Path(raw_tmp) / "source-sessions"
+            dest_root = Path(raw_tmp) / "dest-sessions"
+            session = create_persisted_session(source_root)
+
+            export_stdout = io.StringIO()
+            export_args = parser.parse_args(["export", "--session-root", str(source_root), session.id])
+            self.assertEqual(run_session_command(export_args, stdout=export_stdout, stderr=io.StringIO()), 0)
+            valid_export = Path(raw_tmp) / "valid-export.json"
+            valid_export.write_text(export_stdout.getvalue(), encoding="utf-8")
+            import_args = parser.parse_args(["import", str(valid_export), "--session-root", str(dest_root)])
+            self.assertEqual(run_session_command(import_args, stdout=io.StringIO(), stderr=io.StringIO()), 0)
+
+            bad_payload = json.loads(export_stdout.getvalue())
+            bad_payload["runs"][0]["run_id"] = "../bad-run"
+            bad_payload["runs"][0]["message_count"] = "not-an-int"
+            bad_export = Path(raw_tmp) / "bad-export.json"
+            bad_export.write_text(json.dumps(bad_payload), encoding="utf-8")
+
+            stderr = io.StringIO()
+            force_bad_args = parser.parse_args(["import", str(bad_export), "--session-root", str(dest_root), "--force"])
+            self.assertEqual(run_session_command(force_bad_args, stdout=io.StringIO(), stderr=stderr), 2)
+            self.assertIn("Invalid run id", stderr.getvalue())
+
+            loaded = FileSessionStore(dest_root).load_session(session.id)
+            self.assertEqual(loaded.id, session.id)
+            self.assertEqual(loaded.messages[0].content, "private prompt")
+            self.assertFalse((Path(raw_tmp) / "bad-run").exists())
+
+    def test_session_import_rejects_bad_schema_path_traversal_and_bad_run_numbers(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            dest_root = Path(raw_tmp) / "dest-sessions"
+            bad_schema = Path(raw_tmp) / "bad-schema.json"
+            bad_schema.write_text(json.dumps({"schema_version": "wrong", "session": {}}), encoding="utf-8")
+
+            stderr = io.StringIO()
+            args = parser.parse_args(["session", "import", str(bad_schema), "--session-root", str(dest_root)])
+            self.assertEqual(run_session_command(args, stdout=io.StringIO(), stderr=stderr), 2)
+            self.assertIn("Unsupported session export schema", stderr.getvalue())
+
+            traversal = Path(raw_tmp) / "traversal.json"
+            traversal.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "openagent.session_export.v1",
+                        "session": {"session_id": "../outside", "messages": []},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            args = parser.parse_args(["import", str(traversal), "--session-root", str(dest_root)])
+            self.assertEqual(run_session_command(args, stdout=io.StringIO(), stderr=stderr), 2)
+            self.assertIn("Invalid session id", stderr.getvalue())
+            self.assertFalse((Path(raw_tmp) / "outside").exists())
+
+            bad_number = Path(raw_tmp) / "bad-number.json"
+            bad_number.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "openagent.session_export.v1",
+                        "session": {"session_id": "session_good", "messages": []},
+                        "runs": [{"run_id": "run_good", "message_count": "not-an-int"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stderr = io.StringIO()
+            args = parser.parse_args(["session", "import", str(bad_number), "--session-root", str(dest_root)])
+            self.assertEqual(run_session_command(args, stdout=io.StringIO(), stderr=stderr), 2)
+            self.assertIn("Invalid imported run message_count", stderr.getvalue())
+            self.assertFalse((dest_root / "session_good").exists())
+
     def test_models_command_lists_runtime_models(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["models", "--format", "json"])
