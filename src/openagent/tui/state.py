@@ -4,7 +4,9 @@ import asyncio
 import os
 import re
 import hashlib
+import shlex
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +41,7 @@ BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/revert [file|index|all]", "safely revert files from the latest patch"),
     ("/history [limit]", "show recent submitted prompts"),
     ("/stash [push <text>|pop|list|clear]", "stash or restore composer drafts"),
+    ("/editor [text]", "open $EDITOR and load the result into the composer"),
     ("/transcript [limit]", "show recent messages from the current session"),
     ("/new", "start a new session"),
     ("/clear", "clear the visible timeline"),
@@ -360,6 +363,9 @@ class TuiState:
             return True
         if name == "stash":
             self._stash_from_command(arguments)
+            return True
+        if name == "editor":
+            self._editor_from_command(arguments)
             return True
         if name in {"resume", "continue"}:
             self._resume_from_command(arguments)
@@ -1404,6 +1410,51 @@ class TuiState:
         self.draft_stash.append(value)
         self.draft_stash = self.draft_stash[-MAX_DRAFT_STASH:]
 
+    def _editor_from_command(self, arguments: list[str]) -> None:
+        editor = _editor_command_template()
+        if not editor:
+            self.timeline.append(TimelineLine("warning", "set OPENAGENT_EDITOR, VISUAL, or EDITOR to use /editor", important=True))
+            self.status = "editor unavailable"
+            return
+        workspace = self._workspace()
+        tmp_dir = workspace / ".openagent" / "tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        initial_text = " ".join(arguments).strip()
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", prefix="tui-editor-", dir=tmp_dir, delete=False) as handle:
+                tmp_path = Path(handle.name)
+                if initial_text:
+                    handle.write(initial_text)
+                    handle.write("\n")
+            command = _editor_command_for_file(editor, tmp_path)
+            completed = subprocess.run(command, shell=True, cwd=str(workspace), text=True)  # noqa: S602 - user-selected editor command.
+            if completed.returncode != 0:
+                self.timeline.append(TimelineLine("error", f"editor exited with code {completed.returncode}: {editor}", important=True))
+                self.status = "editor failed"
+                return
+            content = tmp_path.read_text(encoding="utf-8").rstrip("\n")
+        except Exception as error:  # noqa: BLE001 - editor integration errors should stay visible.
+            self.timeline.append(TimelineLine("error", f"editor failed: {error}", important=True))
+            self.status = "editor failed"
+            return
+        finally:
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        if not content.strip():
+            self.timeline.append(TimelineLine("status", "editor returned an empty draft", important=True))
+            self.status = "editor empty"
+            return
+        self.input_buffer = content
+        self._reset_prompt_history_cursor()
+        self.refresh_file_picker()
+        self.preserve_input_after_command = True
+        self.timeline.append(TimelineLine("status", "editor draft loaded into composer", important=True))
+        self.status = "editor loaded"
+
     def _history_from_command(self, arguments: list[str]) -> None:
         limit = self._parse_history_limit(arguments)
         if limit is None:
@@ -1825,6 +1876,17 @@ def _shell_context_prompt(command: str, result: CommandResult, output: str) -> s
         "output:\n"
         f"{output}"
     )
+
+
+def _editor_command_template() -> str:
+    return str(os.getenv("OPENAGENT_EDITOR") or os.getenv("VISUAL") or os.getenv("EDITOR") or "").strip()
+
+
+def _editor_command_for_file(editor: str, path: Path) -> str:
+    quoted_path = shlex.quote(str(path))
+    if "{file}" in editor:
+        return editor.replace("{file}", quoted_path)
+    return f"{editor} {quoted_path}"
 
 
 def _bounded_index(index: int, count: int) -> int:

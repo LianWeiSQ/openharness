@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import curses
 import hashlib
+import shlex
 import shutil
+import sys
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -870,6 +872,27 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("prompt history:", timeline_text)
         self.assertIn("1. first task", timeline_text)
         self.assertIn("2. second task", timeline_text)
+
+    def test_tui_editor_command_loads_external_editor_result(self) -> None:
+        workspace = self._make_temp_dir()
+        editor_script = workspace / "fake_editor.py"
+        editor_script.write_text(
+            "from pathlib import Path\n"
+            "import sys\n"
+            "Path(sys.argv[1]).write_text('edited prompt\\n', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        editor = f"{shlex.quote(sys.executable)} {shlex.quote(str(editor_script.resolve()))}"
+        runtime = CapturingRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.input_buffer = "/editor initial draft"
+
+        with patch.dict("os.environ", {"OPENAGENT_EDITOR": editor}):
+            self.assertFalse(state.submit())
+
+        self.assertEqual(state.input_buffer, "edited prompt")
+        self.assertEqual(state.status, "editor loaded")
+        self.assertIsNone(runtime.last_user_text)
 
     def test_tui_state_applies_prompt_session_toast_and_publish_controls(self) -> None:
         workspace = self._make_temp_dir()
