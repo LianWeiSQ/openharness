@@ -22,6 +22,7 @@ from openagent.cli.wellknown import (
 )
 from openagent.core.provider.metadata import (
     DEFAULT_PROVIDER,
+    OPENAI_COMPATIBLE_PROVIDER_IDS,
     default_env_mapping,
     known_provider_ids,
     normalize_provider,
@@ -29,6 +30,7 @@ from openagent.core.provider.metadata import (
     provider_default_base_url,
     provider_default_model,
     provider_label,
+    provider_requires_api_key,
     selected_provider,
 )
 
@@ -517,6 +519,10 @@ def add_auth_parser(subparsers: argparse._SubParsersAction, name: str, *, help_t
     auth_methods = auth_subparsers.add_parser("methods", help="list provider auth methods")
     auth_methods.add_argument("provider", nargs="?", default=None, help="optional provider id")
     auth_methods.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    auth_catalog = auth_subparsers.add_parser("catalog", help="list known providers and runtime support")
+    auth_catalog.add_argument("provider", nargs="?", default=None, help="optional provider id")
+    auth_catalog.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
     auth_logout = auth_subparsers.add_parser("logout", help="remove stored provider credentials")
     add_auth_options(auth_logout)
@@ -1391,6 +1397,21 @@ def run_auth_command(
         else:
             print_auth_methods_table(rows, stdout=out)
         return 0
+    if command == "catalog":
+        try:
+            provider = normalize_provider(getattr(args, "provider", None)) if getattr(args, "provider", None) else None
+            rows = provider_catalog_rows(provider)
+        except ValueError as error:
+            print(str(error), file=err)
+            return 2
+        if getattr(args, "format", "table") == "json":
+            if provider:
+                print(json.dumps({"provider": provider, "providers": rows}, ensure_ascii=False, sort_keys=True), file=out)
+            else:
+                print(json.dumps({"providers": rows}, ensure_ascii=False, sort_keys=True), file=out)
+        else:
+            print_provider_catalog_table(rows, stdout=out)
+        return 0
     if command == "logout":
         try:
             result = logout_provider(provider=str(getattr(args, "provider", "openai")), path=auth_file)
@@ -1629,6 +1650,27 @@ def provider_method_rows(provider: str | None = None) -> list[dict[str, object]]
     return [{"provider": provider_id, "methods": provider_auth_methods(provider_id)} for provider_id in provider_ids]
 
 
+def provider_catalog_rows(provider: str | None = None) -> list[dict[str, object]]:
+    provider_ids = [provider] if provider else known_provider_ids()
+    rows: list[dict[str, object]] = []
+    for provider_id in provider_ids:
+        env = default_env_mapping(provider_id)
+        rows.append(
+            {
+                "provider": provider_id,
+                "label": provider_label(provider_id),
+                "native": provider_id == "anthropic",
+                "openai_compatible": provider_id in OPENAI_COMPATIBLE_PROVIDER_IDS,
+                "requires_api_key": provider_requires_api_key(provider_id),
+                "default_base_url": provider_default_base_url(provider_id),
+                "default_model": provider_default_model(provider_id),
+                "env": env,
+                "methods": provider_auth_methods(provider_id),
+            }
+        )
+    return rows
+
+
 def print_auth_methods_table(rows: list[dict[str, object]], *, stdout: object) -> None:
     if not rows:
         print("No provider auth methods found.", file=stdout)
@@ -1651,6 +1693,27 @@ def print_auth_methods_table(rows: list[dict[str, object]], *, stdout: object) -
                     str(method.get("default_base_url") or ""),
                 ]
             )
+    print_table(table, stdout=stdout)
+
+
+def print_provider_catalog_table(rows: list[dict[str, object]], *, stdout: object) -> None:
+    if not rows:
+        print("No known providers found.", file=stdout)
+        return
+    table = [["provider", "label", "native", "openai_compatible", "default_model", "default_base_url", "env_api_key"]]
+    for row in rows:
+        env = row.get("env") if isinstance(row.get("env"), dict) else {}
+        table.append(
+            [
+                str(row.get("provider") or ""),
+                str(row.get("label") or ""),
+                str(row.get("native")),
+                str(row.get("openai_compatible")),
+                str(row.get("default_model") or ""),
+                str(row.get("default_base_url") or ""),
+                str(env.get("api_key") or ""),
+            ]
+        )
     print_table(table, stdout=stdout)
 
 

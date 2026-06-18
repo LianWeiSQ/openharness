@@ -967,6 +967,30 @@ Create component $1 for $ARGUMENTS.
             self.assertEqual(anthropic["methods"][0]["default_model"], "claude-sonnet-4-5")
             self.assertIn("Native Anthropic Messages routing", anthropic["methods"][0]["notes"])
 
+    def test_providers_catalog_reports_runtime_support(self) -> None:
+        parser = build_parser()
+        json_stdout = io.StringIO()
+        args = parser.parse_args(["providers", "catalog", "anthropic", "--format", "json"])
+        self.assertEqual(run_auth_command(args, stdout=json_stdout, stderr=io.StringIO()), 0)
+
+        payload = json.loads(json_stdout.getvalue())
+        row = payload["providers"][0]
+        self.assertEqual(payload["provider"], "anthropic")
+        self.assertEqual(row["provider"], "anthropic")
+        self.assertEqual(row["label"], "Anthropic")
+        self.assertTrue(row["native"])
+        self.assertFalse(row["openai_compatible"])
+        self.assertEqual(row["default_model"], "claude-sonnet-4-5")
+        self.assertEqual(row["env"]["api_key"], "ANTHROPIC_API_KEY")
+
+        table_stdout = io.StringIO()
+        table_args = parser.parse_args(["providers", "catalog"])
+        self.assertEqual(run_auth_command(table_args, stdout=table_stdout, stderr=io.StringIO()), 0)
+        table = table_stdout.getvalue()
+        self.assertIn("openrouter", table)
+        self.assertIn("openai_compatible", table)
+        self.assertIn("OPENROUTER_API_KEY", table)
+
     def test_auth_login_update_preserves_existing_key_and_type(self) -> None:
         parser = build_parser()
         with tempfile.TemporaryDirectory() as raw_tmp:
