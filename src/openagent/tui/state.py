@@ -20,6 +20,7 @@ MAX_DRAFT_STASH = 30
 BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/help", "show TUI commands"),
     ("/sessions", "open recent session picker"),
+    ("/session <rename|archive|delete|fork|info> ...", "manage sessions"),
     ("/resume <id>", "resume a session by id or unique prefix"),
     ("/models", "open model picker"),
     ("/model <id|next|prev>", "select or cycle the active model"),
@@ -276,8 +277,11 @@ class TuiState:
         if name == "commands":
             self._show_commands()
             return True
-        if name in {"sessions", "session"}:
+        if name == "sessions":
             self.open_session_picker(announce=True)
+            return True
+        if name == "session":
+            self._session_from_command(arguments)
             return True
         if name == "models":
             self.open_model_picker(announce=True)
@@ -699,7 +703,9 @@ class TuiState:
             marker = "*" if sid == self.session_id else " "
             status = str(session.get("status") or "-")
             message_count = session.get("message_count") or 0
-            lines.append(f"{marker} {sid}  {status}  {message_count} msg")
+            title = str(session.get("title") or "").strip()
+            label = f"{title} ({sid})" if title else sid
+            lines.append(f"{marker} {label}  {status}  {message_count} msg")
         self.timeline.append(TimelineLine("status", "sessions:\n" + "\n".join(lines), important=True))
         self.status = "sessions listed"
 
@@ -897,6 +903,177 @@ class TuiState:
             self.status = "session ambiguous"
             return
         self._resume_session_id(match)
+
+    def _session_from_command(self, arguments: list[str]) -> None:
+        if not arguments:
+            self.open_session_picker(announce=True)
+            return
+        action, *rest = arguments
+        if action == "rename":
+            self._rename_session_from_command(rest)
+            return
+        if action in {"archive", "delete"}:
+            self._archive_session_from_command(rest, label=action)
+            return
+        if action == "fork":
+            self._fork_session_from_command(rest)
+            return
+        if action == "info":
+            self._session_info_from_command(rest)
+            return
+        self.timeline.append(TimelineLine("warning", "usage: /session <rename|archive|delete|fork|info> ...", important=True))
+        self.status = "session invalid"
+
+    def _rename_session_from_command(self, arguments: list[str]) -> None:
+        if len(arguments) < 2:
+            self.timeline.append(TimelineLine("warning", "usage: /session rename <session-id|current> <title>", important=True))
+            self.status = "session invalid"
+            return
+        session_id = self._session_arg_to_id(arguments[0])
+        if session_id is None:
+            return
+        title = " ".join(arguments[1:]).strip()
+        rename = getattr(self.runtime, "rename_session", None)
+        if not callable(rename):
+            self.timeline.append(TimelineLine("warning", "session rename is not supported by this runtime", important=True))
+            self.status = "session unsupported"
+            return
+        try:
+            session = rename(session_id, title)
+        except Exception as error:  # noqa: BLE001
+            self.timeline.append(TimelineLine("error", f"failed to rename session: {error}", important=True))
+            self.status = "session rename failed"
+            return
+        self._refresh_session_picker_cache()
+        self.timeline.append(TimelineLine("status", f"session renamed: {session.get('title') or title}", important=True))
+        self.status = "session renamed"
+
+    def _archive_session_from_command(self, arguments: list[str], *, label: str) -> None:
+        if len(arguments) != 1:
+            self.timeline.append(TimelineLine("warning", f"usage: /session {label} <session-id|current>", important=True))
+            self.status = "session invalid"
+            return
+        session_id = self._session_arg_to_id(arguments[0])
+        if session_id is None:
+            return
+        archive = getattr(self.runtime, "archive_session", None)
+        if not callable(archive):
+            self.timeline.append(TimelineLine("warning", "session archive is not supported by this runtime", important=True))
+            self.status = "session unsupported"
+            return
+        try:
+            archive(session_id)
+        except Exception as error:  # noqa: BLE001
+            self.timeline.append(TimelineLine("error", f"failed to archive session: {error}", important=True))
+            self.status = "session archive failed"
+            return
+        self._refresh_session_picker_cache()
+        if session_id == self.session_id:
+            self.session_id = None
+            self.active_turn = None
+            self.next_event_index = 0
+        self.timeline.append(TimelineLine("status", f"session archived: {session_id}", important=True))
+        self.status = "session archived"
+
+    def _fork_session_from_command(self, arguments: list[str]) -> None:
+        title_parts = arguments
+        if not arguments:
+            session_id = self._session_arg_to_id("current")
+        elif arguments[0] in {"current", "."}:
+            session_id = self._session_arg_to_id(arguments[0])
+            title_parts = arguments[1:]
+        else:
+            match = self._resolve_session_id(arguments[0])
+            if isinstance(match, str):
+                session_id = match
+                title_parts = arguments[1:]
+            elif isinstance(match, list):
+                self.timeline.append(TimelineLine("error", "session prefix is ambiguous:\n" + "\n".join(match[:10]), important=True))
+                self.status = "session ambiguous"
+                return
+            elif self.session_id:
+                session_id = self.session_id
+            else:
+                self.timeline.append(TimelineLine("error", f"session not found: {arguments[0]}", important=True))
+                self.status = "session not found"
+                return
+        if session_id is None:
+            return
+        title = " ".join(title_parts).strip() or None
+        fork = getattr(self.runtime, "fork_session", None)
+        if not callable(fork):
+            self.timeline.append(TimelineLine("warning", "session fork is not supported by this runtime", important=True))
+            self.status = "session unsupported"
+            return
+        try:
+            session = fork(session_id, title=title)
+        except TypeError as error:
+            if "unexpected keyword" not in str(error):
+                raise
+            session = fork(session_id)
+        except Exception as error:  # noqa: BLE001
+            self.timeline.append(TimelineLine("error", f"failed to fork session: {error}", important=True))
+            self.status = "session fork failed"
+            return
+        new_id = str(session.get("id") or "")
+        if new_id:
+            self._resume_session_id(new_id)
+            self.timeline.append(TimelineLine("status", f"session forked: {session_id} -> {new_id}", important=True))
+            self.status = "session forked"
+        self._refresh_session_picker_cache()
+
+    def _session_info_from_command(self, arguments: list[str]) -> None:
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /session info [session-id|current]", important=True))
+            self.status = "session invalid"
+            return
+        session_id = self._session_arg_to_id(arguments[0] if arguments else "current")
+        if session_id is None:
+            return
+        try:
+            session = self.runtime.get_session(session_id)
+        except Exception as error:  # noqa: BLE001
+            self.timeline.append(TimelineLine("error", f"failed to load session: {error}", important=True))
+            self.status = "session info failed"
+            return
+        lines = [
+            f"id: {session.get('id') or session_id}",
+            f"title: {session.get('title') or '-'}",
+            f"status: {session.get('status') or '-'}",
+            f"messages: {session.get('message_count') or 0}",
+            f"archived: {bool(session.get('archived'))}",
+            f"forked_from: {session.get('forked_from') or '-'}",
+            f"directory: {session.get('directory') or '-'}",
+        ]
+        self.timeline.append(TimelineLine("status", "session info:\n" + "\n".join(lines), important=True))
+        self.status = "session info"
+
+    def _session_arg_to_id(self, query: str) -> str | None:
+        if query in {"current", "."}:
+            if not self.session_id:
+                self.timeline.append(TimelineLine("error", "no active session", important=True))
+                self.status = "no session"
+                return None
+            return self.session_id
+        match = self._resolve_session_id(query)
+        if match is None:
+            self.timeline.append(TimelineLine("error", f"session not found: {query}", important=True))
+            self.status = "session not found"
+            return None
+        if isinstance(match, list):
+            self.timeline.append(TimelineLine("error", "session prefix is ambiguous:\n" + "\n".join(match[:10]), important=True))
+            self.status = "session ambiguous"
+            return None
+        return match
+
+    def _refresh_session_picker_cache(self) -> None:
+        if not self.session_picker_open:
+            return
+        try:
+            self.session_picker_sessions = list(self.runtime.list_sessions())[:50]
+        except Exception:
+            self.session_picker_sessions = []
+        self.session_picker_index = self._current_session_picker_index()
 
     def _transcript_from_command(self, arguments: list[str]) -> None:
         limit = self._parse_transcript_limit(arguments)

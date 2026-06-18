@@ -23,7 +23,7 @@ from openagent.core.permission.rule import PermissionAction
 from openagent.core.provider.base import LanguageModel
 from openagent.core.provider.factory import create_provider
 from openagent.core.session.session import Session
-from openagent.core.session.store import DEFAULT_SESSION_STORE_ROOT, FileSessionStore
+from openagent.core.session.store import DEFAULT_SESSION_STORE_ROOT, SESSION_STORE_METADATA_KEY, FileSessionStore
 from openagent.core.types import AgentConfig, Model, StreamEvent
 
 from .protocol import AppEvent, TuiControlRequest, lifecycle_event, stream_event_to_app_event
@@ -327,7 +327,8 @@ class OpenAgentAppRuntime:
         sessions: dict[str, dict[str, Any]] = {}
         with self._lock:
             for session in self._sessions.values():
-                sessions[session.id] = self._session_to_dict(session)
+                if not _session_archived(session):
+                    sessions[session.id] = self._session_to_dict(session)
 
         if self.session_store_root.exists():
             for state_path in self.session_store_root.glob("*/state.latest.json"):
@@ -335,11 +336,51 @@ class OpenAgentAppRuntime:
                     session = self.session_store.load_session(state_path.parent.name)
                 except Exception:  # noqa: BLE001
                     continue
-                sessions[session.id] = self._session_to_dict(session)
+                if not _session_archived(session):
+                    sessions[session.id] = self._session_to_dict(session)
         return sorted(sessions.values(), key=lambda item: str(item.get("updated_at_ms") or ""), reverse=True)
 
     def get_session(self, session_id: str) -> dict[str, Any]:
         return self._session_to_dict(self._get_session(session_id), include_messages=True)
+
+    def rename_session(self, session_id: str, title: str) -> dict[str, Any]:
+        normalized = title.strip()
+        if not normalized:
+            raise ValueError("session title is required")
+        session = self._get_session(session_id)
+        meta = _session_tui_meta(session)
+        meta["title"] = normalized
+        meta["updated_at_ms"] = int(time.time() * 1000)
+        self._persist_session_state(session)
+        return self._session_to_dict(session)
+
+    def archive_session(self, session_id: str) -> dict[str, Any]:
+        session = self._get_session(session_id)
+        meta = _session_tui_meta(session)
+        meta["archived"] = True
+        meta["updated_at_ms"] = int(time.time() * 1000)
+        self._persist_session_state(session)
+        return self._session_to_dict(session)
+
+    def fork_session(self, session_id: str, *, title: str | None = None) -> dict[str, Any]:
+        parent = self._get_session(session_id)
+        child = parent.fork()
+        child.metadata.pop(SESSION_STORE_METADATA_KEY, None)
+        child.metadata.pop("agent_trace", None)
+        parent_title = _session_title(parent) or parent.id
+        meta = _session_tui_meta(child)
+        meta.update(
+            {
+                "title": title.strip() if title and title.strip() else f"Fork of {parent_title}",
+                "forked_from": parent.id,
+                "archived": False,
+                "updated_at_ms": int(time.time() * 1000),
+            }
+        )
+        with self._lock:
+            self._sessions[child.id] = child
+        self._persist_session_state(child)
+        return self._session_to_dict(child, include_messages=True)
 
     def list_models(self) -> list[dict[str, Any]]:
         async def _list() -> list[dict[str, Any]]:
@@ -640,15 +681,25 @@ class OpenAgentAppRuntime:
             self._sessions[session.id] = session
         return session
 
+    def _persist_session_state(self, session: Session) -> None:
+        metadata = session.metadata if isinstance(session.metadata, dict) else {}
+        store_metadata = metadata.get(SESSION_STORE_METADATA_KEY) if isinstance(metadata.get(SESSION_STORE_METADATA_KEY), dict) else {}
+        run_id = str(store_metadata.get("run_id") or "") or None
+        self.session_store.save_state(session, run_id=run_id)
+
     def _session_to_dict(self, session: Session, *, include_messages: bool = False) -> dict[str, Any]:
         metadata = session.metadata if isinstance(session.metadata, dict) else {}
-        store_metadata = metadata.get("session_store") if isinstance(metadata.get("session_store"), dict) else {}
+        store_metadata = metadata.get(SESSION_STORE_METADATA_KEY) if isinstance(metadata.get(SESSION_STORE_METADATA_KEY), dict) else {}
+        tui_metadata = metadata.get("tui") if isinstance(metadata.get("tui"), dict) else {}
         payload: dict[str, Any] = {
             "id": session.id,
             "directory": str(session.directory),
             "status": session.status.value,
+            "title": tui_metadata.get("title"),
+            "archived": bool(tui_metadata.get("archived")),
+            "forked_from": tui_metadata.get("forked_from"),
             "message_count": len(session.messages),
-            "updated_at_ms": store_metadata.get("updated_at_ms"),
+            "updated_at_ms": tui_metadata.get("updated_at_ms") or store_metadata.get("updated_at_ms"),
             "session_store": store_metadata,
         }
         if include_messages:
@@ -736,6 +787,28 @@ def _trace_metadata(session: Session) -> dict[str, Any]:
         "trace_path": agent_trace.get("trace_path"),
         "session_store": session_store,
     }
+
+
+def _session_tui_meta(session: Session) -> dict[str, Any]:
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    session.metadata = metadata
+    tui_metadata = metadata.get("tui")
+    if not isinstance(tui_metadata, dict):
+        tui_metadata = {}
+        metadata["tui"] = tui_metadata
+    return tui_metadata
+
+
+def _session_title(session: Session) -> str:
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    tui_metadata = metadata.get("tui") if isinstance(metadata.get("tui"), dict) else {}
+    return str(tui_metadata.get("title") or "").strip()
+
+
+def _session_archived(session: Session) -> bool:
+    metadata = session.metadata if isinstance(session.metadata, dict) else {}
+    tui_metadata = metadata.get("tui") if isinstance(metadata.get("tui"), dict) else {}
+    return bool(tui_metadata.get("archived"))
 
 
 def _normalize_approval_action(action: str, *, scope: str | None = None) -> tuple[PermissionAction, str]:

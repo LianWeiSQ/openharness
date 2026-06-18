@@ -111,14 +111,39 @@ class SessionRuntime(DummyRuntime):
         }
 
     def list_sessions(self):
-        return list(self.sessions)
+        return [dict(item) for item in self.sessions if not item.get("archived")]
 
     def resume_session(self, session_id: str):
         self.resumed.append(session_id)
         return {"id": session_id}
 
     def get_session(self, session_id: str):
+        for session in self.sessions:
+            if session["id"] == session_id:
+                return {**session, "messages": self.messages.get(session_id, [])}
         return {"id": session_id, "messages": self.messages.get(session_id, [])}
+
+    def rename_session(self, session_id: str, title: str):
+        session = self.get_session(session_id)
+        session["title"] = title
+        self._replace_session(session)
+        return session
+
+    def archive_session(self, session_id: str):
+        session = self.get_session(session_id)
+        session["archived"] = True
+        self._replace_session(session)
+        return session
+
+    def fork_session(self, session_id: str, *, title: str | None = None):
+        self.get_session(session_id)
+        session = {"id": "session_fork789", "status": "idle", "message_count": 2, "title": title or "Fork", "forked_from": session_id}
+        self.sessions.append(session)
+        self.messages[session["id"]] = list(self.messages.get(session_id, []))
+        return session
+
+    def _replace_session(self, session):
+        self.sessions = [session if item["id"] == session["id"] else item for item in self.sessions]
 
 
 class SelectorRuntime(DummyRuntime):
@@ -433,6 +458,32 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("> old task", timeline_text)
         self.assertIn("old answer", timeline_text)
         self.assertIn("resumed session: session_alpha123", timeline_text)
+
+    def test_tui_session_manager_rename_info_fork_and_archive(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = SessionRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.session_id = "session_alpha123"
+
+        state.input_buffer = "/session rename current Main Thread"
+        self.assertFalse(state.submit())
+        self.assertEqual(runtime.get_session("session_alpha123")["title"], "Main Thread")
+        self.assertEqual(state.status, "session renamed")
+
+        state.input_buffer = "/session info current"
+        self.assertFalse(state.submit())
+        self.assertIn("title: Main Thread", "\n".join(line.text for line in state.timeline))
+
+        state.input_buffer = "/session fork Branch Thread"
+        self.assertFalse(state.submit())
+        self.assertEqual(state.session_id, "session_fork789")
+        self.assertEqual(runtime.get_session("session_fork789")["forked_from"], "session_alpha123")
+        self.assertEqual(runtime.get_session("session_fork789")["title"], "Branch Thread")
+
+        state.input_buffer = "/session archive session_beta"
+        self.assertFalse(state.submit())
+        self.assertNotIn("session_beta456", [item["id"] for item in runtime.list_sessions()])
+        self.assertEqual(state.status, "session archived")
 
     def test_tui_transcript_renders_current_session_with_limit(self) -> None:
         workspace = self._make_temp_dir()

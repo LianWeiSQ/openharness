@@ -107,6 +107,29 @@ class RemoteRuntimeServer:
                     owner.sessions["session_new"] = session
                     self._send_json({"session": session}, status=201)
                     return
+                if self.path == "/api/sessions/session_existing/rename":
+                    session = dict(owner.sessions["session_existing"])
+                    session["title"] = payload.get("title")
+                    owner.sessions["session_existing"] = session
+                    self._send_json({"session": session})
+                    return
+                if self.path == "/api/sessions/session_existing/archive":
+                    session = dict(owner.sessions["session_existing"])
+                    session["archived"] = True
+                    owner.sessions["session_existing"] = session
+                    self._send_json({"session": session})
+                    return
+                if self.path == "/api/sessions/session_existing/fork":
+                    session = {
+                        "id": "session_fork",
+                        "status": "ready",
+                        "message_count": 2,
+                        "title": payload.get("title") or "Fork",
+                        "forked_from": "session_existing",
+                    }
+                    owner.sessions["session_fork"] = session
+                    self._send_json({"session": session}, status=201)
+                    return
                 if self.path == "/api/sessions/session_existing/turns":
                     self._send_json({"turn": {"id": "turn_remote", "session_id": "session_existing", "status": "queued"}}, status=201)
                     return
@@ -256,6 +279,23 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(approval_record["payload"], {"action": "allow", "scope": "always", "note": "trusted"})
         self.assertEqual(response["params"]["approval"]["scope"], "always")
         self.assertEqual(response["params"]["approval"]["note"], "trusted")
+
+    def test_remote_runtime_session_manager_posts_endpoints(self) -> None:
+        server = RemoteRuntimeServer()
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url)
+
+        renamed = runtime.rename_session("session_existing", "Main")
+        forked = runtime.fork_session("session_existing", title="Branch")
+        archived = runtime.archive_session("session_existing")
+
+        paths = [record["path"] for record in server.records if record["method"] == "POST"]
+        self.assertIn("/api/sessions/session_existing/rename", paths)
+        self.assertIn("/api/sessions/session_existing/fork", paths)
+        self.assertIn("/api/sessions/session_existing/archive", paths)
+        self.assertEqual(renamed["title"], "Main")
+        self.assertEqual(forked["forked_from"], "session_existing")
+        self.assertEqual(archived["archived"], True)
 
     def test_remote_runtime_consumes_global_events_for_remote_turn(self) -> None:
         server = RemoteRuntimeServer(

@@ -165,6 +165,36 @@ class RemoteAppBridgeRuntime:
         payload = app_bridge_get_json(self.server_url, f"/api/sessions/{quote_path(session_id)}", auth_token=self.auth_token)
         return _session_from_payload(payload)
 
+    def rename_session(self, session_id: str, title: str) -> dict[str, object]:
+        payload = app_bridge_post_json(
+            self.server_url,
+            f"/api/sessions/{quote_path(session_id)}/rename",
+            {"title": title},
+            auth_token=self.auth_token,
+        )
+        return _session_from_payload(payload)
+
+    def archive_session(self, session_id: str) -> dict[str, object]:
+        payload = app_bridge_post_json(
+            self.server_url,
+            f"/api/sessions/{quote_path(session_id)}/archive",
+            {},
+            auth_token=self.auth_token,
+        )
+        return _session_from_payload(payload)
+
+    def fork_session(self, session_id: str, *, title: str | None = None) -> dict[str, object]:
+        body: dict[str, object] = {}
+        if title:
+            body["title"] = title
+        payload = app_bridge_post_json(
+            self.server_url,
+            f"/api/sessions/{quote_path(session_id)}/fork",
+            body,
+            auth_token=self.auth_token,
+        )
+        return _session_from_payload(payload)
+
     def start_turn(
         self,
         *,

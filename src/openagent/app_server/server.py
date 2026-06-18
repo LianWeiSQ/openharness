@@ -96,6 +96,18 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/sessions":
                 session = self.runtime.start_session(cwd=payload.get("cwd"))
                 self._send_json({"session": session}, status=HTTPStatus.CREATED)
+            elif path.startswith("/api/sessions/") and path.endswith("/rename"):
+                session_id = _parse_session_action_path(path, "rename")
+                session = self.runtime.rename_session(session_id, _required_string(payload, "title"))
+                self._send_json({"session": session})
+            elif path.startswith("/api/sessions/") and path.endswith("/archive"):
+                session_id = _parse_session_action_path(path, "archive")
+                session = self.runtime.archive_session(session_id)
+                self._send_json({"session": session})
+            elif path.startswith("/api/sessions/") and path.endswith("/fork"):
+                session_id = _parse_session_action_path(path, "fork")
+                session = self.runtime.fork_session(session_id, title=_optional_string(payload, "title"))
+                self._send_json({"session": session}, status=HTTPStatus.CREATED)
             elif path.startswith("/api/sessions/") and path.endswith("/turns"):
                 session_id = path.removeprefix("/api/sessions/").removesuffix("/turns").strip("/")
                 user_text = str(payload.get("input") or payload.get("user_text") or "")
@@ -408,6 +420,14 @@ def _parse_turn_approval_path(path: str) -> tuple[str, str]:
     if not turn_id or marker != "/approvals/" or not request_id.strip("/"):
         raise ValueError("approval path must be /api/turns/{turn_id}/approvals/{request_id}")
     return turn_id.strip("/"), request_id.strip("/")
+
+
+def _parse_session_action_path(path: str, action: str) -> str:
+    suffix = f"/{action}"
+    session_id = path.removeprefix("/api/sessions/").removesuffix(suffix).strip("/")
+    if not session_id:
+        raise ValueError(f"session {action} path must be /api/sessions/{{session_id}}/{action}")
+    return session_id
 
 
 def _parse_turn_patch_revert_path(path: str) -> tuple[str, str]:

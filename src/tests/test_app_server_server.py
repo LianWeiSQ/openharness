@@ -38,17 +38,40 @@ class FakeRuntime:
         self.control_requests: list[TuiControlRequest] = []
         self.control_responses: list[object] = []
         self.reverts: list[tuple[str, str, str]] = []
+        self.sessions = [{"id": "session_existing", "status": "ready", "message_count": 0}]
 
     def list_models(self):
         return []
 
     def list_sessions(self):
-        return [{"id": "session_existing", "status": "ready", "message_count": 0}]
+        return [dict(item) for item in self.sessions if not item.get("archived")]
 
     def get_session(self, session_id: str):
-        if session_id != "session_existing":
-            raise KeyError(f"Unknown session: {session_id}")
-        return {"id": session_id, "status": "ready", "message_count": 0}
+        for session in self.sessions:
+            if session["id"] == session_id:
+                return dict(session)
+        raise KeyError(f"Unknown session: {session_id}")
+
+    def rename_session(self, session_id: str, title: str):
+        session = self.get_session(session_id)
+        session["title"] = title
+        self._replace_session(session)
+        return session
+
+    def archive_session(self, session_id: str):
+        session = self.get_session(session_id)
+        session["archived"] = True
+        self._replace_session(session)
+        return session
+
+    def fork_session(self, session_id: str, *, title: str | None = None):
+        self.get_session(session_id)
+        session = {"id": "session_fork", "status": "ready", "message_count": 0, "title": title or "Fork", "forked_from": session_id}
+        self.sessions.append(session)
+        return session
+
+    def _replace_session(self, session):
+        self.sessions = [session if item["id"] == session["id"] else item for item in self.sessions]
 
     def interrupt_turn(self, turn_id: str):
         return {"id": turn_id, "status": "interrupting", "interrupt_requested": True}
@@ -335,6 +358,32 @@ class AppServerServerTests(unittest.TestCase):
         self.assertEqual(runtime.reverts, [("turn_123", "last", "a.txt")])
         self.assertEqual(payload["event"]["method"], "item/patch/reverted")
         self.assertEqual(payload["event"]["params"]["reverted"], ["a.txt: restored"])
+
+    def test_server_session_manager_endpoints_call_runtime(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = FakeRuntime()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=runtime,  # type: ignore[arg-type]
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        renamed = _post_json(f"{base_url}/api/sessions/session_existing/rename", {"title": "Main"})
+        forked = _post_json(f"{base_url}/api/sessions/session_existing/fork", {"title": "Branch"})
+        archived = _post_json(f"{base_url}/api/sessions/session_existing/archive", {})
+
+        self.assertEqual(renamed["session"]["title"], "Main")
+        self.assertEqual(forked["session"]["id"], "session_fork")
+        self.assertEqual(forked["session"]["forked_from"], "session_existing")
+        self.assertEqual(archived["session"]["archived"], True)
 
     def test_tui_routes_require_bearer_token_when_configured(self) -> None:
         workspace = self._make_temp_dir()

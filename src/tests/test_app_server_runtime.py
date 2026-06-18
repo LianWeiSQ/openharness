@@ -161,6 +161,30 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(turn.variant, "fast")
         self.assertEqual(turn.to_dict()["agent_name"], "plan")
 
+    def test_runtime_session_manager_rename_fork_and_archive(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda _model: ScriptedLanguageModel(script=[]),
+        )
+        session = runtime.start_session()
+        session_id = str(session["id"])
+
+        renamed = runtime.rename_session(session_id, "Main investigation")
+        forked = runtime.fork_session(session_id, title="Branch investigation")
+        archived = runtime.archive_session(session_id)
+        listed = runtime.list_sessions()
+        loaded_archived = runtime.get_session(session_id)
+
+        self.assertEqual(renamed["title"], "Main investigation")
+        self.assertEqual(forked["title"], "Branch investigation")
+        self.assertEqual(forked["forked_from"], session_id)
+        self.assertEqual(archived["archived"], True)
+        self.assertEqual(loaded_archived["archived"], True)
+        self.assertNotIn(session_id, [item["id"] for item in listed])
+        self.assertIn(forked["id"], [item["id"] for item in listed])
+
     def test_runtime_caches_patch_metadata_and_reverts_latest_patch(self) -> None:
         workspace = self._make_temp_dir()
         (workspace / "a.txt").write_text("old\n", encoding="utf-8")

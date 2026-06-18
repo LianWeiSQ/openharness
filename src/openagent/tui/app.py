@@ -325,21 +325,25 @@ def _render_sessions(stdscr, state: TuiState, y: int, width: int, height: int) -
     if state.session_picker_open:
         title = "Sessions picker"
     _addstr(stdscr, y, 1, title, curses.color_pair(1) | curses.A_BOLD)
-    sessions = _sessions_for_render(state, limit=max(0, height - 3))
-    for idx, session in enumerate(sessions, start=1):
+    reserve_hint = 1 if state.session_picker_open and height >= 4 else 0
+    item_rows = max(0, height - 1 - reserve_hint)
+    sessions = _sessions_for_render(state, limit=item_rows // 2)
+    for idx, session in enumerate(sessions):
+        row = y + 1 + (idx * 2)
         sid = str(session.get("id") or "-")
+        title = str(session.get("title") or "").strip()
         marker = "*" if sid == state.session_id else " "
-        selected = state.session_picker_open and (idx - 1) == state.session_picker_index
+        selected = state.session_picker_open and idx == state.session_picker_index
         if selected:
             marker = ">"
-        line = f"{marker} {short_id(sid, keep=16)}"
+        line = f"{marker} {title or short_id(sid, keep=16)}"
         attr = curses.color_pair(1) | curses.A_BOLD if selected else curses.color_pair(3 if marker == "*" else 2)
-        _addstr(stdscr, y + idx, 1, line[: width - 2], attr)
-        meta = f"  {session.get('message_count') or 0} msg"
+        _addstr(stdscr, row, 1, line[: width - 2], attr)
+        meta = f"  {short_id(sid, keep=16)}  {session.get('message_count') or 0} msg"
         if session.get("status"):
             meta += f"  {session.get('status')}"
-        _addstr(stdscr, y + idx + 1, 1, meta[: width - 2], curses.color_pair(2))
-    if state.session_picker_open and height >= 4:
+        _addstr(stdscr, row + 1, 1, meta[: width - 2], curses.color_pair(2))
+    if reserve_hint:
         hint = "Enter resume | Esc close"
         _addstr(stdscr, y + height - 1, 1, hint[: width - 2], curses.color_pair(2))
     _vline(stdscr, y, width - 1, height)
