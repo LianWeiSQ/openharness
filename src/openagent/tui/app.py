@@ -181,17 +181,16 @@ def _drain_control_requests(state: TuiState) -> None:
         return
     post_response = getattr(state.runtime, "post_control_response", None)
     for request in requests:
-        request_id = str(request.get("id") or "")
         try:
             result = state.apply_control_request(request)
         except Exception as error:  # noqa: BLE001 - keep the TUI alive on bad remote control messages.
             state.timeline.append(TimelineLine("error", f"TUI control failed: {error}", important=True))
             state.status = "control failed"
-            if callable(post_response) and request_id:
-                post_response(request_id, ok=False, error=str(error))
+            if callable(post_response):
+                post_response({"path": str(request.get("path") or ""), "error": str(error)}, ok=False)
             continue
-        if callable(post_response) and request_id:
-            post_response(request_id, ok=True, result=result)
+        if callable(post_response):
+            post_response({"path": str(request.get("path") or "")}, ok=True, result=result)
 
 
 def _render(stdscr, state: TuiState) -> None:

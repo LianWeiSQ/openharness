@@ -220,18 +220,24 @@ class RemoteAppBridgeRuntime:
 
     def post_control_response(
         self,
-        request_id: str,
+        payload: dict[str, object] | str | None = None,
         *,
         ok: bool = True,
         result: dict[str, object] | None = None,
         error: str | None = None,
     ) -> dict[str, object]:
-        payload: dict[str, object] = {"id": request_id, "ok": ok}
+        if isinstance(payload, dict):
+            body: dict[str, object] = dict(payload)
+        elif isinstance(payload, str) and payload:
+            body = {"id": payload}
+        else:
+            body = {}
+        body["ok"] = ok
         if result is not None:
-            payload["result"] = result
+            body["result"] = result
         if error:
-            payload["error"] = error
-        return app_bridge_post_json(self.server_url, "/tui/control/response", payload, auth_token=self.auth_token)
+            body["error"] = error
+        return app_bridge_post_json(self.server_url, "/tui/control/response", body, auth_token=self.auth_token)
 
     def _consume_turn_events(self, turn: RemoteTurnRecord) -> None:
         try:
@@ -330,10 +336,9 @@ class RemoteAppBridgeRuntime:
                     self._control_poll_unavailable = True
                     self._control_condition.notify_all()
                 return
-            request = payload.get("request")
-            if isinstance(request, dict):
+            if payload.get("path"):
                 with self._control_condition:
-                    self._control_requests.append(dict(request))
+                    self._control_requests.append(dict(payload))
                     self._control_condition.notify_all()
             else:
                 time.sleep(0.05)

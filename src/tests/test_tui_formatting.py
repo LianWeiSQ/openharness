@@ -458,14 +458,14 @@ class TuiFormattingTests(unittest.TestCase):
         runtime = SessionRuntime(workspace=workspace)
         state = TuiState(runtime=runtime)  # type: ignore[arg-type]
 
-        append_result = state.apply_control_request({"id": "1", "action": "prompt.append", "params": {"text": "hello"}})
-        clear_result = state.apply_control_request({"id": "2", "action": "prompt.clear", "params": {}})
-        help_result = state.apply_control_request({"id": "3", "action": "help.open", "params": {}})
-        sessions_result = state.apply_control_request({"id": "4", "action": "sessions.open", "params": {}})
-        select_result = state.apply_control_request({"id": "5", "action": "session.select", "params": {"sessionID": "session_alpha123"}})
-        toast_result = state.apply_control_request({"id": "6", "action": "toast.show", "params": {"title": "Saved", "message": "Session selected", "variant": "success"}})
-        publish_result = state.apply_control_request({"id": "7", "action": "publish", "params": {"type": "tui.prompt.append", "payload": {"text": " next"}}})
-        unsupported_result = state.apply_control_request({"id": "8", "action": "theme.select", "params": {"theme": "dark"}})
+        append_result = state.apply_control_request({"path": "/tui/append-prompt", "body": {"text": "hello"}})
+        clear_result = state.apply_control_request({"path": "/tui/clear-prompt", "body": {}})
+        help_result = state.apply_control_request({"path": "/tui/open-help", "body": {}})
+        sessions_result = state.apply_control_request({"path": "/tui/open-sessions", "body": {}})
+        select_result = state.apply_control_request({"path": "/tui/select-session", "body": {"sessionID": "session_alpha123"}})
+        toast_result = state.apply_control_request({"path": "/tui/show-toast", "body": {"title": "Saved", "message": "Session selected", "variant": "success"}})
+        publish_result = state.apply_control_request({"path": "/tui/publish", "body": {"type": "tui.prompt.append", "properties": {"text": " next"}}})
+        unsupported_result = state.apply_control_request({"path": "/tui/open-themes", "body": {}})
 
         self.assertEqual(append_result["applied"], True)
         self.assertEqual(clear_result["applied"], True)
@@ -480,13 +480,13 @@ class TuiFormattingTests(unittest.TestCase):
         timeline_text = "\n".join(line.text for line in state.timeline)
         self.assertIn("resumed session: session_alpha123", timeline_text)
         self.assertIn("Saved: Session selected", timeline_text)
-        self.assertIn("TUI control unsupported: theme.select", timeline_text)
+        self.assertIn("TUI control unsupported: theme.open", timeline_text)
 
     def test_tui_state_control_execute_command_uses_slash_commands(self) -> None:
         workspace = self._make_temp_dir()
         state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
 
-        result = state.apply_control_request({"id": "cmd", "action": "command.execute", "params": {"command": "help"}})
+        result = state.apply_control_request({"path": "/tui/execute-command", "body": {"command": "help"}})
 
         self.assertEqual(result["applied"], False)
         self.assertEqual(state.input_buffer, "")

@@ -49,7 +49,7 @@ class RemoteRuntimeServer:
                 parsed = urllib.parse.urlparse(self.path)
                 if parsed.path == "/tui/control/next" and control_requests is not None:
                     request = owner.control_requests.pop(0) if owner.control_requests else None
-                    self._send_json({"ok": True, "request": request})
+                    self._send_json(request if isinstance(request, dict) else {"path": "", "body": None})
                     return
                 if parsed.path == "/api/events" and owner.global_events is not None:
                     query = urllib.parse.parse_qs(parsed.query)
@@ -244,22 +244,22 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         server = RemoteRuntimeServer(
             required_token="secret",
             control_requests=[
-                {"id": "tui_ctrl_1", "action": "prompt.append", "params": {"text": "hello"}},
+                {"path": "/tui/append-prompt", "body": {"text": "hello"}},
             ],
         )
         self.addCleanup(server.close)
         runtime = RemoteAppBridgeRuntime(server_url=server.url, auth_token="secret")
 
         requests = _wait_for_control_requests(runtime)
-        response = runtime.post_control_response("tui_ctrl_1", ok=True, result={"applied": True})
+        response = runtime.post_control_response({"path": "/tui/append-prompt"}, ok=True, result={"applied": True})
 
-        self.assertEqual(requests, [{"id": "tui_ctrl_1", "action": "prompt.append", "params": {"text": "hello"}}])
+        self.assertEqual(requests, [{"path": "/tui/append-prompt", "body": {"text": "hello"}}])
         self.assertEqual(response["ok"], True)
         control_get = next(record for record in server.records if str(record["path"]).startswith("/tui/control/next"))
         control_post = next(record for record in server.records if record["path"] == "/tui/control/response")
         self.assertEqual(control_get["authorization"], "Bearer secret")
         self.assertEqual(control_post["authorization"], "Bearer secret")
-        self.assertEqual(server.control_responses[0]["id"], "tui_ctrl_1")
+        self.assertEqual(server.control_responses[0]["path"], "/tui/append-prompt")
         self.assertEqual(server.control_responses[0]["result"], {"applied": True})
 
     def test_start_turn_reuses_existing_global_stream_record(self) -> None:

@@ -247,18 +247,18 @@ class AppServerRuntimeTests(unittest.TestCase):
             language_model_factory=lambda _model: ScriptedLanguageModel(script=[]),
         )
 
-        request = runtime.enqueue_tui_control("prompt.append", {"text": "hello"})
+        request = runtime.enqueue_tui_control("/tui/append-prompt", {"text": "hello"})
         received = runtime.wait_for_tui_control(timeout_s=0.0)
         empty = runtime.wait_for_tui_control(timeout_s=0.0)
-        response = runtime.record_tui_control_response(request.id, {"ok": True, "result": {"applied": True}})
+        response = runtime.record_tui_control_response({"ok": True, "result": {"applied": True}})
 
         self.assertIsNotNone(received)
         assert received is not None
-        self.assertEqual(received.to_dict()["action"], "prompt.append")
-        self.assertEqual(received.to_dict()["params"], {"text": "hello"})
+        self.assertEqual(request.to_dict(), {"path": "/tui/append-prompt", "body": {"text": "hello"}})
+        self.assertEqual(received.to_dict(), {"path": "/tui/append-prompt", "body": {"text": "hello"}})
         self.assertIsNone(empty)
-        self.assertEqual(response["id"], request.id)
-        self.assertEqual(runtime.get_tui_control_response(request.id), response)
+        self.assertEqual(response, {"ok": True, "result": {"applied": True}})
+        self.assertEqual(runtime.next_tui_control_response(), response)
 
     def _wait_for_method(self, turn, method: str):
         deadline = time.time() + 10.0

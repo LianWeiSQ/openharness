@@ -36,7 +36,7 @@ class FakeRuntime:
             ),
         ]
         self.control_requests: list[TuiControlRequest] = []
-        self.control_responses: dict[str, dict[str, object]] = {}
+        self.control_responses: list[object] = []
 
     def list_models(self):
         return []
@@ -69,8 +69,8 @@ class FakeRuntime:
             return self.global_events[sequence - 1]
         return None
 
-    def enqueue_tui_control(self, action: str, params: dict[str, object] | None = None):
-        request = TuiControlRequest(id=f"tui_ctrl_{len(self.control_requests) + 1}", action=action, params=dict(params or {}))
+    def enqueue_tui_control(self, path: str, body: object | None = None):
+        request = TuiControlRequest(path=path, body={} if body is None else body)
         self.control_requests.append(request)
         return request
 
@@ -80,10 +80,9 @@ class FakeRuntime:
             return None
         return self.control_requests.pop(0)
 
-    def record_tui_control_response(self, request_id: str, payload: dict[str, object] | None = None):
-        response = {"id": request_id, **dict(payload or {})}
-        self.control_responses[request_id] = response
-        return response
+    def record_tui_control_response(self, payload: object | None = None):
+        self.control_responses.append(payload)
+        return payload
 
 
 class AppServerServerTests(unittest.TestCase):
@@ -311,6 +310,18 @@ class AppServerServerTests(unittest.TestCase):
         else:
             self.fail("server should reject unauthenticated TUI control requests")
 
+        for path, method in [("/tui/control/next?timeout=0", "GET"), ("/tui/control/response", "POST")]:
+            try:
+                if method == "GET":
+                    _get_json(f"{base_url}{path}")
+                else:
+                    _post_json(f"{base_url}{path}", {"ok": True})
+            except urllib.error.HTTPError as error:
+                self.assertEqual(error.code, 401)
+                error.close()
+            else:
+                self.fail(f"server should reject unauthenticated {path}")
+
         payload = _post_json(
             f"{base_url}/tui/append-prompt",
             {"text": "hello"},
@@ -318,7 +329,7 @@ class AppServerServerTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["ok"], True)
-        self.assertEqual(payload["request"]["action"], "prompt.append")
+        self.assertEqual(payload["request"], {"path": "/tui/append-prompt", "body": {"text": "hello"}})
 
     def test_tui_control_routes_validate_body_and_queue_next_shape(self) -> None:
         workspace = self._make_temp_dir()
@@ -348,10 +359,8 @@ class AppServerServerTests(unittest.TestCase):
         queued = _get_json(f"{base_url}/tui/control/next?timeout=0")
         empty = _get_json(f"{base_url}/tui/control/next?timeout=0")
 
-        self.assertEqual(queued["ok"], True)
-        self.assertEqual(queued["request"]["action"], "prompt.append")
-        self.assertEqual(queued["request"]["params"], {"text": "hello"})
-        self.assertIsNone(empty["request"])
+        self.assertEqual(queued, {"path": "/tui/append-prompt", "body": {"text": "hello"}})
+        self.assertEqual(empty, {"path": "", "body": None})
 
     def test_tui_control_routes_map_actions_and_record_response(self) -> None:
         workspace = self._make_temp_dir()
@@ -370,21 +379,35 @@ class AppServerServerTests(unittest.TestCase):
 
         base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
         cases = [
-            ("/tui/submit-prompt", {}, "prompt.submit", {}),
-            ("/tui/clear-prompt", {}, "prompt.clear", {}),
-            ("/tui/open-help", {}, "help.open", {}),
-            ("/tui/open-sessions", {}, "sessions.open", {}),
-            ("/tui/execute-command", {"command": "status"}, "command.execute", {"command": "status"}),
-            ("/tui/show-toast", {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}, "toast.show", {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}),
-            ("/tui/publish", {"type": "tui.command.execute", "payload": {"command": "help"}}, "command.execute", {"command": "help"}),
-            ("/tui/select-session", {"sessionID": "session_existing"}, "session.select", {"sessionID": "session_existing"}),
+            ("/tui/submit-prompt", {}, {}),
+            ("/tui/clear-prompt", {}, {}),
+            ("/tui/open-help", {}, {}),
+            ("/tui/open-sessions", {}, {}),
+            ("/tui/open-themes", {}, {}),
+            ("/tui/open-models", {}, {}),
+            ("/tui/execute-command", {"command": "status"}, {"command": "status"}),
+            ("/tui/show-toast", {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}, {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5}),
+            ("/tui/publish", {"type": "tui.command.execute", "properties": {"command": "help"}}, {"type": "tui.command.execute", "properties": {"command": "help"}}),
+            ("/tui/select-session", {"sessionID": "session_existing"}, {"sessionID": "session_existing"}),
         ]
 
-        for path, body, action, params in cases:
+        for path, body, expected_body in cases:
             _post_json(f"{base_url}{path}", body)
             queued = _get_json(f"{base_url}/tui/control/next?timeout=0")
-            self.assertEqual(queued["request"]["action"], action)
-            self.assertEqual(queued["request"]["params"], params)
+            self.assertEqual(queued, {"path": path, "body": expected_body})
+
+        for path, body in [
+            ("/tui/execute-command", {}),
+            ("/tui/show-toast", {}),
+            ("/tui/publish", {"type": "tui.unknown", "properties": {}}),
+        ]:
+            try:
+                _post_json(f"{base_url}{path}", body)
+            except urllib.error.HTTPError as error:
+                self.assertEqual(error.code, 400)
+                error.close()
+            else:
+                self.fail(f"{path} should reject invalid body")
 
         try:
             _post_json(f"{base_url}/tui/select-session", {"sessionID": "missing"})
@@ -394,10 +417,9 @@ class AppServerServerTests(unittest.TestCase):
         else:
             self.fail("select-session should reject unknown sessions when runtime can check")
 
-        response = _post_json(f"{base_url}/tui/control/response", {"id": "tui_ctrl_1", "ok": True, "result": {"applied": True}})
+        response = _post_json(f"{base_url}/tui/control/response", ["ok", {"applied": True}])
         self.assertEqual(response["ok"], True)
-        self.assertEqual(response["response"]["id"], "tui_ctrl_1")
-        self.assertEqual(response["response"]["result"], {"applied": True})
+        self.assertEqual(response["response"], ["ok", {"applied": True}])
 
 
 def _read_sse_events(url: str, *, count: int, headers: dict[str, str] | None = None) -> list[dict[str, object]]:
@@ -444,7 +466,7 @@ def _get_json(url: str, *, headers: dict[str, str] | None = None) -> dict[str, o
     return value if isinstance(value, dict) else {}
 
 
-def _post_json(url: str, payload: dict[str, object], *, headers: dict[str, str] | None = None) -> dict[str, object]:
+def _post_json(url: str, payload: object, *, headers: dict[str, str] | None = None) -> dict[str, object]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json", **(headers or {})})
     with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local test server.

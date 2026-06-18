@@ -49,7 +49,7 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 timeout_s = min(5.0, max(0.0, _query_float(query, "timeout", 0.25)))
                 request = self.runtime.wait_for_tui_control(timeout_s=timeout_s)
-                self._send_json({"ok": True, "request": request.to_dict() if request is not None else None})
+                self._send_json(request.to_dict() if request is not None else {"path": "", "body": None})
             elif path == "/api/models":
                 self._send_json({"models": self.runtime.list_models()})
             elif path == "/api/sessions":
@@ -86,6 +86,10 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
         if _is_authenticated_app_path(path) and not self._authorize_api_request():
             return
         try:
+            if path == "/tui/control/response":
+                response = self.runtime.record_tui_control_response(self._read_json_value())
+                self._send_json({"ok": True, "response": response})
+                return
             payload = self._read_json()
             if path.startswith("/tui/"):
                 self._handle_tui_post(path, payload)
@@ -178,23 +182,29 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
     def _handle_tui_post(self, path: str, payload: dict[str, Any]) -> None:
         if path == "/tui/append-prompt":
             text = _required_string(payload, "text")
-            self._send_control_enqueued("prompt.append", {"text": text})
+            self._send_control_enqueued(path, {"text": text})
             return
         if path == "/tui/submit-prompt":
-            self._send_control_enqueued("prompt.submit", {})
+            self._send_control_enqueued(path, {})
             return
         if path == "/tui/clear-prompt":
-            self._send_control_enqueued("prompt.clear", {})
+            self._send_control_enqueued(path, {})
             return
         if path == "/tui/open-help":
-            self._send_control_enqueued("help.open", {})
+            self._send_control_enqueued(path, {})
             return
         if path == "/tui/open-sessions":
-            self._send_control_enqueued("sessions.open", {})
+            self._send_control_enqueued(path, {})
+            return
+        if path == "/tui/open-themes":
+            self._send_control_enqueued(path, {})
+            return
+        if path == "/tui/open-models":
+            self._send_control_enqueued(path, {})
             return
         if path == "/tui/execute-command":
             command = _required_string(payload, "command")
-            self._send_control_enqueued("command.execute", {"command": command})
+            self._send_control_enqueued(path, {"command": command})
             return
         if path == "/tui/show-toast":
             message = _required_string(payload, "message")
@@ -208,28 +218,23 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 if not isinstance(payload["duration"], int | float):
                     raise ValueError("duration must be a number")
                 params["duration"] = payload["duration"]
-            self._send_control_enqueued("toast.show", params)
+            self._send_control_enqueued(path, params)
             return
         if path == "/tui/select-session":
             session_id = _required_string(payload, "sessionID")
             self._verify_tui_session_exists(session_id)
-            self._send_control_enqueued("session.select", {"sessionID": session_id})
+            self._send_control_enqueued(path, {"sessionID": session_id})
             return
         if path == "/tui/publish":
             action, params = _publish_to_control(payload)
             if action == "session.select":
                 self._verify_tui_session_exists(str(params.get("sessionID") or ""))
-            self._send_control_enqueued(action, params)
-            return
-        if path == "/tui/control/response":
-            request_id = _control_response_id(payload)
-            response = self.runtime.record_tui_control_response(request_id, {key: value for key, value in payload.items() if key not in {"id", "request_id", "requestID"}})
-            self._send_json({"ok": True, "response": response})
+            self._send_control_enqueued(path, payload)
             return
         self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")
 
-    def _send_control_enqueued(self, action: str, params: dict[str, Any]) -> None:
-        request = self.runtime.enqueue_tui_control(action, params)
+    def _send_control_enqueued(self, path: str, body: Any) -> None:
+        request = self.runtime.enqueue_tui_control(path, body)
         self._send_json({"ok": True, "request": request.to_dict()})
 
     def _verify_tui_session_exists(self, session_id: str) -> None:
@@ -257,14 +262,17 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(static_path.read_bytes())
 
     def _read_json(self) -> dict[str, Any]:
+        value = self._read_json_value()
+        if not isinstance(value, dict):
+            raise ValueError("JSON object body is required")
+        return value
+
+    def _read_json_value(self) -> Any:
         raw_len = int(self.headers.get("Content-Length") or "0")
         if raw_len <= 0:
             return {}
         raw = self.rfile.read(raw_len).decode("utf-8")
-        value = json.loads(raw)
-        if not isinstance(value, dict):
-            raise ValueError("JSON object body is required")
-        return value
+        return json.loads(raw)
 
     def _send_json(self, payload: dict[str, Any], *, status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -394,20 +402,18 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     return value
 
 
-def _control_response_id(payload: dict[str, Any]) -> str:
-    for key in ("id", "request_id", "requestID"):
-        value = payload.get(key)
-        if isinstance(value, str) and value:
-            return value
-    raise ValueError("control response id is required")
-
-
 def _publish_to_control(payload: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     topic = payload.get("type") or payload.get("topic") or payload.get("event") or payload.get("method")
     if not isinstance(topic, str) or not topic:
         raise ValueError("publish type is required")
-    raw_payload = payload.get("payload")
-    params = dict(raw_payload) if isinstance(raw_payload, dict) else {key: value for key, value in payload.items() if key not in {"type", "topic", "event", "method"}}
+    raw_payload = payload.get("properties")
+    if raw_payload is None:
+        raw_payload = payload.get("payload")
+    params = (
+        dict(raw_payload)
+        if isinstance(raw_payload, dict)
+        else {key: value for key, value in payload.items() if key not in {"type", "topic", "event", "method", "properties", "payload"}}
+    )
     if topic == "tui.prompt.append":
         return "prompt.append", {"text": _required_string(params, "text")}
     if topic == "tui.command.execute":

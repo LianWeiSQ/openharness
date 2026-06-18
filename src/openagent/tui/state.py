@@ -74,8 +74,16 @@ class TuiState:
         return True
 
     def apply_control_request(self, request: dict[str, Any]) -> dict[str, object]:
-        action = str(request.get("action") or request.get("type") or "")
-        params = request.get("params")
+        path = str(request.get("path") or "")
+        body = request.get("body")
+        if path:
+            action = _normalize_control_action(path.removeprefix("/tui/").strip("/"))
+            params = dict(body) if isinstance(body, dict) else {}
+            if action == "publish":
+                params = dict(body) if isinstance(body, dict) else {}
+        else:
+            action = str(request.get("action") or request.get("type") or "")
+            params = request.get("params")
         params = dict(params) if isinstance(params, dict) else {}
         if action == "publish":
             action, params = self._control_publish_to_action(params)
@@ -139,8 +147,14 @@ class TuiState:
 
     def _control_publish_to_action(self, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         topic = str(params.get("type") or params.get("topic") or params.get("event") or params.get("method") or "")
-        payload = params.get("payload")
-        body = dict(payload) if isinstance(payload, dict) else {key: value for key, value in params.items() if key not in {"type", "topic", "event", "method"}}
+        payload = params.get("properties")
+        if payload is None:
+            payload = params.get("payload")
+        body = (
+            dict(payload)
+            if isinstance(payload, dict)
+            else {key: value for key, value in params.items() if key not in {"type", "topic", "event", "method", "properties", "payload"}}
+        )
         return {
             "tui.prompt.append": "prompt.append",
             "tui.command.execute": "command.execute",
@@ -710,6 +724,8 @@ def _normalize_control_action(action: str) -> str:
         "clear-prompt": "prompt.clear",
         "open-help": "help.open",
         "open-sessions": "sessions.open",
+        "open-themes": "theme.open",
+        "open-models": "model.open",
         "select-session": "session.select",
         "show-toast": "toast.show",
         "execute-command": "command.execute",

@@ -33,17 +33,14 @@ class AppEvent:
 class TuiControlRequest:
     """Server-side TUI control request consumed by attached terminal UIs."""
 
-    id: str
-    action: str
-    params: dict[str, Any] = field(default_factory=dict)
+    path: str
+    body: Any = field(default_factory=dict)
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "id": self.id,
-            "action": self.action,
-            "params": _json_safe(self.params),
-            "created_at_ms": self.created_at_ms,
+            "path": self.path,
+            "body": _json_safe(self.body),
         }
 
 
