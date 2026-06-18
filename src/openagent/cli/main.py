@@ -302,6 +302,29 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_show.add_argument("name", help="MCP server name")
     mcp_show.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
+    mcp_auth = mcp_subparsers.add_parser("auth", help="inspect and update remote MCP authentication")
+    add_mcp_options(mcp_auth)
+    mcp_auth.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+    mcp_auth_subparsers = mcp_auth.add_subparsers(dest="mcp_auth_command", required=False)
+
+    mcp_auth_list = mcp_auth_subparsers.add_parser("list", aliases=["ls"], help="list MCP auth status")
+    add_mcp_options(mcp_auth_list)
+    mcp_auth_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    mcp_auth_status = mcp_auth_subparsers.add_parser("status", help="show MCP auth status")
+    add_mcp_options(mcp_auth_status)
+    mcp_auth_status.add_argument("name", nargs="?", help="MCP server name; omit to list all")
+    mcp_auth_status.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    mcp_auth_set_token = mcp_auth_subparsers.add_parser("set-token", help="store a bearer token in MCP server headers")
+    add_mcp_options(mcp_auth_set_token)
+    mcp_auth_set_token.add_argument("name", help="MCP server name")
+    mcp_auth_token_group = mcp_auth_set_token.add_mutually_exclusive_group(required=True)
+    mcp_auth_token_group.add_argument("--bearer-token", default=None, help="bearer token to store")
+    mcp_auth_token_group.add_argument("--bearer-token-stdin", action="store_true", help="read bearer token from stdin")
+    mcp_auth_set_token.add_argument("--header-name", default="Authorization", help="header name to write, default Authorization")
+    mcp_auth_set_token.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
     mcp_add = mcp_subparsers.add_parser("add", help="add or update a remote MCP server")
     add_mcp_options(mcp_add)
     mcp_add.add_argument("name", help="MCP server name")
@@ -317,10 +340,21 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_remove.add_argument("name", help="MCP server name")
     mcp_remove.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
+    mcp_logout = mcp_subparsers.add_parser("logout", help="remove stored MCP auth material")
+    add_mcp_options(mcp_logout)
+    mcp_logout.add_argument("name", help="MCP server name")
+    mcp_logout.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
     mcp_doctor = mcp_subparsers.add_parser("doctor", help="validate MCP configuration and optionally refresh remote tools")
     add_mcp_options(mcp_doctor)
     mcp_doctor.add_argument("--refresh", action="store_true", help="refresh remote MCP tool listings")
     mcp_doctor.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    mcp_debug = mcp_subparsers.add_parser("debug", help="debug one MCP server configuration and runtime status")
+    add_mcp_options(mcp_debug)
+    mcp_debug.add_argument("name", help="MCP server name")
+    mcp_debug.add_argument("--refresh", action="store_true", help="refresh remote MCP tool listings")
+    mcp_debug.add_argument("--format", choices=["table", "json"], default="table", help="output format")
 
     doctor_parser = subparsers.add_parser("doctor", help="check local model gateway configuration")
     add_common_model_options(doctor_parser)
