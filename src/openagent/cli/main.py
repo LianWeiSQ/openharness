@@ -15,7 +15,17 @@ from pathlib import Path
 
 from openagent.cli.auth import list_providers, load_auth_env, login_provider, logout_provider, resolve_auth_file
 from openagent.cli.custom_commands import discover_commands, render_command, resolve_command
-from openagent.core.provider.metadata import known_provider_ids, normalize_provider, provider_auth_methods
+from openagent.core.provider.metadata import (
+    DEFAULT_PROVIDER,
+    default_env_mapping,
+    known_provider_ids,
+    normalize_provider,
+    provider_auth_methods,
+    provider_default_base_url,
+    provider_default_model,
+    provider_label,
+    selected_provider,
+)
 
 DEFAULT_BASE_URL = "http://localhost:8080"
 DEFAULT_MODEL = "gpt-5.5"
@@ -35,10 +45,16 @@ class OpenAgentCliDefaults:
 
 @dataclass(frozen=True, slots=True)
 class DoctorReport:
-    base_url: str
+    provider: str
+    provider_label: str
     model: str
-    wire_api: str
+    api_key_env: str
     api_key_set: bool
+    native: bool
+    healthy: bool
+    base_url: str | None
+    wire_api: str | None
+    model_endpoint_checked: bool
     model_endpoint_ok: bool
     model_endpoint_message: str
 
@@ -98,16 +114,36 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def build_doctor_report() -> DoctorReport:
-    base_url = os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE_URL
-    model = os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
-    wire_api = os.getenv("OPENAI_WIRE_API") or DEFAULT_WIRE_API
-    api_key_set = bool(os.getenv("OPENAI_API_KEY"))
-    models_ok, models_message = check_models_endpoint(base_url=base_url)
+    provider = _active_provider()
+    env = default_env_mapping(provider)
+    native = _is_native_provider(provider)
+    if native:
+        base_url = os.getenv(env["base_url"]) or provider_default_base_url(provider)
+        model = os.getenv(env["model"]) or provider_default_model(provider) or ""
+        wire_api = "messages"
+        api_key_set = bool(os.getenv(env["api_key"]))
+        models_ok = bool(api_key_set and model)
+        models_message = "skipped OpenAI-compatible /models probe for native provider"
+        model_endpoint_checked = False
+    else:
+        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv(env["base_url"]) or provider_default_base_url(provider) or DEFAULT_BASE_URL
+        model = os.getenv("OPENAI_MODEL") or os.getenv(env["model"]) or provider_default_model(provider) or DEFAULT_MODEL
+        wire_api = os.getenv("OPENAI_WIRE_API") or os.getenv(env["wire_api"]) or DEFAULT_WIRE_API
+        api_key_set = bool(os.getenv("OPENAI_API_KEY") or os.getenv(env["api_key"]))
+        models_ok, models_message = check_models_endpoint(base_url=base_url)
+        model_endpoint_checked = True
+    healthy = bool(models_ok)
     return DoctorReport(
+        provider=provider,
+        provider_label=provider_label(provider),
         base_url=base_url,
         model=model,
         wire_api=wire_api,
+        api_key_env=env["api_key"],
         api_key_set=api_key_set,
+        native=native,
+        healthy=healthy,
+        model_endpoint_checked=model_endpoint_checked,
         model_endpoint_ok=models_ok,
         model_endpoint_message=models_message,
     )
@@ -115,10 +151,16 @@ def build_doctor_report() -> DoctorReport:
 
 def doctor_report_to_dict(report: DoctorReport) -> dict[str, object]:
     return {
+        "provider": report.provider,
+        "provider_label": report.provider_label,
         "base_url": report.base_url,
         "model": report.model,
         "wire_api": report.wire_api,
+        "api_key_env": report.api_key_env,
         "api_key_set": report.api_key_set,
+        "native": report.native,
+        "healthy": report.healthy,
+        "model_endpoint_checked": report.model_endpoint_checked,
         "model_endpoint_ok": report.model_endpoint_ok,
         "model_endpoint_message": report.model_endpoint_message,
     }
@@ -134,21 +176,26 @@ def print_doctor_report(report: DoctorReport, *, output_format: str = "text", st
         raise ValueError(f"unsupported doctor output format: {output_format}")
 
     print("OpenAgent doctor", file=stdout)
+    print(f"- provider: {report.provider} ({report.provider_label})", file=stdout)
+    if report.native:
+        print(f"- model: {report.model}", file=stdout)
+        print(f"- api key: {'set' if report.api_key_set else 'missing'} ({report.api_key_env})", file=stdout)
+        if report.base_url:
+            print(f"- base_url: {report.base_url}", file=stdout)
+        print(f"- model endpoint: skipped ({report.model_endpoint_message})", file=stdout)
+        return
     print(f"- OPENAI_BASE_URL: {report.base_url}", file=stdout)
     print(f"- OPENAI_MODEL: {report.model}", file=stdout)
     print(f"- OPENAI_WIRE_API: {report.wire_api}", file=stdout)
-    print(f"- OPENAI_API_KEY: {'set' if report.api_key_set else 'missing'}", file=stdout)
-    print(
-        f"- model endpoint: {'ok' if report.model_endpoint_ok else 'failed'} ({report.model_endpoint_message})",
-        file=stdout,
-    )
+    print(f"- {report.api_key_env}: {'set' if report.api_key_set else 'missing'}", file=stdout)
+    print(f"- model endpoint: {'ok' if report.model_endpoint_ok else 'failed'} ({report.model_endpoint_message})", file=stdout)
 
 
 def doctor(*, verbose: bool = False, output_format: str = "text", stdout: object | None = None) -> bool:
     report = build_doctor_report()
     if verbose:
         print_doctor_report(report, output_format=output_format, stdout=stdout)
-    return report.model_endpoint_ok
+    return report.healthy
 
 
 def run_doctor_command(args: argparse.Namespace, *, stdout: object | None = None) -> int:
@@ -442,11 +489,30 @@ def add_mcp_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path used to resolve the default MCP config")
 
 
+def _active_provider() -> str:
+    try:
+        return selected_provider()
+    except ValueError:
+        return DEFAULT_PROVIDER
+
+
+def _is_native_provider(provider: str) -> bool:
+    return normalize_provider(provider) == "anthropic"
+
+
 def apply_model_env(args: argparse.Namespace, *, defaults: OpenAgentCliDefaults = OpenAgentCliDefaults()) -> None:
-    set_env_if_value("OPENAI_API_KEY", getattr(args, "api_key", None))
-    os.environ["OPENAI_BASE_URL"] = str(getattr(args, "base_url", None) or os.getenv("OPENAI_BASE_URL") or defaults.base_url)
-    os.environ["OPENAI_MODEL"] = str(getattr(args, "model", None) or os.getenv("OPENAI_MODEL") or defaults.model)
-    os.environ["OPENAI_WIRE_API"] = str(getattr(args, "wire_api", None) or os.getenv("OPENAI_WIRE_API") or defaults.wire_api)
+    provider = _active_provider()
+    if _is_native_provider(provider):
+        env = default_env_mapping(provider)
+        set_env_if_value(env["api_key"], getattr(args, "api_key", None))
+        set_env_if_value(env["base_url"], getattr(args, "base_url", None))
+        set_env_if_value(env["model"], getattr(args, "model", None))
+        set_env_if_value(env["wire_api"], getattr(args, "wire_api", None))
+    else:
+        set_env_if_value("OPENAI_API_KEY", getattr(args, "api_key", None))
+        os.environ["OPENAI_BASE_URL"] = str(getattr(args, "base_url", None) or os.getenv("OPENAI_BASE_URL") or defaults.base_url)
+        os.environ["OPENAI_MODEL"] = str(getattr(args, "model", None) or os.getenv("OPENAI_MODEL") or defaults.model)
+        os.environ["OPENAI_WIRE_API"] = str(getattr(args, "wire_api", None) or os.getenv("OPENAI_WIRE_API") or defaults.wire_api)
     os.environ["OPENAGENT_APP_MAX_STEPS"] = str(getattr(args, "max_steps", None) or os.getenv("OPENAGENT_APP_MAX_STEPS") or defaults.max_steps)
 
 

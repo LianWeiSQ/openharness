@@ -112,6 +112,7 @@ class OpenAgentCliTests(unittest.TestCase):
             "\n".join(
                 [
                     "OpenAgent doctor",
+                    "- provider: openai (OpenAI)",
                     "- OPENAI_BASE_URL: http://gateway.test",
                     "- OPENAI_MODEL: gpt-test",
                     "- OPENAI_WIRE_API: chat",
@@ -147,15 +148,80 @@ class OpenAgentCliTests(unittest.TestCase):
         self.assertEqual(
             payload,
             {
+                "provider": "openai",
+                "provider_label": "OpenAI",
                 "base_url": "http://gateway.test",
                 "model": "gpt-test",
                 "wire_api": "responses",
+                "api_key_env": "OPENAI_API_KEY",
                 "api_key_set": True,
+                "native": False,
+                "healthy": False,
+                "model_endpoint_checked": True,
                 "model_endpoint_ok": False,
                 "model_endpoint_message": "connection refused",
             },
         )
         self.assertNotIn("private-key", stdout.getvalue())
+
+    def test_doctor_anthropic_json_skips_openai_models_probe(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["doctor", "--format", "json"])
+        stdout = io.StringIO()
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAGENT_PROVIDER": "anthropic",
+                "ANTHROPIC_API_KEY": "anthropic-private-key",
+                "ANTHROPIC_MODEL": "claude-test",
+            },
+            clear=True,
+        ), patch("openagent.cli.main.check_models_endpoint") as check_endpoint:
+            apply_model_env(args)
+            exit_code = run_doctor_command(args, stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["provider"], "anthropic")
+        self.assertEqual(payload["provider_label"], "Anthropic")
+        self.assertEqual(payload["model"], "claude-test")
+        self.assertEqual(payload["wire_api"], "messages")
+        self.assertEqual(payload["api_key_env"], "ANTHROPIC_API_KEY")
+        self.assertEqual(payload["api_key_set"], True)
+        self.assertEqual(payload["native"], True)
+        self.assertEqual(payload["healthy"], True)
+        self.assertEqual(payload["model_endpoint_checked"], False)
+        self.assertEqual(payload["model_endpoint_ok"], True)
+        self.assertIn("skipped", payload["model_endpoint_message"])
+        self.assertNotIn("anthropic-private-key", stdout.getvalue())
+        check_endpoint.assert_not_called()
+
+    def test_apply_model_env_uses_native_provider_env_for_anthropic(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "doctor",
+                "--api-key",
+                "cli-key",
+                "--base-url",
+                "https://anthropic.test",
+                "--model",
+                "claude-cli",
+                "--wire-api",
+                "chat",
+            ]
+        )
+
+        with patch.dict(os.environ, {"OPENAGENT_PROVIDER": "anthropic"}, clear=True):
+            apply_model_env(args)
+
+            self.assertEqual(os.environ["ANTHROPIC_API_KEY"], "cli-key")
+            self.assertEqual(os.environ["ANTHROPIC_BASE_URL"], "https://anthropic.test")
+            self.assertEqual(os.environ["ANTHROPIC_MODEL"], "claude-cli")
+            self.assertEqual(os.environ["ANTHROPIC_WIRE_API"], "chat")
+            self.assertNotIn("OPENAI_BASE_URL", os.environ)
+            self.assertNotIn("OPENAI_MODEL", os.environ)
 
     def test_load_local_env_sets_missing_values_only(self) -> None:
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -591,6 +657,15 @@ Create component $1 for $ARGUMENTS.
             self.assertEqual(run_auth_command(table_args, stdout=table_stdout, stderr=io.StringIO()), 0)
             self.assertIn("OPENROUTER_API_KEY", table_stdout.getvalue())
 
+            anthropic_stdout = io.StringIO()
+            anthropic_args = parser.parse_args(["providers", "methods", "anthropic", "--format", "json"])
+            self.assertEqual(run_auth_command(anthropic_args, stdout=anthropic_stdout, stderr=io.StringIO()), 0)
+            anthropic = json.loads(anthropic_stdout.getvalue())
+            self.assertEqual(anthropic["provider"], "anthropic")
+            self.assertEqual(anthropic["methods"][0]["env"]["api_key"], "ANTHROPIC_API_KEY")
+            self.assertEqual(anthropic["methods"][0]["default_model"], "claude-sonnet-4-5")
+            self.assertIn("Native Anthropic Messages routing", anthropic["methods"][0]["notes"])
+
     def test_auth_login_update_preserves_existing_key_and_type(self) -> None:
         parser = build_parser()
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -753,6 +828,29 @@ Create component $1 for $ARGUMENTS.
         self.assertEqual(payload["models"][0]["id"], "openrouter/model")
         self.assertIn("OpenRouter", payload["models"][0]["name"])
         self.assertNotIn("openrouter-secret", stdout.getvalue())
+
+    def test_models_command_reflects_anthropic_native_provider(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["models", "--format", "json"])
+        stdout = io.StringIO()
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAGENT_PROVIDER": "anthropic",
+                "ANTHROPIC_API_KEY": "anthropic-secret",
+                "ANTHROPIC_MODEL": "claude-native",
+            },
+            clear=True,
+        ):
+            exit_code = run_models_command(args, stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["models"][0]["provider_id"], "anthropic")
+        self.assertEqual(payload["models"][0]["id"], "claude-native")
+        self.assertIn("Anthropic", payload["models"][0]["name"])
+        self.assertNotIn("anthropic-secret", stdout.getvalue())
 
     def test_providers_alias_uses_auth_commands(self) -> None:
         parser = build_parser()

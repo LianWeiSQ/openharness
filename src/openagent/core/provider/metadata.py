@@ -46,7 +46,7 @@ _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
     "anthropic": {
         "label": "Anthropic",
         "default_model": "claude-sonnet-4-5",
-        "auth_notes": "Native Anthropic SDK routing is not implemented; use an OpenAI-compatible gateway/base URL for runtime calls.",
+        "auth_notes": "Native Anthropic Messages routing is supported with ANTHROPIC_API_KEY; well-known provider URL login remains tracked separately.",
     },
     "azure-openai": {
         "label": "Azure OpenAI",

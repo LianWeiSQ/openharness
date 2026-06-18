@@ -15,7 +15,7 @@ from openagent.core.loop.processor import AgentLoop
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.permission.rule import PermissionAction
 from openagent.core.provider.base import LanguageModel
-from openagent.core.provider.openai import OpenAIProvider
+from openagent.core.provider.factory import create_provider
 from openagent.core.session.session import Session
 from openagent.core.session.store import DEFAULT_SESSION_STORE_ROOT, FileSessionStore
 from openagent.core.types import AgentConfig, Model, StreamEvent
@@ -251,7 +251,7 @@ class OpenAgentAppRuntime:
             self.session_store_root = self.workspace / self.session_store_root
         self.session_store = FileSessionStore(self.session_store_root)
         self.language_model_factory = language_model_factory
-        self.provider = OpenAIProvider()
+        self.provider = create_provider()
         self._sessions: dict[str, Session] = {}
         self._turns: dict[str, TurnRecord] = {}
         self._lock = threading.Lock()

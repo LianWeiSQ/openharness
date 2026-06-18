@@ -12,6 +12,7 @@ from uuid import uuid4
 from unittest.mock import patch
 
 from openagent.core.provider.base import LanguageModel
+from openagent.core.provider.anthropic import AnthropicProvider
 from openagent.app_server.runtime import OpenAgentAppRuntime
 
 from _mock_model import ScriptedLanguageModel
@@ -87,6 +88,28 @@ class AppServerRuntimeTests(unittest.TestCase):
 
         restored = runtime.get_session(session["id"])
         self.assertGreaterEqual(restored["message_count"], 2)
+
+    def test_runtime_selects_anthropic_provider_from_environment(self) -> None:
+        workspace = self._make_temp_dir()
+        with patch.dict(
+            "os.environ",
+            {
+                "OPENAGENT_PROVIDER": "anthropic",
+                "ANTHROPIC_API_KEY": "test",
+                "ANTHROPIC_MODEL": "claude-runtime",
+            },
+            clear=True,
+        ):
+            runtime = OpenAgentAppRuntime(
+                workspace=workspace,
+                session_store_root=workspace / ".openagent" / "sessions",
+                language_model_factory=lambda _model: ScriptedLanguageModel(script=[]),
+            )
+            models = runtime.list_models()
+
+        self.assertIsInstance(runtime.provider, AnthropicProvider)
+        self.assertEqual(models[0]["provider_id"], "anthropic")
+        self.assertEqual(models[0]["id"], "claude-runtime")
 
     def test_runtime_interrupts_running_turn_at_event_boundary(self) -> None:
         workspace = self._make_temp_dir()
