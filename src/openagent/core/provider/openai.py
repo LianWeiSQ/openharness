@@ -13,6 +13,7 @@ from typing import Any, Callable
 from ..message_materializer import RUNTIME_OPTION_KEYS, materialize_openai_compatible_payload
 from ..types import Model, ModelCapabilities, ToolSchema, Usage
 from .base import LanguageModel, ProviderBase
+from .metadata import default_env_mapping, provider_default_base_url, provider_default_model, provider_label, selected_provider
 
 HTTP_ERROR_BODY_PREVIEW_CHARS = 800
 
@@ -405,6 +406,7 @@ def _post_sse(
 class OpenAILanguageModel(LanguageModel):
     api_key: str
     model_id: str
+    provider_id: str = "openai"
     base_url: str = "https://api.openai.com/v1"
     timeout_s: float = 60.0
     host_header: str | None = None
@@ -641,15 +643,26 @@ class OpenAIProvider(ProviderBase):
         disable_response_storage: bool = False,
         timeout_s: float | None = None,
     ) -> None:
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or ""
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+        try:
+            self.provider_id = selected_provider()
+        except ValueError:
+            self.provider_id = "openai"
+        provider_env = default_env_mapping(self.provider_id)
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv(provider_env["api_key"]) or ""
+        self.base_url = (
+            base_url
+            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv(provider_env["base_url"])
+            or provider_default_base_url(self.provider_id)
+            or "https://api.openai.com/v1"
+        )
         if host_header is not None:
             self.host_header = host_header or None
         elif base_url is not None:
             self.host_header = None
         else:
             self.host_header = os.getenv("OPENAI_HOST_HEADER") or None
-        self.wire_api = (wire_api or os.getenv("OPENAI_WIRE_API") or "chat").strip().lower()
+        self.wire_api = (wire_api or os.getenv("OPENAI_WIRE_API") or os.getenv(provider_env["wire_api"]) or "chat").strip().lower()
         if self.wire_api not in {"chat", "responses"}:
             self.wire_api = "chat"
         self.reasoning_effort = reasoning_effort or os.getenv("OPENAI_REASONING_EFFORT") or None
@@ -662,6 +675,7 @@ class OpenAIProvider(ProviderBase):
         return OpenAILanguageModel(
             api_key=self.api_key,
             model_id=model.id,
+            provider_id=self.provider_id,
             base_url=self.base_url,
             timeout_s=self.timeout_s,
             host_header=self.host_header,
@@ -671,15 +685,16 @@ class OpenAIProvider(ProviderBase):
         )
 
     async def list_models(self) -> list[Model]:
-        default_model = os.getenv("OPENAI_MODEL") or "gpt-4o-mini"
+        provider_env = default_env_mapping(self.provider_id)
+        default_model = os.getenv("OPENAI_MODEL") or os.getenv(provider_env["model"]) or provider_default_model(self.provider_id) or "gpt-4o-mini"
         context_window = _env_int("OPENAI_CONTEXT_WINDOW", 32768)
         max_output = _env_int("OPENAI_MAX_OUTPUT", 4096)
         caps = ModelCapabilities(vision=False, tools=True, streaming=True, reasoning=False)
         return [
             Model(
                 id=default_model,
-                provider_id="openai",
-                name=f"OpenAI Compatible/{default_model}",
+                provider_id=self.provider_id,
+                name=f"{provider_label(self.provider_id)} Compatible/{default_model}",
                 context_window=context_window,
                 max_output=max_output,
                 capabilities=caps,

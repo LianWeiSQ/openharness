@@ -2,37 +2,26 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import stat
 import time
 from pathlib import Path
 from typing import Any
 
+from openagent.core.provider.metadata import (
+    DEFAULT_ENV_MAPPING,
+    DEFAULT_PROVIDER,
+    default_env_mapping,
+    discover_env_provider_ids,
+    normalize_env_mapping,
+    normalize_provider,
+    provider_auth_method_overview,
+    provider_default_base_url,
+    provider_default_model,
+    provider_has_env_credential,
+    selected_provider,
+)
+
 DEFAULT_AUTH_FILE = "~/.config/openagent/auth.json"
-DEFAULT_PROVIDER = "openai"
-SUPPORTED_PROVIDER = DEFAULT_PROVIDER
-PROVIDER_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-DEFAULT_ENV_MAPPING = {
-    "api_key": "OPENAI_API_KEY",
-    "base_url": "OPENAI_BASE_URL",
-    "model": "OPENAI_MODEL",
-    "wire_api": "OPENAI_WIRE_API",
-}
-PROVIDER_ENV_PREFIXES = {
-    "anthropic": "ANTHROPIC",
-    "azure": "AZURE_OPENAI",
-    "azure-openai": "AZURE_OPENAI",
-    "cohere": "COHERE",
-    "deepseek": "DEEPSEEK",
-    "gemini": "GOOGLE",
-    "google": "GOOGLE",
-    "groq": "GROQ",
-    "mistral": "MISTRAL",
-    "ollama": "OLLAMA",
-    "openai": "OPENAI",
-    "openrouter": "OPENROUTER",
-    "xai": "XAI",
-}
 
 
 def resolve_auth_file(path: str | None = None) -> Path:
@@ -108,54 +97,91 @@ def logout_provider(*, provider: str, path: str | Path | None = None) -> dict[st
 def list_providers(path: str | Path | None = None) -> list[dict[str, Any]]:
     payload = load_auth_file(path)
     providers = payload.get("providers") if isinstance(payload.get("providers"), dict) else {}
-    records: list[dict[str, Any]] = []
+    records_by_provider: dict[str, dict[str, Any]] = {}
     for provider, record in sorted(providers.items()):
         if isinstance(record, dict):
-            records.append(public_provider_record({**record, "provider": record.get("provider") or provider}))
-    return records
+            public_record = public_provider_record(
+                {
+                    **record,
+                    "provider": record.get("provider") or provider,
+                    "source": "auth_file",
+                }
+            )
+            records_by_provider[public_record["provider"]] = public_record
+    claimed_api_key_envs = {
+        row_env.get("api_key")
+        for record in records_by_provider.values()
+        if isinstance(record.get("env"), dict)
+        for row_env in [record["env"]]
+    }
+    for provider in discover_env_provider_ids():
+        if provider in records_by_provider:
+            continue
+        env = default_env_mapping(provider)
+        if env["api_key"] in claimed_api_key_envs:
+            continue
+        public_record = public_provider_record(
+            {
+                "provider": provider,
+                "type": "env",
+                "source": "env",
+                "base_url": os.getenv(env["base_url"]) or provider_default_base_url(provider),
+                "model": os.getenv(env["model"]) or provider_default_model(provider),
+                "wire_api": os.getenv(env["wire_api"]),
+                "env": env,
+            }
+        )
+        records_by_provider[provider] = public_record
+    return [records_by_provider[provider] for provider in sorted(records_by_provider)]
 
 
 def load_auth_env(path: str | None = None) -> Path | None:
     auth_path = resolve_auth_file(path)
-    if not auth_path.exists():
-        return None
-    payload = load_auth_file(auth_path)
+    payload = load_auth_file(auth_path) if auth_path.exists() else {"schema_version": "openagent.auth.v1", "providers": {}}
     providers = payload.get("providers") if isinstance(payload.get("providers"), dict) else {}
     try:
         provider = selected_provider()
     except ValueError:
-        return auth_path
+        return auth_path if auth_path.exists() else None
     record = providers.get(provider) if isinstance(providers.get(provider), dict) else None
-    if not record:
-        return auth_path
+    if not record and not provider_has_env_credential(provider):
+        return auth_path if auth_path.exists() else None
     set_missing_env("OPENAGENT_PROVIDER", provider)
     set_missing_env("OPENAGENT_ACTIVE_PROVIDER", provider)
-    env = normalize_env_mapping(record.get("env"), provider=provider)
-    set_missing_env("OPENAI_API_KEY", record.get("api_key"))
-    set_missing_env("OPENAI_BASE_URL", record.get("base_url"))
-    set_missing_env("OPENAI_MODEL", record.get("model"))
-    set_missing_env("OPENAI_WIRE_API", record.get("wire_api"))
+    env = normalize_env_mapping(record.get("env"), provider=provider) if record else default_env_mapping(provider)
+    set_missing_env("OPENAI_API_KEY", provider_value("api_key", record=record, env=env, provider=provider))
+    set_missing_env("OPENAI_BASE_URL", provider_value("base_url", record=record, env=env, provider=provider))
+    set_missing_env("OPENAI_MODEL", provider_value("model", record=record, env=env, provider=provider))
+    set_missing_env("OPENAI_WIRE_API", provider_value("wire_api", record=record, env=env, provider=provider))
     for field, env_name in env.items():
-        value = record.get(field)
         if env_name in DEFAULT_ENV_MAPPING.values():
             continue
+        value = provider_value(field, record=record, env=env, provider=provider)
         set_missing_env(env_name, value)
-    return auth_path
+    return auth_path if auth_path.exists() else None
 
 
 def public_provider_record(record: dict[str, Any]) -> dict[str, Any]:
     provider = normalize_provider(str(record.get("provider") or DEFAULT_PROVIDER))
     env = normalize_env_mapping(record.get("env"), provider=provider)
+    source = str(record.get("source") or "auth_file")
+    stored_api_key = record.get("api_key")
+    env_api_key = os.getenv(env["api_key"])
+    api_key = stored_api_key if stored_api_key else (env_api_key if source != "env" else "")
+    auth_methods = provider_auth_method_overview(provider)
     return {
         "provider": provider,
         "type": str(record.get("type") or "api"),
-        "api_key": mask_secret(str(record.get("api_key") or "")),
-        "has_api_key": bool(record.get("api_key")),
-        "base_url": record.get("base_url"),
-        "model": record.get("model"),
-        "wire_api": record.get("wire_api"),
+        "source": source,
+        "api_key": mask_secret(str(api_key or "")),
+        "has_api_key": bool(stored_api_key or env_api_key),
+        "base_url": record.get("base_url") or os.getenv(env["base_url"]) or provider_default_base_url(provider),
+        "model": record.get("model") or os.getenv(env["model"]) or provider_default_model(provider),
+        "wire_api": record.get("wire_api") or os.getenv(env["wire_api"]),
         "env": env,
         "env_status": env_status(env),
+        "auth_methods": auth_methods,
+        "methods": [method["id"] for method in auth_methods],
         "updated_at_ms": record.get("updated_at_ms"),
     }
 
@@ -166,48 +192,6 @@ def mask_secret(value: str) -> str:
     if len(value) <= 8:
         return "*" * len(value)
     return value[:4] + "*" * max(4, len(value) - 8) + value[-4:]
-
-
-def normalize_provider(provider: str | None = None) -> str:
-    if provider is None:
-        normalized = DEFAULT_PROVIDER
-    else:
-        normalized = str(provider).strip().lower()
-    if not normalized or not PROVIDER_ID_RE.fullmatch(normalized):
-        raise ValueError(f"Invalid provider id: {provider}")
-    return normalized
-
-
-def selected_provider() -> str:
-    return normalize_provider(os.getenv("OPENAGENT_PROVIDER") or os.getenv("OPENAGENT_ACTIVE_PROVIDER") or DEFAULT_PROVIDER)
-
-
-def normalize_env_mapping(value: Any, *, provider: str = DEFAULT_PROVIDER) -> dict[str, str]:
-    env = default_env_mapping(provider)
-    if isinstance(value, dict):
-        for field in DEFAULT_ENV_MAPPING:
-            env_name = value.get(field)
-            if isinstance(env_name, str) and env_name.strip():
-                env[field] = env_name.strip()
-    return env
-
-
-def default_env_mapping(provider: str) -> dict[str, str]:
-    if provider == DEFAULT_PROVIDER:
-        return dict(DEFAULT_ENV_MAPPING)
-    base_provider = re.split(r"[._-]+", provider, maxsplit=1)[0]
-    prefix = (
-        PROVIDER_ENV_PREFIXES.get(provider)
-        or PROVIDER_ENV_PREFIXES.get(base_provider)
-        or re.sub(r"[^A-Z0-9]+", "_", provider.upper()).strip("_")
-        or "OPENAGENT"
-    )
-    return {
-        "api_key": f"{prefix}_API_KEY",
-        "base_url": f"{prefix}_BASE_URL",
-        "model": f"{prefix}_MODEL",
-        "wire_api": f"{prefix}_WIRE_API",
-    }
 
 
 def env_status(env: dict[str, str]) -> dict[str, dict[str, str]]:
@@ -223,3 +207,16 @@ def env_status(env: dict[str, str]) -> dict[str, dict[str, str]]:
 def set_missing_env(name: str, value: Any) -> None:
     if value and name not in os.environ:
         os.environ[name] = str(value)
+
+
+def provider_value(field: str, *, record: dict[str, Any] | None, env: dict[str, str], provider: str) -> Any:
+    if record and record.get(field):
+        return record.get(field)
+    env_name = env.get(field)
+    if env_name and os.getenv(env_name):
+        return os.getenv(env_name)
+    if field == "base_url":
+        return provider_default_base_url(provider)
+    if field == "model":
+        return provider_default_model(provider)
+    return None

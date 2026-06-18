@@ -409,7 +409,8 @@ Create component $1 for $ARGUMENTS.
 
             list_stdout = io.StringIO()
             list_args = parser.parse_args(["auth", "list", "--auth-file", str(auth_file), "--format", "json"])
-            self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
             listed = json.loads(list_stdout.getvalue())
             self.assertEqual(listed["providers"][0]["model"], "gpt-auth")
             self.assertNotIn("test-secret", list_stdout.getvalue())
@@ -516,8 +517,79 @@ Create component $1 for $ARGUMENTS.
 
             list_stdout = io.StringIO()
             list_args = parser.parse_args(["auth", "list", "--auth-file", str(auth_file), "--format", "json"])
-            self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
-            self.assertEqual([row["provider"] for row in json.loads(list_stdout.getvalue())["providers"]], ["openai"])
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+                self.assertEqual([row["provider"] for row in json.loads(list_stdout.getvalue())["providers"]], ["openai"])
+
+    def test_auth_list_discovers_env_only_provider_credentials(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            auth_file = Path(raw_tmp) / "auth.json"
+            secret = "openrouter-secret-value"
+            with patch.dict(
+                os.environ,
+                {
+                    "OPENROUTER_API_KEY": secret,
+                    "OPENROUTER_MODEL": "openrouter/test-model",
+                },
+                clear=True,
+            ):
+                json_stdout = io.StringIO()
+                json_args = parser.parse_args(["providers", "list", "--auth-file", str(auth_file), "--format", "json"])
+                self.assertEqual(run_auth_command(json_args, stdout=json_stdout, stderr=io.StringIO()), 0)
+
+                raw_json = json_stdout.getvalue()
+                self.assertNotIn(secret, raw_json)
+                payload = json.loads(raw_json)
+                self.assertEqual([row["provider"] for row in payload["providers"]], ["openrouter"])
+                row = payload["providers"][0]
+                self.assertEqual(row["source"], "env")
+                self.assertEqual(row["type"], "env")
+                self.assertTrue(row["has_api_key"])
+                self.assertEqual(row["api_key"], "")
+                self.assertEqual(row["model"], "openrouter/test-model")
+                self.assertEqual(row["env"]["api_key"], "OPENROUTER_API_KEY")
+                self.assertEqual(row["env_status"]["api_key"]["status"], "set")
+                self.assertEqual(row["methods"], ["api_key"])
+                self.assertEqual(row["auth_methods"][0]["env_api_key"], "OPENROUTER_API_KEY")
+
+                table_stdout = io.StringIO()
+                table_args = parser.parse_args(["providers", "list", "--auth-file", str(auth_file)])
+                self.assertEqual(run_auth_command(table_args, stdout=table_stdout, stderr=io.StringIO()), 0)
+                table = table_stdout.getvalue()
+                self.assertIn("openrouter", table)
+                self.assertIn("set", table)
+                self.assertNotIn(secret, table)
+
+    def test_providers_methods_reports_metadata_and_unknown_fallback(self) -> None:
+        parser = build_parser()
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "openrouter-secret", "CUSTOM_GATEWAY_API_KEY": "custom-secret"}, clear=True):
+            json_stdout = io.StringIO()
+            args = parser.parse_args(["providers", "methods", "openrouter", "--format", "json"])
+            self.assertEqual(run_auth_command(args, stdout=json_stdout, stderr=io.StringIO()), 0)
+
+            payload = json.loads(json_stdout.getvalue())
+            self.assertEqual(payload["provider"], "openrouter")
+            method = payload["methods"][0]
+            self.assertEqual(method["id"], "api_key")
+            self.assertEqual(method["status"], "set")
+            self.assertEqual(method["env"]["api_key"], "OPENROUTER_API_KEY")
+            self.assertEqual(method["default_base_url"], "https://openrouter.ai/api/v1")
+            self.assertNotIn("openrouter-secret", json_stdout.getvalue())
+
+            unknown_stdout = io.StringIO()
+            unknown_args = parser.parse_args(["providers", "methods", "custom-gateway", "--format", "json"])
+            self.assertEqual(run_auth_command(unknown_args, stdout=unknown_stdout, stderr=io.StringIO()), 0)
+            unknown = json.loads(unknown_stdout.getvalue())
+            self.assertEqual(unknown["provider"], "custom-gateway")
+            self.assertEqual(unknown["methods"][0]["env"]["api_key"], "CUSTOM_GATEWAY_API_KEY")
+            self.assertEqual(unknown["methods"][0]["status"], "set")
+            self.assertNotIn("custom-secret", unknown_stdout.getvalue())
+
+            table_stdout = io.StringIO()
+            table_args = parser.parse_args(["providers", "methods", "openrouter"])
+            self.assertEqual(run_auth_command(table_args, stdout=table_stdout, stderr=io.StringIO()), 0)
+            self.assertIn("OPENROUTER_API_KEY", table_stdout.getvalue())
 
     def test_auth_login_update_preserves_existing_key_and_type(self) -> None:
         parser = build_parser()
@@ -559,7 +631,8 @@ Create component $1 for $ARGUMENTS.
 
             list_stdout = io.StringIO()
             list_args = parser.parse_args(["auth", "list", "--auth-file", str(auth_file), "--format", "json"])
-            self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
             record = json.loads(list_stdout.getvalue())["providers"][0]
             self.assertEqual(record["provider"], "openrouter")
             self.assertEqual(record["type"], "openai-compatible")
@@ -630,6 +703,57 @@ Create component $1 for $ARGUMENTS.
                 load_auth_env(str(auth_file))
                 self.assertNotIn("OPENAI_API_KEY", os.environ)
 
+    def test_load_auth_env_maps_env_only_active_provider_without_overwriting_env(self) -> None:
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            missing_auth_file = Path(raw_tmp) / "missing-auth.json"
+            with patch.dict(os.environ, {}, clear=True):
+                loaded = load_auth_env(str(missing_auth_file))
+                self.assertIsNone(loaded)
+                self.assertNotIn("OPENAI_BASE_URL", os.environ)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "OPENAGENT_PROVIDER": "openrouter",
+                    "OPENROUTER_API_KEY": "openrouter-secret",
+                    "OPENROUTER_MODEL": "openrouter/model",
+                    "OPENAI_API_KEY": "user-key",
+                    "OPENAI_BASE_URL": "http://user.test/v1",
+                },
+                clear=True,
+            ):
+                loaded = load_auth_env(str(missing_auth_file))
+                self.assertIsNone(loaded)
+                self.assertEqual(os.environ["OPENAGENT_PROVIDER"], "openrouter")
+                self.assertEqual(os.environ["OPENAGENT_ACTIVE_PROVIDER"], "openrouter")
+                self.assertEqual(os.environ["OPENAI_API_KEY"], "user-key")
+                self.assertEqual(os.environ["OPENAI_BASE_URL"], "http://user.test/v1")
+                self.assertEqual(os.environ["OPENAI_MODEL"], "openrouter/model")
+                self.assertEqual(os.environ["OPENROUTER_API_KEY"], "openrouter-secret")
+
+    def test_models_command_reflects_active_provider_id_from_env(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["models", "--format", "json"])
+        stdout = io.StringIO()
+
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAGENT_PROVIDER": "openrouter",
+                "OPENROUTER_API_KEY": "openrouter-secret",
+                "OPENROUTER_MODEL": "openrouter/model",
+            },
+            clear=True,
+        ):
+            exit_code = run_models_command(args, stdout=stdout, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["models"][0]["provider_id"], "openrouter")
+        self.assertEqual(payload["models"][0]["id"], "openrouter/model")
+        self.assertIn("OpenRouter", payload["models"][0]["name"])
+        self.assertNotIn("openrouter-secret", stdout.getvalue())
+
     def test_providers_alias_uses_auth_commands(self) -> None:
         parser = build_parser()
         with tempfile.TemporaryDirectory() as raw_tmp:
@@ -639,7 +763,8 @@ Create component $1 for $ARGUMENTS.
 
             list_stdout = io.StringIO()
             list_args = parser.parse_args(["providers", "list", "--auth-file", str(auth_file), "--format", "json"])
-            self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(run_auth_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
             self.assertEqual(json.loads(list_stdout.getvalue())["providers"][0]["provider"], "groq")
             self.assertNotIn("groq-secret", list_stdout.getvalue())
 
