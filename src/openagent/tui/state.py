@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
     ("/agent <name>", "select the active agent profile label"),
     ("/variants", "open variant picker"),
     ("/variant <name>", "select the active model variant label"),
+    ("/diff [file|index|all]", "show the latest workspace patch diff"),
+    ("/revert [file|index|all]", "safely revert files from the latest patch"),
     ("/transcript [limit]", "show recent messages from the current session"),
     ("/new", "start a new session"),
     ("/clear", "clear the visible timeline"),
@@ -65,6 +68,7 @@ class TuiState:
     variant_picker_open: bool = False
     variant_picker_index: int = 0
     variant_picker_variants: list[str] = field(default_factory=list)
+    patch_records: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if not self.selected_model_id:
@@ -273,6 +277,12 @@ class TuiState:
             return True
         if name == "variant":
             self._variant_from_command(arguments)
+            return True
+        if name == "diff":
+            self._diff_from_command(arguments)
+            return True
+        if name in {"revert", "undo"}:
+            self._revert_from_command(arguments)
             return True
         if name in {"resume", "continue"}:
             self._resume_from_command(arguments)
@@ -1007,6 +1017,7 @@ class TuiState:
             f"model: {self.model_label}",
             f"agent: {self.agent_label}",
             f"variant: {self.variant_label}",
+            f"patches: {len(self.patch_records)}",
             f"events: {len(turn.events) if turn is not None else 0}",
         ]
         workspace = getattr(self.runtime, "workspace", None)
@@ -1072,6 +1083,7 @@ class TuiState:
             event = turn.events[self.next_event_index]
             self.timeline.extend(format_event(event))
             self._apply_control_event(event)
+            self._apply_patch_event(event)
             self.next_event_index += 1
         if turn.status in {"completed", "failed", "interrupted"}:
             self.active_approval = None
@@ -1092,6 +1104,158 @@ class TuiState:
             active_id = str((self.active_approval or {}).get("request_id") or "")
             if not request_id or request_id == active_id:
                 self.active_approval = None
+
+    def _apply_patch_event(self, event: AppEvent) -> None:
+        raw = event.params.get("event") if isinstance(event.params.get("event"), dict) else {}
+        if str(raw.get("type") or event.params.get("event_type") or "") != "patch":
+            return
+        files = raw.get("files")
+        if not isinstance(files, list):
+            return
+        record = {
+            "snapshot_id": raw.get("snapshot_id"),
+            "hash": raw.get("hash"),
+            "files": [dict(item) for item in files if isinstance(item, dict)],
+        }
+        if not record["files"]:
+            return
+        self.patch_records.append(record)
+        self.patch_records = self.patch_records[-20:]
+
+    def _diff_from_command(self, arguments: list[str]) -> None:
+        record = self._latest_patch_record()
+        if record is None:
+            self.timeline.append(TimelineLine("warning", "no workspace patch available", important=True))
+            self.status = "no patch"
+            return
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /diff [file|index|all]", important=True))
+            self.status = "diff invalid"
+            return
+        target = arguments[0] if arguments else "all"
+        files = self._patch_files_for_target(record, target)
+        if files is None:
+            return
+        lines = [f"diff: {len(files)} file(s) hash={short_patch_hash(record)}"]
+        for item in files:
+            path = str(item.get("path") or "-")
+            status = str(item.get("status") or "modified")
+            diff = str(item.get("diff") or "").strip()
+            lines.append(f"\n--- {status} {path}")
+            lines.append(diff or "(no text diff available)")
+        self.timeline.append(TimelineLine("patch", _trim_patch_text("\n".join(lines)), important=True))
+        self.status = "diff shown"
+
+    def _revert_from_command(self, arguments: list[str]) -> None:
+        record = self._latest_patch_record()
+        if record is None:
+            self.timeline.append(TimelineLine("warning", "no workspace patch available", important=True))
+            self.status = "no patch"
+            return
+        if len(arguments) > 1:
+            self.timeline.append(TimelineLine("warning", "usage: /revert [file|index|all]", important=True))
+            self.status = "revert invalid"
+            return
+        target = arguments[0] if arguments else "all"
+        if target in {"last", "latest"}:
+            target = "all"
+        files = self._patch_files_for_target(record, target)
+        if files is None:
+            return
+        revert_patch = getattr(self.runtime, "revert_patch", None)
+        if callable(revert_patch) and self.active_turn is not None:
+            try:
+                before_count = len(self.active_turn.events)
+                result = revert_patch(self.active_turn.id, "last", target=target)
+                self.poll_events()
+                if len(self.active_turn.events) == before_count:
+                    self.timeline.append(TimelineLine("status", "patch revert requested", important=True))
+                method = str(result.get("method") if isinstance(result, dict) else "")
+                self.status = "revert failed" if method == "item/patch/revert_failed" else "revert complete"
+            except Exception as error:  # noqa: BLE001 - revert failures must be visible in the TUI.
+                self.timeline.append(TimelineLine("error", f"revert failed: {error}", important=True))
+                self.status = "revert failed"
+            return
+        reverted: list[str] = []
+        skipped: list[str] = []
+        for item in files:
+            ok, message = self._revert_patch_file(item)
+            if ok:
+                reverted.append(message)
+            else:
+                skipped.append(message)
+        lines = []
+        if reverted:
+            lines.append("reverted:\n" + "\n".join(f"- {item}" for item in reverted))
+        if skipped:
+            lines.append("not reverted:\n" + "\n".join(f"- {item}" for item in skipped))
+        self.timeline.append(TimelineLine("patch", "\n\n".join(lines) or "nothing reverted", important=True))
+        self.status = "revert complete" if reverted and not skipped else ("revert partial" if reverted else "revert failed")
+
+    def _latest_patch_record(self) -> dict[str, Any] | None:
+        if not self.patch_records:
+            return None
+        return self.patch_records[-1]
+
+    def _patch_files_for_target(self, record: dict[str, Any], target: str) -> list[dict[str, Any]] | None:
+        files = [dict(item) for item in record.get("files", []) if isinstance(item, dict)]
+        if target in {"all", "*", "last", "latest"}:
+            return files
+        try:
+            index = int(target)
+        except ValueError:
+            index = 0
+        if index:
+            if 1 <= index <= len(files):
+                return [files[index - 1]]
+            self.timeline.append(TimelineLine("error", f"patch file index out of range: {target}", important=True))
+            self.status = "patch not found"
+            return None
+        matches = [item for item in files if str(item.get("path") or "") == target or str(item.get("path") or "").endswith(target)]
+        if len(matches) == 1:
+            return matches
+        if not matches:
+            self.timeline.append(TimelineLine("error", f"patch file not found: {target}", important=True))
+            self.status = "patch not found"
+            return None
+        self.timeline.append(TimelineLine("error", "patch file target is ambiguous:\n" + "\n".join(str(item.get("path") or "-") for item in matches[:10]), important=True))
+        self.status = "patch ambiguous"
+        return None
+
+    def _revert_patch_file(self, item: dict[str, Any]) -> tuple[bool, str]:
+        rel = str(item.get("path") or "").strip()
+        if not rel:
+            return False, "missing patch path"
+        if not bool(item.get("text_available")):
+            return False, f"{rel}: text snapshot unavailable"
+        try:
+            path = _resolve_workspace_file(self._workspace(), rel)
+        except ValueError as error:
+            return False, f"{rel}: {error}"
+        before_text = item.get("before_text")
+        after_text = item.get("after_text")
+        if after_text is None:
+            if path.exists():
+                return False, f"{rel}: current file exists; expected deleted state"
+        else:
+            try:
+                current_text = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return False, f"{rel}: current file missing"
+            except UnicodeDecodeError:
+                return False, f"{rel}: current file is not UTF-8 text"
+            after_sha = item.get("after_sha256")
+            if after_sha and _sha256_text(current_text) != str(after_sha):
+                return False, f"{rel}: current content changed after patch"
+            if not after_sha and current_text != after_text:
+                return False, f"{rel}: current content changed after patch"
+        if before_text is None:
+            if path.exists():
+                path.unlink()
+            return True, f"{rel}: deleted"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(before_text), encoding="utf-8")
+        return True, f"{rel}: restored"
 
     def request_interrupt(self) -> None:
         turn = self.active_turn
@@ -1145,6 +1309,33 @@ def _file_match_score(path: str, query: str) -> tuple[int, int, str]:
     else:
         rank = 3
     return rank, len(path), path
+
+
+def short_patch_hash(record: dict[str, Any]) -> str:
+    value = str(record.get("hash") or "")
+    return value[:12] + ("..." if len(value) > 12 else "")
+
+
+def _trim_patch_text(value: str, *, limit: int = 12000) -> str:
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "\n... diff truncated ..."
+
+
+def _resolve_workspace_file(workspace: Path, rel: str) -> Path:
+    if Path(rel).is_absolute():
+        raise ValueError("absolute patch paths are not allowed")
+    root = workspace.expanduser().resolve()
+    target = (root / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as error:
+        raise ValueError("patch path escapes workspace") from error
+    return target
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _bounded_index(index: int, count: int) -> int:

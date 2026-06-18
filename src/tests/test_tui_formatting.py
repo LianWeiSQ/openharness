@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 import unittest
 from dataclasses import dataclass, field
@@ -66,6 +67,31 @@ class ApprovalRuntime(InterruptRuntime):
     def respond_approval(self, turn_id: str, request_id: str, action: str):
         self.approvals.append((turn_id, request_id, action))
         return {"method": "turn/approval_resolved"}
+
+
+class PatchRevertRuntime(DummyRuntime):
+    def __init__(self, *, workspace: Path) -> None:
+        super().__init__(workspace=workspace)
+        self.reverts: list[tuple[str, str, str]] = []
+        self.turn: CapturingTurn | None = None
+
+    def revert_patch(self, turn_id: str, patch_ref: str = "last", *, target: str = "all"):
+        self.reverts.append((turn_id, patch_ref, target))
+        event = AppEvent(
+            sequence=len(self.turn.events) + 1 if self.turn is not None else 1,
+            method="item/patch/reverted",
+            params={
+                "thread_id": "session_live",
+                "turn_id": turn_id,
+                "patch_hash": "hash_123",
+                "target": target,
+                "reverted": ["a.txt: restored"],
+                "skipped": [],
+            },
+        )
+        if self.turn is not None:
+            self.turn.events.append(event)
+        return event.to_dict()
 
 
 class SessionRuntime(DummyRuntime):
@@ -201,6 +227,51 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertIn("approval required: write", requested[0].text)
         self.assertEqual(resolved[0].kind, "warning")
         self.assertEqual(resolved[0].text, "approval deny: write")
+
+    def test_formats_patch_diff_and_revert_events(self) -> None:
+        patch = format_event(
+            AppEvent(
+                sequence=1,
+                method="item/patch/detected",
+                params={
+                    "event_type": "patch",
+                    "event": {
+                        "type": "patch",
+                        "hash": "abcdef1234567890",
+                        "files": [
+                            {
+                                "path": "a.txt",
+                                "status": "modified",
+                                "diff": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
+                            }
+                        ],
+                    },
+                },
+            )
+        )
+        reverted = format_event(
+            AppEvent(
+                sequence=2,
+                method="item/patch/reverted",
+                params={"patch_hash": "abcdef1234567890", "reverted": ["a.txt: restored"], "skipped": []},
+            )
+        )
+        failed = format_event(
+            AppEvent(
+                sequence=3,
+                method="item/patch/revert_failed",
+                params={"patch_ref": "last", "error": "current content changed after patch"},
+            )
+        )
+
+        self.assertEqual(patch[0].kind, "patch")
+        self.assertIn("1. modified a.txt (+1/-1)", patch[0].text)
+        self.assertIn("@@ -1 +1 @@", patch[0].text)
+        self.assertIn("+new", patch[0].text)
+        self.assertEqual(reverted[0].kind, "patch")
+        self.assertIn("patch reverted: 1 item", reverted[0].text)
+        self.assertEqual(failed[0].kind, "error")
+        self.assertIn("current content changed after patch", failed[0].text)
 
     def test_helpers(self) -> None:
         self.assertEqual(short_id("abcdef", keep=10), "abcdef")
@@ -359,6 +430,77 @@ class TuiFormattingTests(unittest.TestCase):
 
         self.assertEqual(state.status, "transcript unsupported")
         self.assertIn("transcript is not supported by this runtime", "\n".join(line.text for line in state.timeline))
+
+    def test_tui_diff_and_local_revert_commands_use_latest_patch(self) -> None:
+        workspace = self._make_temp_dir()
+        (workspace / "a.txt").write_text("new\n", encoding="utf-8")
+        state = TuiState(runtime=DummyRuntime(workspace=workspace))  # type: ignore[arg-type]
+        state.patch_records = [
+            {
+                "hash": "hash_123",
+                "files": [
+                    {
+                        "path": "a.txt",
+                        "status": "modified",
+                        "diff": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
+                        "before_text": "old\n",
+                        "after_text": "new\n",
+                        "before_sha256": hashlib.sha256(b"old\n").hexdigest(),
+                        "after_sha256": hashlib.sha256(b"new\n").hexdigest(),
+                        "text_available": True,
+                    }
+                ],
+            }
+        ]
+
+        state.input_buffer = "/diff"
+        self.assertFalse(state.submit())
+        self.assertEqual(state.status, "diff shown")
+        self.assertIn("+new", "\n".join(line.text for line in state.timeline))
+
+        state.input_buffer = "/revert"
+        self.assertFalse(state.submit())
+
+        self.assertEqual((workspace / "a.txt").read_text(encoding="utf-8"), "old\n")
+        self.assertEqual(state.status, "revert complete")
+        self.assertIn("a.txt: restored", "\n".join(line.text for line in state.timeline))
+
+    def test_tui_revert_prefers_runtime_when_active_turn_exists(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = PatchRevertRuntime(workspace=workspace)
+        patch_event = AppEvent(
+            sequence=1,
+            method="item/patch/detected",
+            params={
+                "event_type": "patch",
+                "event": {
+                    "type": "patch",
+                    "hash": "hash_123",
+                    "files": [
+                        {
+                            "path": "a.txt",
+                            "status": "modified",
+                            "diff": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
+                            "before_text": "old\n",
+                            "after_text": "new\n",
+                            "text_available": True,
+                        }
+                    ],
+                },
+            },
+        )
+        turn = CapturingTurn(status="completed", id="turn_live", events=[patch_event])
+        runtime.turn = turn
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.active_turn = turn
+        state.poll_events()
+        state.input_buffer = "/revert 1"
+
+        self.assertFalse(state.submit())
+
+        self.assertEqual(runtime.reverts, [("turn_live", "last", "1")])
+        self.assertEqual(state.status, "revert complete")
+        self.assertIn("patch reverted: 1 item", "\n".join(line.text for line in state.timeline))
 
     def test_tui_session_picker_keyboard_resumes_selected_session(self) -> None:
         workspace = self._make_temp_dir()

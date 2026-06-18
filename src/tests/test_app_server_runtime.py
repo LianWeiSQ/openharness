@@ -161,6 +161,86 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(turn.variant, "fast")
         self.assertEqual(turn.to_dict()["agent_name"], "plan")
 
+    def test_runtime_caches_patch_metadata_and_reverts_latest_patch(self) -> None:
+        workspace = self._make_temp_dir()
+        (workspace / "a.txt").write_text("old\n", encoding="utf-8")
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "tool-call", "call_id": "r1", "name": "read", "input": {"file_path": "a.txt", "offset": 0, "limit": 20}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "tool-call", "call_id": "w1", "name": "write", "input": {"file_path": "a.txt", "content": "new\n"}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t2", "text": "updated"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda _model: model,
+        )
+
+        session = runtime.start_session()
+        turn = runtime.start_turn(session_id=session["id"], user_text="update file")
+        self.assertTrue(turn.wait_until_terminal(timeout_s=10.0))
+
+        self.assertEqual((workspace / "a.txt").read_text(encoding="utf-8"), "new\n")
+        self.assertEqual(turn.to_dict()["patch_count"], 1)
+        patch = turn.patch_records[-1]
+        self.assertEqual(patch["files"][0]["path"], "a.txt")
+        self.assertEqual(patch["files"][0]["before_text"], "old\n")
+        self.assertEqual(patch["files"][0]["after_text"], "new\n")
+
+        event = runtime.revert_patch(turn.id, "last", target="a.txt")
+
+        self.assertEqual(event["method"], "item/patch/reverted")
+        self.assertEqual((workspace / "a.txt").read_text(encoding="utf-8"), "old\n")
+        self.assertIn("a.txt: restored", event["params"]["reverted"])
+
+    def test_runtime_revert_refuses_dirty_current_content(self) -> None:
+        workspace = self._make_temp_dir()
+        (workspace / "a.txt").write_text("old\n", encoding="utf-8")
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "tool-call", "call_id": "r1", "name": "read", "input": {"file_path": "a.txt", "offset": 0, "limit": 20}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "tool-call", "call_id": "w1", "name": "write", "input": {"file_path": "a.txt", "content": "new\n"}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t2", "text": "updated"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda _model: model,
+        )
+
+        session = runtime.start_session()
+        turn = runtime.start_turn(session_id=session["id"], user_text="update file")
+        self.assertTrue(turn.wait_until_terminal(timeout_s=10.0))
+        (workspace / "a.txt").write_text("user edit\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "current content changed after patch"):
+            runtime.revert_patch(turn.id, "last", target="a.txt")
+
+        self.assertEqual((workspace / "a.txt").read_text(encoding="utf-8"), "user edit\n")
+        failures = [event for event in turn.events if event.method == "item/patch/revert_failed"]
+        self.assertEqual(len(failures), 1)
+        self.assertIn("current content changed after patch", failures[0].params["error"])
+
     def test_runtime_interrupts_running_turn_at_event_boundary(self) -> None:
         workspace = self._make_temp_dir()
         model = InterruptibleLanguageModel()

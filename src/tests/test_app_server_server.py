@@ -37,6 +37,7 @@ class FakeRuntime:
         ]
         self.control_requests: list[TuiControlRequest] = []
         self.control_responses: list[object] = []
+        self.reverts: list[tuple[str, str, str]] = []
 
     def list_models(self):
         return []
@@ -61,6 +62,19 @@ class FakeRuntime:
                     "request_id": request_id,
                     "action": action,
                 },
+            },
+        }
+
+    def revert_patch(self, turn_id: str, patch_ref: str = "last", *, target: str = "all"):
+        self.reverts.append((turn_id, patch_ref, target))
+        return {
+            "method": "item/patch/reverted",
+            "params": {
+                "turn_id": turn_id,
+                "patch_hash": "hash_123",
+                "target": target,
+                "reverted": ["a.txt: restored"],
+                "skipped": [],
             },
         }
 
@@ -284,6 +298,36 @@ class AppServerServerTests(unittest.TestCase):
         self.assertEqual(payload["event"]["params"]["turn_id"], "turn_123")
         self.assertEqual(payload["event"]["params"]["approval"]["request_id"], "approval_456")
         self.assertEqual(payload["event"]["params"]["approval"]["action"], "allow")
+
+    def test_server_patch_revert_endpoint_calls_runtime(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = FakeRuntime()
+        server = create_server(
+            host="127.0.0.1",
+            port=0,
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            serve_static=False,
+            runtime=runtime,  # type: ignore[arg-type]
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
+        request = urllib.request.Request(
+            f"{base_url}/api/turns/turn_123/patches/last/revert",
+            data=b'{"target":"a.txt"}',
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310 - local test server.
+            payload = json.loads(response.read().decode("utf-8"))
+
+        self.assertEqual(runtime.reverts, [("turn_123", "last", "a.txt")])
+        self.assertEqual(payload["event"]["method"], "item/patch/reverted")
+        self.assertEqual(payload["event"]["params"]["reverted"], ["a.txt: restored"])
 
     def test_tui_routes_require_bearer_token_when_configured(self) -> None:
         workspace = self._make_temp_dir()

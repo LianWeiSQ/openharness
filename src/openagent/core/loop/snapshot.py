@@ -62,7 +62,18 @@ class SnapshotManager:
             elif b is None:
                 status = "deleted"
             diff = self._diff(rel, a, b)
-            changed.append({"path": rel, "status": status, "diff": diff})
+            changed.append(
+                {
+                    "path": rel,
+                    "status": status,
+                    "diff": diff,
+                    "before_sha256": a.sha256 if a else None,
+                    "after_sha256": b.sha256 if b else None,
+                    "before_text": a.text if a else None,
+                    "after_text": b.text if b else None,
+                    "text_available": (a is None or a.text is not None) and (b is None or b.text is not None),
+                }
+            )
         h = hashlib.sha256()
         for item in changed:
             h.update(item["path"].encode("utf-8"))

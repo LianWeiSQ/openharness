@@ -113,6 +113,10 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 turn_id = path.removeprefix("/api/turns/").removesuffix("/interrupt").strip("/")
                 turn = self.runtime.interrupt_turn(turn_id)
                 self._send_json({"turn": turn})
+            elif path.startswith("/api/turns/") and "/patches/" in path and path.endswith("/revert"):
+                turn_id, patch_ref = _parse_turn_patch_revert_path(path)
+                event = self.runtime.revert_patch(turn_id, patch_ref, target=_optional_string(payload, "target") or "all")
+                self._send_json({"event": event})
             elif path.startswith("/api/turns/") and "/approvals/" in path:
                 turn_id, request_id = _parse_turn_approval_path(path)
                 event = self.runtime.respond_approval(turn_id, request_id, str(payload.get("action") or ""))
@@ -398,6 +402,15 @@ def _parse_turn_approval_path(path: str) -> tuple[str, str]:
     if not turn_id or marker != "/approvals/" or not request_id.strip("/"):
         raise ValueError("approval path must be /api/turns/{turn_id}/approvals/{request_id}")
     return turn_id.strip("/"), request_id.strip("/")
+
+
+def _parse_turn_patch_revert_path(path: str) -> tuple[str, str]:
+    raw = path.removeprefix("/api/turns/")
+    turn_id, marker, rest = raw.partition("/patches/")
+    patch_ref, suffix, tail = rest.partition("/revert")
+    if not turn_id or marker != "/patches/" or suffix != "/revert" or tail.strip("/") or not patch_ref.strip("/"):
+        raise ValueError("patch revert path must be /api/turns/{turn_id}/patches/{patch_ref}/revert")
+    return turn_id.strip("/"), patch_ref.strip("/")
 
 
 def _query_int(query: dict[str, list[str]], key: str, default: int) -> int:

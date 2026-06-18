@@ -62,6 +62,25 @@ def format_event(event: AppEvent) -> list[TimelineLine]:
         if trace != "-":
             lines.append(TimelineLine("trace", f"trace: {trace}"))
         return lines
+    if method == "item/patch/reverted":
+        patch_hash = short_id(str(params.get("patch_hash") or params.get("patch_ref") or ""))
+        reverted = params.get("reverted") if isinstance(params.get("reverted"), list) else []
+        skipped = params.get("skipped") if isinstance(params.get("skipped"), list) else []
+        lines = [f"patch reverted: {len(reverted)} item(s) hash={patch_hash}"]
+        lines.extend(f"- {item}" for item in reverted[:20])
+        if skipped:
+            lines.append("not reverted:")
+            lines.extend(f"- {item}" for item in skipped[:20])
+        return [TimelineLine("patch", "\n".join(lines), True)]
+    if method == "item/patch/revert_failed":
+        patch_hash = short_id(str(params.get("patch_hash") or params.get("patch_ref") or ""))
+        error = str(params.get("error") or "").strip()
+        skipped = params.get("skipped") if isinstance(params.get("skipped"), list) else []
+        lines = [f"patch revert failed: hash={patch_hash}"]
+        if error:
+            lines.append(error)
+        lines.extend(f"- {item}" for item in skipped[:20])
+        return [TimelineLine("error", "\n".join(lines), True)]
 
     if event_type == "text-delta":
         return [TimelineLine("assistant", str(raw.get("text") or ""))]
@@ -90,7 +109,20 @@ def format_event(event: AppEvent) -> list[TimelineLine]:
         return [TimelineLine("step", f"step finished: {finish} tokens={_compact_json(tokens)} cost={cost}")]
     if event_type == "patch":
         files = raw.get("files") if isinstance(raw.get("files"), list) else []
-        return [TimelineLine("patch", f"patch detected: {len(files)} files hash={short_id(str(raw.get('hash') or ''))}", True)]
+        lines = [f"patch detected: {len(files)} files hash={short_id(str(raw.get('hash') or ''))}"]
+        for index, item in enumerate(files[:12], start=1):
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("status") or "modified")
+            path = str(item.get("path") or "-")
+            diff = str(item.get("diff") or "")
+            added, removed = _diff_stats(diff)
+            lines.append(f"{index}. {status} {path} (+{added}/-{removed})")
+            if diff.strip():
+                lines.extend(f"    {line}" for line in _trim_diff_lines(diff, max_lines=40))
+        if len(files) > 12:
+            lines.append(f"... {len(files) - 12} more")
+        return [TimelineLine("patch", "\n".join(lines), True)]
     if event_type == "error" or method == "turn/error":
         return [TimelineLine("error", f"error: {raw.get('error') or params.get('error')}", True)]
     if event_type in {"text-start", "text-end"}:
@@ -123,3 +155,23 @@ def _trim(value: str, *, limit: int = 1200) -> str:
     if len(value) <= limit:
         return value
     return value[:limit].rstrip() + "\n... truncated ..."
+
+
+def _diff_stats(value: str) -> tuple[int, int]:
+    added = 0
+    removed = 0
+    for line in value.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return added, removed
+
+
+def _trim_diff_lines(value: str, *, max_lines: int) -> list[str]:
+    lines = value.splitlines()
+    if len(lines) <= max_lines:
+        return lines
+    return [*lines[:max_lines], f"... diff truncated ({len(lines) - max_lines} more lines) ..."]

@@ -63,6 +63,10 @@ def stream_event_to_app_method(event_type: str) -> str:
         return "runtime/warning"
     if event_type == "patch":
         return "item/patch/detected"
+    if event_type == "patch-reverted":
+        return "item/patch/reverted"
+    if event_type == "patch-revert-failed":
+        return "item/patch/revert_failed"
     if event_type == "question-request":
         return "item/question/requested"
     if event_type == "error":

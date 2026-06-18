@@ -11,6 +11,9 @@ class AppServerProtocolTests(unittest.TestCase):
         self.assertEqual(stream_event_to_app_method("tool-call"), "item/toolCall/started")
         self.assertEqual(stream_event_to_app_method("tool-result"), "item/toolCall/completed")
         self.assertEqual(stream_event_to_app_method("runtime-warning"), "runtime/warning")
+        self.assertEqual(stream_event_to_app_method("patch"), "item/patch/detected")
+        self.assertEqual(stream_event_to_app_method("patch-reverted"), "item/patch/reverted")
+        self.assertEqual(stream_event_to_app_method("patch-revert-failed"), "item/patch/revert_failed")
         self.assertEqual(stream_event_to_app_method("unknown"), "item/event")
 
     def test_wraps_event_with_thread_turn_and_sequence(self) -> None:

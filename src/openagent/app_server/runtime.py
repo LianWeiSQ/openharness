@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import threading
 import time
@@ -74,6 +75,7 @@ class TurnRecord:
     variant: str | None = None
     interrupt_requested: bool = False
     events: list[AppEvent] = field(default_factory=list)
+    patch_records: list[dict[str, Any]] = field(default_factory=list)
     _event_publisher: Callable[[AppEvent], None] | None = field(default=None, repr=False)
     _pending_approvals: dict[str, _PendingApproval] = field(default_factory=dict, repr=False)
     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
@@ -240,6 +242,8 @@ class TurnRecord:
             "provider_id": self.provider_id,
             "agent_name": self.agent_name,
             "variant": self.variant,
+            "patch_count": len(self.patch_records),
+            "latest_patch_hash": self.patch_records[-1].get("hash") if self.patch_records else None,
             "event_count": len(self.events),
             "interrupt_requested": self.interrupt_requested,
             "pending_approval_count": len(self._pending_approvals),
@@ -407,6 +411,47 @@ class OpenAgentAppRuntime:
         turn = self.get_turn(turn_id)
         turn.request_interrupt()
         return turn.to_dict()
+
+    def revert_patch(self, turn_id: str, patch_ref: str = "last", *, target: str = "all") -> dict[str, Any]:
+        turn = self.get_turn(turn_id)
+        try:
+            record = _resolve_patch_record(turn.patch_records, patch_ref)
+            files = _patch_files_for_target(record, target)
+            reverted: list[str] = []
+            skipped: list[str] = []
+            for item in files:
+                ok, message = _revert_patch_file(self.workspace, item)
+                if ok:
+                    reverted.append(message)
+                else:
+                    skipped.append(message)
+            if skipped and not reverted:
+                raise ValueError("; ".join(skipped))
+            method = "item/patch/reverted" if not skipped else "item/patch/revert_failed"
+            event = lifecycle_event(
+                sequence=turn.next_sequence(),
+                method=method,
+                thread_id=turn.session_id,
+                turn_id=turn.id,
+                patch_hash=record.get("hash"),
+                target=target,
+                reverted=reverted,
+                skipped=skipped,
+            )
+            turn.append(event)
+            return event.to_dict()
+        except Exception as error:  # noqa: BLE001 - revert failures must surface as UI events.
+            event = lifecycle_event(
+                sequence=turn.next_sequence(),
+                method="item/patch/revert_failed",
+                thread_id=turn.session_id,
+                turn_id=turn.id,
+                patch_ref=patch_ref,
+                target=target,
+                error=str(error),
+            )
+            turn.append(event)
+            raise
 
     def respond_approval(self, turn_id: str, request_id: str, action: str) -> dict[str, Any]:
         turn = self.get_turn(turn_id)
@@ -588,6 +633,17 @@ class OpenAgentAppRuntime:
             text_chunks.append(str(event.get("text") or ""))
         elif event.get("type") == "error":
             turn.error = str(event.get("error") or "")
+        elif event.get("type") == "patch":
+            files = event.get("files")
+            if isinstance(files, list):
+                turn.patch_records.append(
+                    {
+                        "snapshot_id": event.get("snapshot_id"),
+                        "hash": event.get("hash"),
+                        "files": [dict(item) for item in files if isinstance(item, dict)],
+                    }
+                )
+                turn.patch_records = turn.patch_records[-20:]
 
 
 def _permission_from_env() -> str:
@@ -635,3 +691,92 @@ def _trace_metadata(session: Session) -> dict[str, Any]:
         "trace_path": agent_trace.get("trace_path"),
         "session_store": session_store,
     }
+
+
+def _resolve_patch_record(records: list[dict[str, Any]], patch_ref: str) -> dict[str, Any]:
+    if not records:
+        raise ValueError("no workspace patch available")
+    normalized = (patch_ref or "last").strip()
+    if normalized in {"last", "latest"}:
+        return records[-1]
+    matches = [record for record in records if str(record.get("hash") or "").startswith(normalized)]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(f"patch not found: {patch_ref}")
+    raise ValueError(f"patch ref is ambiguous: {patch_ref}")
+
+
+def _patch_files_for_target(record: dict[str, Any], target: str) -> list[dict[str, Any]]:
+    files = [dict(item) for item in record.get("files", []) if isinstance(item, dict)]
+    normalized = (target or "all").strip()
+    if normalized in {"all", "*", "last", "latest"}:
+        if not files:
+            raise ValueError("patch has no files")
+        return files
+    try:
+        index = int(normalized)
+    except ValueError:
+        index = 0
+    if index:
+        if 1 <= index <= len(files):
+            return [files[index - 1]]
+        raise ValueError(f"patch file index out of range: {target}")
+    matches = [item for item in files if str(item.get("path") or "") == normalized or str(item.get("path") or "").endswith(normalized)]
+    if len(matches) == 1:
+        return matches
+    if not matches:
+        raise ValueError(f"patch file not found: {target}")
+    raise ValueError("patch file target is ambiguous: " + ", ".join(str(item.get("path") or "-") for item in matches[:10]))
+
+
+def _revert_patch_file(workspace: Path, item: dict[str, Any]) -> tuple[bool, str]:
+    rel = str(item.get("path") or "").strip()
+    if not rel:
+        return False, "missing patch path"
+    if not bool(item.get("text_available")):
+        return False, f"{rel}: text snapshot unavailable"
+    try:
+        path = _resolve_workspace_file(workspace, rel)
+    except ValueError as error:
+        return False, f"{rel}: {error}"
+    before_text = item.get("before_text")
+    after_text = item.get("after_text")
+    if after_text is None:
+        if path.exists():
+            return False, f"{rel}: current file exists; expected deleted state"
+    else:
+        try:
+            current_text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return False, f"{rel}: current file missing"
+        except UnicodeDecodeError:
+            return False, f"{rel}: current file is not UTF-8 text"
+        after_sha = item.get("after_sha256")
+        if after_sha and _sha256_text(current_text) != str(after_sha):
+            return False, f"{rel}: current content changed after patch"
+        if not after_sha and current_text != after_text:
+            return False, f"{rel}: current content changed after patch"
+    if before_text is None:
+        if path.exists():
+            path.unlink()
+        return True, f"{rel}: deleted"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(before_text), encoding="utf-8")
+    return True, f"{rel}: restored"
+
+
+def _resolve_workspace_file(workspace: Path, rel: str) -> Path:
+    if Path(rel).is_absolute():
+        raise ValueError("absolute patch paths are not allowed")
+    root = workspace.expanduser().resolve()
+    target = (root / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as error:
+        raise ValueError("patch path escapes workspace") from error
+    return target
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()

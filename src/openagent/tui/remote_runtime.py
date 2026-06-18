@@ -225,6 +225,24 @@ class RemoteAppBridgeRuntime:
         turn = payload.get("turn")
         return dict(turn) if isinstance(turn, dict) else payload
 
+    def revert_patch(self, turn_id: str, patch_ref: str = "last", *, target: str = "all") -> dict[str, object]:
+        payload = app_bridge_post_json(
+            self.server_url,
+            f"/api/turns/{quote_path(turn_id)}/patches/{quote_path(patch_ref or 'last')}/revert",
+            {"target": target or "all"},
+            auth_token=self.auth_token,
+        )
+        event = payload.get("event")
+        if isinstance(event, dict):
+            with self._turns_lock:
+                turn = self._turns.get(turn_id)
+                default_sequence = len(turn.events) + 1 if turn is not None else 1
+            app_event = _app_event_from_dict(event, default_sequence=default_sequence)
+            if turn is not None:
+                turn.append_event(app_event)
+            return dict(event)
+        return payload
+
     def respond_approval(self, turn_id: str, request_id: str, action: str) -> dict[str, object]:
         payload = app_bridge_post_json(
             self.server_url,

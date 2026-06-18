@@ -113,6 +113,24 @@ class RemoteRuntimeServer:
                 if self.path == "/api/turns/turn_remote/interrupt":
                     self._send_json({"turn": {"id": "turn_remote", "status": "interrupting"}})
                     return
+                if self.path == "/api/turns/turn_remote/patches/last/revert":
+                    self._send_json(
+                        {
+                            "event": {
+                                "sequence": 6,
+                                "method": "item/patch/reverted",
+                                "params": {
+                                    "thread_id": "session_existing",
+                                    "turn_id": "turn_remote",
+                                    "patch_hash": "hash_123",
+                                    "target": payload.get("target"),
+                                    "reverted": ["a.txt: restored"],
+                                    "skipped": [],
+                                },
+                            }
+                        }
+                    )
+                    return
                 if self.path == "/api/turns/turn_remote/approvals/approval_1":
                     self._send_json(
                         {
@@ -204,6 +222,21 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         self.assertTrue(all(record["authorization"] == "Bearer secret" for record in server.records))
         create_record = next(record for record in server.records if record["path"] == "/api/sessions" and record["method"] == "POST")
         self.assertEqual(create_record["payload"]["cwd"], str(workspace))
+
+    def test_remote_runtime_posts_patch_revert_and_routes_event(self) -> None:
+        server = RemoteRuntimeServer()
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url, use_global_events=False)
+        turn = RemoteTurnRecord(id="turn_remote", session_id="session_existing", status="completed")
+        runtime._turns["turn_remote"] = turn  # noqa: SLF001 - regression covers local routing of returned server event.
+
+        response = runtime.revert_patch("turn_remote", "last", target="a.txt")
+
+        revert_record = next(record for record in server.records if record["path"] == "/api/turns/turn_remote/patches/last/revert")
+        self.assertEqual(revert_record["payload"], {"target": "a.txt"})
+        self.assertEqual(response["method"], "item/patch/reverted")
+        self.assertEqual(turn.events[-1].method, "item/patch/reverted")
+        self.assertEqual(turn.events[-1].params["reverted"], ["a.txt: restored"])
 
     def test_remote_runtime_consumes_global_events_for_remote_turn(self) -> None:
         server = RemoteRuntimeServer(
