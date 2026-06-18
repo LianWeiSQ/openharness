@@ -53,15 +53,20 @@ class FakeRuntime:
     def interrupt_turn(self, turn_id: str):
         return {"id": turn_id, "status": "interrupting", "interrupt_requested": True}
 
-    def respond_approval(self, turn_id: str, request_id: str, action: str):
+    def respond_approval(self, turn_id: str, request_id: str, action: str, *, scope: str | None = None, note: str | None = None):
+        approval = {
+            "request_id": request_id,
+            "action": action,
+        }
+        if scope:
+            approval["scope"] = scope
+        if note:
+            approval["note"] = note
         return {
             "method": "turn/approval_resolved",
             "params": {
                 "turn_id": turn_id,
-                "approval": {
-                    "request_id": request_id,
-                    "action": action,
-                },
+                "approval": approval,
             },
         }
 
@@ -287,7 +292,7 @@ class AppServerServerTests(unittest.TestCase):
         base_url = f"http://{server.server_address[0]}:{server.server_address[1]}"
         request = urllib.request.Request(
             f"{base_url}/api/turns/turn_123/approvals/approval_456",
-            data=b'{"action":"allow"}',
+            data=b'{"action":"allow","scope":"always","note":"trusted path"}',
             method="POST",
             headers={"Content-Type": "application/json"},
         )
@@ -298,6 +303,8 @@ class AppServerServerTests(unittest.TestCase):
         self.assertEqual(payload["event"]["params"]["turn_id"], "turn_123")
         self.assertEqual(payload["event"]["params"]["approval"]["request_id"], "approval_456")
         self.assertEqual(payload["event"]["params"]["approval"]["action"], "allow")
+        self.assertEqual(payload["event"]["params"]["approval"]["scope"], "always")
+        self.assertEqual(payload["event"]["params"]["approval"]["note"], "trusted path")
 
     def test_server_patch_revert_endpoint_calls_runtime(self) -> None:
         workspace = self._make_temp_dir()

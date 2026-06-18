@@ -51,6 +51,8 @@ class TuiState:
     session_picker_index: int = 0
     session_picker_sessions: list[dict[str, object]] = field(default_factory=list)
     active_approval: dict[str, Any] | None = None
+    approval_note_mode: bool = False
+    approval_note: str = ""
     file_picker_open: bool = False
     file_picker_index: int = 0
     file_picker_query: str = ""
@@ -1064,6 +1066,8 @@ class TuiState:
         self.next_event_index = 0
         self.input_buffer = ""
         self.active_approval = None
+        self.approval_note_mode = False
+        self.approval_note = ""
         self._close_pickers(update_status=False)
         self.timeline.clear()
         self.status = "new session"
@@ -1087,6 +1091,8 @@ class TuiState:
             self.next_event_index += 1
         if turn.status in {"completed", "failed", "interrupted"}:
             self.active_approval = None
+            self.approval_note_mode = False
+            self.approval_note = ""
         self.status = "approval required" if self.active_approval is not None else turn.status
 
     def _apply_control_event(self, event: AppEvent) -> None:
@@ -1094,16 +1100,22 @@ class TuiState:
             approval = event.params.get("approval")
             if isinstance(approval, dict):
                 self.active_approval = dict(approval)
+                self.approval_note_mode = False
+                self.approval_note = ""
             return
         if event.method == "turn/approval_resolved":
             approval = event.params.get("approval")
             if not isinstance(approval, dict):
                 self.active_approval = None
+                self.approval_note_mode = False
+                self.approval_note = ""
                 return
             request_id = str(approval.get("request_id") or "")
             active_id = str((self.active_approval or {}).get("request_id") or "")
             if not request_id or request_id == active_id:
                 self.active_approval = None
+                self.approval_note_mode = False
+                self.approval_note = ""
 
     def _apply_patch_event(self, event: AppEvent) -> None:
         raw = event.params.get("event") if isinstance(event.params.get("event"), dict) else {}
@@ -1270,7 +1282,20 @@ class TuiState:
         interrupt_turn(turn.id)
         self.status = "interrupting"
 
-    def respond_approval(self, action: str) -> bool:
+    def start_approval_note(self) -> None:
+        if self.active_approval is None:
+            self.status = "no approval"
+            return
+        self.approval_note_mode = True
+        self.approval_note = ""
+        self.status = "approval note"
+
+    def cancel_approval_note(self) -> None:
+        self.approval_note_mode = False
+        self.approval_note = ""
+        self.status = "approval required" if self.active_approval is not None else self.status
+
+    def respond_approval(self, action: str, *, scope: str | None = None, note: str | None = None) -> bool:
         approval = self.active_approval
         if approval is None:
             self.status = "no approval"
@@ -1287,13 +1312,21 @@ class TuiState:
             self.status = "approval unsupported"
             return False
         try:
-            respond_approval(turn_id, request_id, action)
+            try:
+                respond_approval(turn_id, request_id, action, scope=scope, note=note)
+            except TypeError as error:
+                if "unexpected keyword" not in str(error):
+                    raise
+                respond_approval(turn_id, request_id, action)
         except Exception as error:  # noqa: BLE001 - approval failures should stay visible in the TUI.
             self.timeline.append(TimelineLine("error", f"approval failed: {error}", important=True))
             self.status = "approval failed"
             return False
         self.active_approval = None
-        self.status = f"approval {action} sent"
+        self.approval_note_mode = False
+        self.approval_note = ""
+        suffix = f" {scope}" if scope else ""
+        self.status = f"approval {action}{suffix} sent"
         return True
 
 

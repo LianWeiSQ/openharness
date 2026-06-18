@@ -327,6 +327,89 @@ class AppServerRuntimeTests(unittest.TestCase):
         self.assertEqual(turn.final_answer, "Denied fallback.")
         self.assertFalse((workspace / "blocked.txt").exists())
 
+    def test_runtime_approval_preview_allow_always_and_note(self) -> None:
+        workspace = self._make_temp_dir()
+        (workspace / "trusted.txt").write_text("old\n", encoding="utf-8")
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "tool-call", "call_id": "r1", "name": "read", "input": {"file_path": "trusted.txt", "offset": 0, "limit": 20}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "tool-call", "call_id": "w1", "name": "write", "input": {"file_path": "trusted.txt", "content": "mid\n"}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "tool-call", "call_id": "w2", "name": "write", "input": {"file_path": "trusted.txt", "content": "final\n"}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t4", "text": "done"},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda _model: model,
+        )
+
+        with patch.dict("os.environ", {"OPENAGENT_APP_PERMISSION": "PLAN_ONLY", "OPENAGENT_APP_TOOLS": "write,read"}):
+            session = runtime.start_session()
+            turn = runtime.start_turn(session_id=session["id"], user_text="write twice")
+
+            approval_event = self._wait_for_method(turn, "turn/approval_requested")
+            approval = approval_event.params["approval"]
+            self.assertEqual(approval["tool_name"], "write")
+            self.assertEqual(approval["preview"]["kind"], "file-write")
+            self.assertEqual(approval["preview"]["path"], "trusted.txt")
+            self.assertIn("-old", approval["preview"]["diff"])
+            self.assertIn("+mid", approval["preview"]["diff"])
+
+            resolved = runtime.respond_approval(turn.id, approval["request_id"], "allow", scope="always", note="trusted file")
+            self.assertEqual(resolved["params"]["approval"]["scope"], "always")
+            self.assertEqual(resolved["params"]["approval"]["note"], "trusted file")
+            self.assertTrue(turn.wait_until_terminal(timeout_s=10.0))
+
+        approvals = [event for event in turn.events if event.method == "turn/approval_requested"]
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(turn.to_dict()["approval_rule_count"], 1)
+        self.assertEqual((workspace / "trusted.txt").read_text(encoding="utf-8"), "final\n")
+        self.assertEqual(turn.status, "completed")
+
+    def test_runtime_approval_deny_note_is_recorded(self) -> None:
+        workspace = self._make_temp_dir()
+        model = ScriptedLanguageModel(
+            script=[
+                [
+                    {"type": "tool-call", "call_id": "w1", "name": "write", "input": {"file_path": "blocked.txt", "content": "hi"}},
+                    {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+                [
+                    {"type": "text-delta", "id": "t2", "text": "Denied fallback."},
+                    {"type": "finish", "finish_reason": "stop", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+                ],
+            ]
+        )
+        runtime = OpenAgentAppRuntime(
+            workspace=workspace,
+            session_store_root=workspace / ".openagent" / "sessions",
+            language_model_factory=lambda _model: model,
+        )
+
+        with patch.dict("os.environ", {"OPENAGENT_APP_PERMISSION": "PLAN_ONLY", "OPENAGENT_APP_TOOLS": "write"}):
+            session = runtime.start_session()
+            turn = runtime.start_turn(session_id=session["id"], user_text="write a file")
+            approval_event = self._wait_for_method(turn, "turn/approval_requested")
+            resolved = runtime.respond_approval(turn.id, approval_event.params["approval"]["request_id"], "deny", note="missing context")
+            self.assertEqual(resolved["params"]["approval"]["note"], "missing context")
+            self.assertTrue(turn.wait_until_terminal(timeout_s=10.0))
+
+        self.assertEqual(turn.status, "completed")
+        self.assertFalse((workspace / "blocked.txt").exists())
+
     def test_runtime_interrupt_resolves_pending_approval(self) -> None:
         workspace = self._make_temp_dir()
         model = ScriptedLanguageModel(

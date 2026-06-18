@@ -79,11 +79,31 @@ def _run(stdscr, state: TuiState) -> None:
 
 def _handle_key(key: int, state: TuiState) -> bool:
     if state.active_approval is not None:
-        if key in {ord("a"), ord("A"), ord("y"), ord("Y")}:
-            state.respond_approval("allow")
+        if state.approval_note_mode:
+            if key in {10, 13}:
+                state.respond_approval("deny", note=state.approval_note.strip() or None)
+                return False
+            if key == 27:
+                state.cancel_approval_note()
+                return False
+            if key in {curses.KEY_BACKSPACE, 127, 8}:
+                state.approval_note = state.approval_note[:-1]
+                return False
+            if 32 <= key <= 126:
+                state.approval_note += chr(key)
+                return False
+            return False
+        if key in {ord("a"), ord("y"), ord("Y")}:
+            state.respond_approval("allow", scope="once")
+            return False
+        if key == ord("A"):
+            state.respond_approval("allow", scope="always")
             return False
         if key in {ord("d"), ord("D"), ord("n"), ord("N"), 27}:
             state.respond_approval("deny")
+            return False
+        if key in {ord("r"), ord("R")}:
+            state.start_approval_note()
             return False
         if key in {3}:  # Ctrl-C
             state.respond_approval("deny")
@@ -260,7 +280,7 @@ def _render(stdscr, state: TuiState) -> None:
     header_h = 3
     input_h = 8 if state.file_picker_open or state.model_picker_open or state.agent_picker_open or state.variant_picker_open else 4
     if state.active_approval is not None:
-        input_h = 4
+        input_h = min(12, max(6, height - header_h - 2))
     body_h = max(1, height - header_h - input_h - 1)
     side_w = 28 if width >= 112 else 0
     detail_w = 34 if width >= 132 else 0
@@ -383,9 +403,14 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
     if state.active_approval is not None:
         approval = state.active_approval
         title = f"Approval: {approval.get('tool_name') or 'tool'}"
-        body = _compact_json(approval.get("tool_input") or {})
         _addstr(stdscr, y + 1, x + 1, title[: max(0, width - 2)], curses.color_pair(6) | curses.A_BOLD)
-        _addstr(stdscr, y + 2, x + 1, body[: max(0, width - 2)], curses.color_pair(3))
+        body_lines = _approval_lines(approval)
+        available = max(0, height - 3)
+        for idx, line in enumerate(body_lines[:available]):
+            _addstr(stdscr, y + 2 + idx, x + 1, line[: max(0, width - 2)], curses.color_pair(3))
+        if state.approval_note_mode and height >= 3:
+            note = f"Deny note: {state.approval_note}"
+            _addstr(stdscr, y + height - 1, x + 1, note[: max(0, width - 2)], curses.color_pair(6) | curses.A_BOLD)
         return
     prompt = "Task"
     _addstr(stdscr, y + 1, x + 1, prompt, curses.color_pair(1) | curses.A_BOLD)
@@ -410,7 +435,7 @@ def _render_input(stdscr, state: TuiState, y: int, x: int, width: int, height: i
 def _render_footer(stdscr, state: TuiState, y: int, width: int) -> None:
     controls = "Enter send | /help | /sessions | /resume <id> | Ctrl-N new | Ctrl-L clear | PageUp/PageDown scroll | Ctrl-C/Esc/Ctrl-D quit"
     if state.active_approval is not None:
-        controls = "approval required: a/y allow | d/n/Esc deny | Ctrl-C deny + interrupt"
+        controls = "approval note: type reason | Enter deny | Esc cancel" if state.approval_note_mode else "approval: a/y allow once | A always | d/n/Esc deny | r deny note | Ctrl-C deny + interrupt"
     elif state.file_picker_open:
         controls = "file picker: Up/Down move | Enter/Tab insert | Esc close"
     elif state.session_picker_open:
@@ -533,7 +558,36 @@ def _approval_lines(approval: dict[str, Any]) -> list[str]:
     call_id = approval.get("call_id")
     if call_id:
         lines.append(f"call: {short_id(str(call_id))}")
-    lines.append(_compact_json(approval.get("tool_input") or {}))
+    preview = approval.get("preview") if isinstance(approval.get("preview"), dict) else {}
+    if preview:
+        lines.extend(_approval_preview_lines(preview))
+    lines.append("input: " + _compact_json(approval.get("tool_input") or {}))
+    return lines
+
+
+def _approval_preview_lines(preview: dict[str, Any]) -> list[str]:
+    lines = [f"preview: {preview.get('kind') or 'tool'}"]
+    path = preview.get("path")
+    if path:
+        status = preview.get("status")
+        suffix = f" ({status})" if status else ""
+        lines.append(f"path: {path}{suffix}")
+    command = preview.get("command")
+    if command:
+        lines.append(f"command: {command}")
+    warnings = preview.get("warnings") if isinstance(preview.get("warnings"), list) else []
+    for warning in warnings[:3]:
+        lines.append(f"warning: {warning}")
+    diff = str(preview.get("diff") or "").strip()
+    if diff:
+        lines.append("diff:")
+        diff_lines = diff.splitlines()
+        lines.extend(diff_lines[:40])
+        if len(diff_lines) > 40:
+            lines.append(f"... diff truncated ({len(diff_lines) - 40} more lines) ...")
+    summary = str(preview.get("summary") or "").strip()
+    if summary:
+        lines.append(f"summary: {summary}")
     return lines
 
 

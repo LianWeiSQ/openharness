@@ -137,7 +137,14 @@ class RemoteRuntimeServer:
                             "event": {
                                 "sequence": 5,
                                 "method": "turn/approval_resolved",
-                                "params": {"approval": {"request_id": "approval_1", "action": payload.get("action")}},
+                                "params": {
+                                    "approval": {
+                                        "request_id": "approval_1",
+                                        "action": payload.get("action"),
+                                        "scope": payload.get("scope"),
+                                        "note": payload.get("note"),
+                                    }
+                                },
                             }
                         }
                     )
@@ -237,6 +244,18 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(response["method"], "item/patch/reverted")
         self.assertEqual(turn.events[-1].method, "item/patch/reverted")
         self.assertEqual(turn.events[-1].params["reverted"], ["a.txt: restored"])
+
+    def test_remote_runtime_posts_approval_scope_and_note(self) -> None:
+        server = RemoteRuntimeServer()
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url)
+
+        response = runtime.respond_approval("turn_remote", "approval_1", "allow", scope="always", note="trusted")
+
+        approval_record = next(record for record in server.records if record["path"] == "/api/turns/turn_remote/approvals/approval_1")
+        self.assertEqual(approval_record["payload"], {"action": "allow", "scope": "always", "note": "trusted"})
+        self.assertEqual(response["params"]["approval"]["scope"], "always")
+        self.assertEqual(response["params"]["approval"]["note"], "trusted")
 
     def test_remote_runtime_consumes_global_events_for_remote_turn(self) -> None:
         server = RemoteRuntimeServer(

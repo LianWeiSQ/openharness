@@ -243,11 +243,24 @@ class RemoteAppBridgeRuntime:
             return dict(event)
         return payload
 
-    def respond_approval(self, turn_id: str, request_id: str, action: str) -> dict[str, object]:
+    def respond_approval(
+        self,
+        turn_id: str,
+        request_id: str,
+        action: str,
+        *,
+        scope: str | None = None,
+        note: str | None = None,
+    ) -> dict[str, object]:
+        body: dict[str, object] = {"action": action}
+        if scope:
+            body["scope"] = scope
+        if note:
+            body["note"] = note
         payload = app_bridge_post_json(
             self.server_url,
             f"/api/turns/{quote_path(turn_id)}/approvals/{quote_path(request_id)}",
-            {"action": action},
+            body,
             auth_token=self.auth_token,
         )
         event = payload.get("event")

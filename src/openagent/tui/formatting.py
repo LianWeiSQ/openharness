@@ -42,13 +42,18 @@ def format_event(event: AppEvent) -> list[TimelineLine]:
         approval = params.get("approval") if isinstance(params.get("approval"), dict) else {}
         tool_name = str(approval.get("tool_name") or "tool")
         tool_input = _compact_json(approval.get("tool_input") or {})
-        return [TimelineLine("warning", f"approval required: {tool_name} {tool_input}", True)]
+        preview = approval.get("preview") if isinstance(approval.get("preview"), dict) else {}
+        suffix = _approval_preview_summary(preview)
+        return [TimelineLine("warning", f"approval required: {tool_name} {tool_input}{suffix}", True)]
     if method == "turn/approval_resolved":
         approval = params.get("approval") if isinstance(params.get("approval"), dict) else {}
         tool_name = str(approval.get("tool_name") or "tool")
         action = str(approval.get("action") or "-")
+        scope = str(approval.get("scope") or "").strip()
         reason = str(approval.get("reason") or "").strip()
-        suffix = f" ({reason})" if reason else ""
+        note = str(approval.get("note") or "").strip()
+        suffix_parts = [item for item in (scope, reason, note) if item]
+        suffix = f" ({'; '.join(suffix_parts)})" if suffix_parts else ""
         kind = "warning" if action == "deny" else "status"
         return [TimelineLine(kind, f"approval {action}: {tool_name}{suffix}", True)]
     if method in {"turn/completed", "turn/failed", "turn/interrupted"}:
@@ -175,3 +180,24 @@ def _trim_diff_lines(value: str, *, max_lines: int) -> list[str]:
     if len(lines) <= max_lines:
         return lines
     return [*lines[:max_lines], f"... diff truncated ({len(lines) - max_lines} more lines) ..."]
+
+
+def _approval_preview_summary(preview: dict[str, Any]) -> str:
+    if not preview:
+        return ""
+    kind = str(preview.get("kind") or "tool")
+    path = str(preview.get("path") or "")
+    status = str(preview.get("status") or "")
+    bits = [kind]
+    if path:
+        bits.append(path)
+    if status:
+        bits.append(status)
+    diff = str(preview.get("diff") or "")
+    if diff:
+        added, removed = _diff_stats(diff)
+        bits.append(f"+{added}/-{removed}")
+    warnings = preview.get("warnings") if isinstance(preview.get("warnings"), list) else []
+    if warnings:
+        bits.append("warning")
+    return "\npreview: " + " ".join(bits)

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from openagent.app_server.protocol import AppEvent
 from openagent.app_server.runtime import OpenAgentAppRuntime
-from openagent.tui.app import _handle_key
+from openagent.tui.app import _approval_lines, _handle_key
 from openagent.tui.formatting import format_event, short_id, trace_label, wrap_lines
 from openagent.tui.state import TuiState
 
@@ -62,10 +62,10 @@ class InterruptRuntime(DummyRuntime):
 class ApprovalRuntime(InterruptRuntime):
     def __init__(self, *, workspace: Path) -> None:
         super().__init__(workspace=workspace)
-        self.approvals: list[tuple[str, str, str]] = []
+        self.approvals: list[tuple[str, str, str, str | None, str | None]] = []
 
-    def respond_approval(self, turn_id: str, request_id: str, action: str):
-        self.approvals.append((turn_id, request_id, action))
+    def respond_approval(self, turn_id: str, request_id: str, action: str, *, scope: str | None = None, note: str | None = None):
+        self.approvals.append((turn_id, request_id, action, scope, note))
         return {"method": "turn/approval_resolved"}
 
 
@@ -205,6 +205,7 @@ class TuiFormattingTests(unittest.TestCase):
                         "request_id": "approval_1",
                         "tool_name": "write",
                         "tool_input": {"file_path": "a.txt"},
+                        "preview": {"kind": "file-write", "path": "a.txt", "status": "modified", "diff": "--- a/a.txt\n+++ b/a.txt\n-old\n+new"},
                     }
                 },
             )
@@ -218,6 +219,8 @@ class TuiFormattingTests(unittest.TestCase):
                         "request_id": "approval_1",
                         "tool_name": "write",
                         "action": "deny",
+                        "scope": "once",
+                        "note": "too broad",
                     }
                 },
             )
@@ -225,8 +228,33 @@ class TuiFormattingTests(unittest.TestCase):
 
         self.assertEqual(requested[0].kind, "warning")
         self.assertIn("approval required: write", requested[0].text)
+        self.assertIn("preview: file-write a.txt modified +1/-1", requested[0].text)
         self.assertEqual(resolved[0].kind, "warning")
-        self.assertEqual(resolved[0].text, "approval deny: write")
+        self.assertEqual(resolved[0].text, "approval deny: write (once; too broad)")
+
+    def test_approval_lines_include_diff_preview(self) -> None:
+        lines = _approval_lines(
+            {
+                "request_id": "approval_1",
+                "tool_name": "write",
+                "call_id": "call_123456789",
+                "tool_input": {"file_path": "a.txt", "content": "new"},
+                "preview": {
+                    "kind": "file-write",
+                    "path": "a.txt",
+                    "status": "modified",
+                    "warnings": ["current file is not UTF-8 text"],
+                    "diff": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new",
+                },
+            }
+        )
+
+        text = "\n".join(lines)
+        self.assertIn("preview: file-write", text)
+        self.assertIn("path: a.txt (modified)", text)
+        self.assertIn("warning: current file is not UTF-8 text", text)
+        self.assertIn("@@ -1 +1 @@", text)
+        self.assertIn("input:", text)
 
     def test_formats_patch_diff_and_revert_events(self) -> None:
         patch = format_event(
@@ -576,9 +604,41 @@ class TuiFormattingTests(unittest.TestCase):
         self.assertEqual(state.active_approval["request_id"], "approval_1")
         self.assertFalse(_handle_key(ord("a"), state))
 
-        self.assertEqual(runtime.approvals, [("turn_live", "approval_1", "allow")])
+        self.assertEqual(runtime.approvals, [("turn_live", "approval_1", "allow", "once", None)])
         self.assertIsNone(state.active_approval)
-        self.assertEqual(state.status, "approval allow sent")
+        self.assertEqual(state.status, "approval allow once sent")
+
+    def test_tui_approval_keyboard_supports_allow_always_and_deny_note(self) -> None:
+        workspace = self._make_temp_dir()
+        runtime = ApprovalRuntime(workspace=workspace)
+        state = TuiState(runtime=runtime)  # type: ignore[arg-type]
+        state.active_turn = CapturingTurn(status="waiting_approval", id="turn_live")
+        state.active_approval = {
+            "request_id": "approval_1",
+            "turn_id": "turn_live",
+            "tool_name": "write",
+            "tool_input": {"file_path": "a.txt"},
+        }
+
+        self.assertFalse(_handle_key(ord("A"), state))
+        self.assertEqual(runtime.approvals, [("turn_live", "approval_1", "allow", "always", None)])
+        self.assertEqual(state.status, "approval allow always sent")
+
+        state.active_approval = {
+            "request_id": "approval_2",
+            "turn_id": "turn_live",
+            "tool_name": "bash",
+            "tool_input": {"command": "rm -rf tmp"},
+        }
+        self.assertFalse(_handle_key(ord("r"), state))
+        self.assertTrue(state.approval_note_mode)
+        for char in "too risky":
+            self.assertFalse(_handle_key(ord(char), state))
+        self.assertFalse(_handle_key(10, state))
+
+        self.assertEqual(runtime.approvals[-1], ("turn_live", "approval_2", "deny", None, "too risky"))
+        self.assertFalse(state.approval_note_mode)
+        self.assertEqual(state.status, "approval deny sent")
 
     def test_tui_approval_ctrl_c_denies_and_interrupts(self) -> None:
         workspace = self._make_temp_dir()
@@ -594,7 +654,7 @@ class TuiFormattingTests(unittest.TestCase):
 
         self.assertFalse(_handle_key(3, state))
 
-        self.assertEqual(runtime.approvals, [("turn_live", "approval_1", "deny")])
+        self.assertEqual(runtime.approvals, [("turn_live", "approval_1", "deny", None, None)])
         self.assertEqual(runtime.interrupted_turn_ids, ["turn_live"])
         self.assertEqual(state.status, "interrupting")
 

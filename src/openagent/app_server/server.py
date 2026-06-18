@@ -119,7 +119,13 @@ class OpenAgentAppRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"event": event})
             elif path.startswith("/api/turns/") and "/approvals/" in path:
                 turn_id, request_id = _parse_turn_approval_path(path)
-                event = self.runtime.respond_approval(turn_id, request_id, str(payload.get("action") or ""))
+                event = self.runtime.respond_approval(
+                    turn_id,
+                    request_id,
+                    str(payload.get("action") or ""),
+                    scope=_optional_string(payload, "scope"),
+                    note=_optional_string(payload, "note"),
+                )
                 self._send_json({"event": event})
             else:
                 self._send_error(HTTPStatus.NOT_FOUND, "unknown endpoint")

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import hashlib
+import json
 import os
 import threading
 import time
@@ -38,10 +40,11 @@ class ApprovalRequest:
     tool_name: str
     tool_input: dict[str, Any]
     call_id: str | None = None
+    preview: dict[str, Any] | None = None
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "request_id": self.request_id,
             "session_id": self.session_id,
             "turn_id": self.turn_id,
@@ -50,6 +53,9 @@ class ApprovalRequest:
             "call_id": self.call_id,
             "created_at_ms": self.created_at_ms,
         }
+        if self.preview is not None:
+            payload["preview"] = self.preview
+        return payload
 
 
 @dataclass(slots=True)
@@ -76,6 +82,8 @@ class TurnRecord:
     interrupt_requested: bool = False
     events: list[AppEvent] = field(default_factory=list)
     patch_records: list[dict[str, Any]] = field(default_factory=list)
+    workspace: Path | None = field(default=None, repr=False)
+    approval_rules: list[dict[str, Any]] = field(default_factory=list)
     _event_publisher: Callable[[AppEvent], None] | None = field(default=None, repr=False)
     _pending_approvals: dict[str, _PendingApproval] = field(default_factory=dict, repr=False)
     _condition: threading.Condition = field(default_factory=threading.Condition, repr=False)
@@ -154,13 +162,18 @@ class TurnRecord:
             return self.interrupt_requested
 
     async def request_approval(self, tool_call: dict[str, Any]) -> PermissionAction:
+        tool_name = str(tool_call.get("name") or tool_call.get("tool") or "tool")
+        tool_input = dict(tool_call.get("input") or {})
+        if _approval_rule_matches(self.approval_rules, tool_name=tool_name, tool_input=tool_input):
+            return PermissionAction.ALLOW
         request = ApprovalRequest(
             request_id=new_id("approval"),
             session_id=self.session_id,
             turn_id=self.id,
-            tool_name=str(tool_call.get("name") or tool_call.get("tool") or "tool"),
-            tool_input=dict(tool_call.get("input") or {}),
+            tool_name=tool_name,
+            tool_input=tool_input,
             call_id=str(tool_call.get("call_id") or "") or None,
+            preview=_approval_preview(self.workspace, tool_name, tool_input),
         )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[PermissionAction] = loop.create_future()
@@ -186,15 +199,31 @@ class TurnRecord:
             with self._condition:
                 self._pending_approvals.pop(request.request_id, None)
 
-    def resolve_approval(self, request_id: str, action: PermissionAction) -> dict[str, Any]:
+    def resolve_approval(
+        self,
+        request_id: str,
+        action: PermissionAction,
+        *,
+        scope: str | None = None,
+        note: str | None = None,
+    ) -> dict[str, Any]:
         if action not in {PermissionAction.ALLOW, PermissionAction.DENY}:
             raise ValueError("approval action must be allow or deny")
+        normalized_scope = _normalize_approval_scope(scope, action=action)
         with self._condition:
             pending = self._pending_approvals.pop(request_id, None)
             if pending is None:
                 raise KeyError(f"Unknown approval request: {request_id}")
+            if action == PermissionAction.ALLOW and normalized_scope == "always":
+                self.approval_rules.append(_approval_rule(pending.request))
             self.status = "running"
-            event = self._approval_resolved_event(pending=pending, action=action, status=self.status)
+            event = self._approval_resolved_event(
+                pending=pending,
+                action=action,
+                status=self.status,
+                scope=normalized_scope,
+                note=note,
+            )
             self._append_event_locked(event)
             self._condition.notify_all()
 
@@ -208,10 +237,16 @@ class TurnRecord:
         action: PermissionAction,
         status: str,
         reason: str | None = None,
+        scope: str | None = None,
+        note: str | None = None,
     ) -> AppEvent:
         approval = {**pending.request.to_dict(), "action": action.value}
         if reason:
             approval["reason"] = reason
+        if scope:
+            approval["scope"] = scope
+        if note:
+            approval["note"] = note
         return lifecycle_event(
             sequence=len(self.events) + 1,
             method="turn/approval_resolved",
@@ -247,6 +282,7 @@ class TurnRecord:
             "event_count": len(self.events),
             "interrupt_requested": self.interrupt_requested,
             "pending_approval_count": len(self._pending_approvals),
+            "approval_rule_count": len(self.approval_rules),
         }
 
 
@@ -340,6 +376,7 @@ class OpenAgentAppRuntime:
             provider_id=provider_id,
             agent_name=agent_name,
             variant=variant,
+            workspace=self.workspace,
             _event_publisher=self._append_global_event,
         )
         with self._lock:
@@ -453,10 +490,18 @@ class OpenAgentAppRuntime:
             turn.append(event)
             raise
 
-    def respond_approval(self, turn_id: str, request_id: str, action: str) -> dict[str, Any]:
+    def respond_approval(
+        self,
+        turn_id: str,
+        request_id: str,
+        action: str,
+        *,
+        scope: str | None = None,
+        note: str | None = None,
+    ) -> dict[str, Any]:
         turn = self.get_turn(turn_id)
-        normalized = PermissionAction(str(action).strip().lower())
-        return turn.resolve_approval(request_id, normalized)
+        normalized_action, normalized_scope = _normalize_approval_action(action, scope=scope)
+        return turn.resolve_approval(request_id, normalized_action, scope=normalized_scope, note=note)
 
     def _run_turn_thread(self, turn_id: str) -> None:
         try:
@@ -691,6 +736,178 @@ def _trace_metadata(session: Session) -> dict[str, Any]:
         "trace_path": agent_trace.get("trace_path"),
         "session_store": session_store,
     }
+
+
+def _normalize_approval_action(action: str, *, scope: str | None = None) -> tuple[PermissionAction, str]:
+    normalized = str(action or "").strip().lower().replace("-", "_")
+    normalized_scope = str(scope or "").strip().lower()
+    if normalized in {"allow_always", "always"}:
+        return PermissionAction.ALLOW, "always"
+    if normalized in {"allow_once", "allow"}:
+        return PermissionAction.ALLOW, _normalize_approval_scope(normalized_scope or "once", action=PermissionAction.ALLOW)
+    if normalized in {"deny", "reject", "no"}:
+        return PermissionAction.DENY, _normalize_approval_scope(normalized_scope or "once", action=PermissionAction.DENY)
+    raise ValueError("approval action must be allow or deny")
+
+
+def _normalize_approval_scope(scope: str | None, *, action: PermissionAction) -> str:
+    if action == PermissionAction.DENY:
+        return "once"
+    normalized = str(scope or "once").strip().lower()
+    if normalized in {"", "once"}:
+        return "once"
+    if normalized in {"always", "session"}:
+        return "always"
+    raise ValueError("approval scope must be once or always")
+
+
+def _approval_rule(request: ApprovalRequest) -> dict[str, Any]:
+    return {
+        "tool_name": request.tool_name,
+        "pattern": _approval_pattern(request.tool_input),
+        "created_at_ms": int(time.time() * 1000),
+    }
+
+
+def _approval_rule_matches(rules: list[dict[str, Any]], *, tool_name: str, tool_input: dict[str, Any]) -> bool:
+    pattern = _approval_pattern(tool_input)
+    for rule in reversed(rules):
+        if str(rule.get("tool_name") or "") == tool_name and str(rule.get("pattern") or "") == pattern:
+            return True
+    return False
+
+
+def _approval_pattern(payload: dict[str, Any]) -> str:
+    for key in ("file_path", "filePath", "path", "pattern", "command", "name"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    try:
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    except TypeError:
+        return str(payload)
+
+
+def _approval_preview(workspace: Path | None, tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    normalized = tool_name.strip().lower()
+    if normalized == "write":
+        return _write_approval_preview(workspace, tool_input)
+    if normalized == "edit":
+        return _edit_approval_preview(workspace, tool_input)
+    if normalized in {"bash", "shell"}:
+        command = str(tool_input.get("command") or "")
+        return {"kind": "command", "command": command, "warnings": _command_warnings(command)}
+    return {"kind": "tool", "summary": _compact_preview_json(tool_input)}
+
+
+def _write_approval_preview(workspace: Path | None, tool_input: dict[str, Any]) -> dict[str, Any]:
+    raw_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+    after_text = str(tool_input.get("content") or "")
+    path, path_error = _resolve_preview_path(workspace, raw_path)
+    before_text = ""
+    status = "added"
+    warnings: list[str] = []
+    if path_error:
+        warnings.append(path_error)
+    elif path is not None and path.exists():
+        status = "modified"
+        try:
+            before_text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            warnings.append("current file is not UTF-8 text")
+        except OSError as error:
+            warnings.append(str(error))
+    diff = _unified_preview_diff(raw_path or "-", before_text, after_text)
+    return {
+        "kind": "file-write",
+        "path": raw_path,
+        "status": status,
+        "chars": len(after_text),
+        "diff": diff,
+        "warnings": warnings,
+    }
+
+
+def _edit_approval_preview(workspace: Path | None, tool_input: dict[str, Any]) -> dict[str, Any]:
+    raw_path = str(tool_input.get("file_path") or tool_input.get("path") or "")
+    old = str(tool_input.get("old_string") or "")
+    new = str(tool_input.get("new_string") or "")
+    replace_all = bool(tool_input.get("replace_all"))
+    path, path_error = _resolve_preview_path(workspace, raw_path)
+    warnings: list[str] = []
+    before_text = ""
+    after_text = new if old == "" else ""
+    if path_error:
+        warnings.append(path_error)
+    elif path is None or not path.exists():
+        warnings.append("current file is missing")
+    else:
+        try:
+            before_text = path.read_text(encoding="utf-8")
+            if old == "":
+                after_text = new
+            elif old not in before_text:
+                after_text = before_text
+                warnings.append("old_string was not found")
+            else:
+                after_text = before_text.replace(old, new) if replace_all else before_text.replace(old, new, 1)
+        except UnicodeDecodeError:
+            warnings.append("current file is not UTF-8 text")
+        except OSError as error:
+            warnings.append(str(error))
+    return {
+        "kind": "file-edit",
+        "path": raw_path,
+        "replace_all": replace_all,
+        "diff": _unified_preview_diff(raw_path or "-", before_text, after_text),
+        "warnings": warnings,
+    }
+
+
+def _resolve_preview_path(workspace: Path | None, raw_path: str) -> tuple[Path | None, str | None]:
+    if not raw_path:
+        return None, "file path is missing"
+    if workspace is None:
+        return None, "workspace is unavailable"
+    root = workspace.expanduser().resolve()
+    raw = Path(raw_path).expanduser()
+    target = raw.resolve() if raw.is_absolute() else (root / raw).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return target, "path escapes workspace"
+    return target, None
+
+
+def _unified_preview_diff(path: str, before: str, after: str, *, max_lines: int = 120) -> str:
+    diff_lines = list(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+            lineterm="",
+        )
+    )
+    if len(diff_lines) > max_lines:
+        diff_lines = [*diff_lines[:max_lines], f"... diff truncated ({len(diff_lines) - max_lines} more lines) ..."]
+    return "\n".join(diff_lines)
+
+
+def _command_warnings(command: str) -> list[str]:
+    risky = (" rm ", "rm -", "sudo ", "chmod ", "chown ", "curl ", "wget ")
+    padded = f" {command.strip()} "
+    return ["command may change system or network state"] if any(token in padded for token in risky) else []
+
+
+def _compact_preview_json(value: Any, *, limit: int = 1200) -> str:
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except TypeError:
+        rendered = str(value)
+    if len(rendered) <= limit:
+        return rendered
+    return rendered[:limit].rstrip() + "... truncated ..."
 
 
 def _resolve_patch_record(records: list[dict[str, Any]], patch_ref: str) -> dict[str, Any]:
