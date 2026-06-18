@@ -21,6 +21,7 @@ from openagent.cli.main import (
     candidate_model_urls,
     load_local_env,
     run_auth_command,
+    run_attach_command,
     run_client_command,
     run_config_command,
     run_doctor_command,
@@ -536,6 +537,72 @@ Create component $1 for $ARGUMENTS.
         self.assertEqual([event["method"] for event in events], ["item/agentMessage/delta", "turn/completed"])
         self.assertEqual(server.records[0]["path"], "/api/sessions/session_existing/turns")
         self.assertEqual(server.records[0]["payload"]["input"], "continue please")
+
+    def test_attach_command_wires_remote_runtime_to_tui_runner(self) -> None:
+        parser = build_parser()
+        calls: list[dict[str, object]] = []
+
+        class FakeAttachRuntime:
+            def __init__(self, *, server_url: str, workspace: Path, auth_token: str | None) -> None:
+                self.server_url = server_url
+                self.workspace = workspace
+                self.auth_token = auth_token
+                calls.append({"server_url": server_url, "workspace": workspace, "auth_token": auth_token})
+
+            def list_sessions(self) -> list[dict[str, object]]:
+                calls.append({"health_check": True})
+                return [{"id": "session_latest"}]
+
+        def fake_tui_main(argv: list[str], **kwargs: object) -> None:
+            calls.append({"argv": argv, **kwargs})
+
+        with tempfile.TemporaryDirectory() as raw_tmp, patch.dict(os.environ, {"ATTACH_TOKEN": "secret"}, clear=True):
+            workspace = Path(raw_tmp).resolve()
+            args = parser.parse_args(
+                [
+                    "attach",
+                    "http://127.0.0.1:8787/",
+                    "--dir",
+                    raw_tmp,
+                    "--session",
+                    "session_123",
+                    "--server-token-env",
+                    "ATTACH_TOKEN",
+                ]
+            )
+
+            exit_code = run_attach_command(args, tui_main=fake_tui_main, runtime_factory=FakeAttachRuntime, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(calls[0], {"server_url": "http://127.0.0.1:8787", "workspace": workspace, "auth_token": "secret"})
+        self.assertEqual(calls[1], {"health_check": True})
+        self.assertEqual(calls[2]["argv"], [])
+        self.assertIs(calls[2]["runtime"].__class__, FakeAttachRuntime)
+        self.assertEqual(calls[2]["initial_session_id"], "session_123")
+        self.assertEqual(calls[2]["continue_last"], False)
+
+    def test_attach_command_can_skip_health_check_and_continue_latest(self) -> None:
+        parser = build_parser()
+        calls: list[dict[str, object]] = []
+
+        class FakeAttachRuntime:
+            def __init__(self, *, server_url: str, workspace: Path, auth_token: str | None) -> None:
+                calls.append({"server_url": server_url, "workspace": workspace, "auth_token": auth_token})
+
+            def list_sessions(self) -> list[dict[str, object]]:
+                raise AssertionError("health check should be skipped")
+
+        def fake_tui_main(argv: list[str], **kwargs: object) -> None:
+            calls.append({"argv": argv, **kwargs})
+
+        args = parser.parse_args(["attach", "http://app.test", "--continue", "--skip-health-check", "--server-token", "inline-secret"])
+
+        exit_code = run_attach_command(args, tui_main=fake_tui_main, runtime_factory=FakeAttachRuntime, stderr=io.StringIO())
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(calls[0]["auth_token"], "inline-secret")
+        self.assertEqual(calls[1]["initial_session_id"], None)
+        self.assertEqual(calls[1]["continue_last"], True)
 
     def test_config_init_creates_private_env_file(self) -> None:
         parser = build_parser()

@@ -64,6 +64,8 @@ def main(argv: list[str] | None = None) -> None:
         return
     if command == "client":
         raise SystemExit(run_client_command(args))
+    if command == "attach":
+        raise SystemExit(run_attach_command(args))
     if command == "run":
         apply_model_env(args)
         if not args.skip_doctor and not doctor(verbose=True):
@@ -191,6 +193,14 @@ def build_parser() -> argparse.ArgumentParser:
     client.add_argument("--no-command-shell", action="store_true", help="render custom command without executing !`shell` blocks")
     client.add_argument("--format", choices=["text", "json"], default="text", help="output format")
     client.add_argument("--verbose", action="store_true", help="show non-answer runtime events in text mode")
+
+    attach = subparsers.add_parser("attach", help="attach the terminal UI to a running App Bridge server")
+    attach.add_argument("url", help=f"App Bridge URL, for example {DEFAULT_SERVER_URL}")
+    attach.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path for local file mentions")
+    attach.add_argument("--session", "-s", default=None, help="session id to open in the attached TUI")
+    attach.add_argument("--continue", "-c", dest="continue_last", action="store_true", help="open the most recent server session")
+    attach.add_argument("--skip-health-check", action="store_true", help="start TUI without checking the App Bridge first")
+    add_server_auth_options(attach, role="client")
 
     run = subparsers.add_parser("run", help="run a prompt without launching the TUI")
     add_common_model_options(run)
@@ -347,6 +357,8 @@ def add_common_model_options(parser: argparse.ArgumentParser) -> None:
 def add_tui_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", default=None, help="workspace path, default current directory")
     parser.add_argument("--session-root", default=None, help="session store root")
+    parser.add_argument("--session", "-s", default=None, help="session id to open in the TUI")
+    parser.add_argument("--continue", "-c", dest="continue_last", action="store_true", help="open the most recent session")
     parser.add_argument("--skip-doctor", action="store_true", help="start TUI without checking the local model gateway first")
 
 
@@ -403,7 +415,45 @@ def run_tui(args: argparse.Namespace) -> None:
         argv.extend(["--workspace", str(Path(workspace).expanduser())])
     if session_root:
         argv.extend(["--session-root", str(Path(session_root).expanduser())])
+    if getattr(args, "session", None):
+        argv.extend(["--session", str(getattr(args, "session"))])
+    if getattr(args, "continue_last", False):
+        argv.append("--continue")
     tui_main(argv)
+
+
+def run_attach_command(
+    args: argparse.Namespace,
+    *,
+    tui_main: Callable[..., object] | None = None,
+    runtime_factory: object | None = None,
+    stderr: object | None = None,
+) -> int:
+    from openagent.tui.app import main as default_tui_main
+    from openagent.tui.remote_runtime import RemoteAppBridgeRuntime
+
+    err = stderr or sys.stderr
+    server_url = normalize_server_url(str(getattr(args, "url", None) or ""))
+    server_token = resolve_server_token(args, token_attr="server_token", token_env_attr="server_token_env")
+    workspace = Path(getattr(args, "workspace", None) or Path.cwd()).expanduser().resolve()
+    factory = runtime_factory or RemoteAppBridgeRuntime
+    runtime = factory(server_url=server_url, workspace=workspace, auth_token=server_token)  # type: ignore[operator]
+
+    if not getattr(args, "skip_health_check", False):
+        try:
+            runtime.list_sessions()
+        except Exception as error:  # noqa: BLE001 - attach should report connection/auth failures cleanly.
+            print(f"OpenAgent attach failed: {error}", file=err)
+            return 1
+
+    runner = tui_main or default_tui_main
+    runner(
+        [],
+        runtime=runtime,
+        initial_session_id=getattr(args, "session", None),
+        continue_last=bool(getattr(args, "continue_last", False)),
+    )
+    return 0
 
 
 def run_web(args: argparse.Namespace) -> None:
@@ -764,6 +814,8 @@ def format_http_error(method: str, path: str, error: urllib.error.HTTPError) -> 
             return f"{method} {path} returned HTTP {error.code}: {payload['error']}"
     except Exception:  # noqa: BLE001 - best-effort error formatting.
         pass
+    finally:
+        error.close()
     return f"{method} {path} returned HTTP {error.code}"
 
 

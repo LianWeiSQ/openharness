@@ -15,18 +15,49 @@ from .formatting import TimelineLine, short_id, trace_label, wrap_lines
 from .state import TuiState
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(
+    argv: list[str] | None = None,
+    *,
+    runtime: object | None = None,
+    initial_session_id: str | None = None,
+    continue_last: bool = False,
+) -> None:
     parser = argparse.ArgumentParser(description="Run the OpenAgent terminal UI.")
     parser.add_argument("--workspace", default=None)
     parser.add_argument("--session-root", default=None)
+    parser.add_argument("--session", "-s", default=None)
+    parser.add_argument("--continue", "-c", dest="continue_last", action="store_true")
     args = parser.parse_args(argv)
 
-    runtime = OpenAgentAppRuntime(workspace=args.workspace, session_store_root=args.session_root)
-    state = TuiState(runtime=runtime)
+    active_runtime = runtime or OpenAgentAppRuntime(workspace=args.workspace, session_store_root=args.session_root)
+    state = TuiState(runtime=active_runtime)
+    _apply_initial_session(
+        state,
+        initial_session_id=initial_session_id or args.session,
+        continue_last=continue_last or bool(args.continue_last),
+    )
     try:
         curses.wrapper(lambda stdscr: _run(stdscr, state))
     except KeyboardInterrupt:
         return
+
+
+def _apply_initial_session(state: TuiState, *, initial_session_id: str | None, continue_last: bool) -> None:
+    if initial_session_id:
+        state.resume_session(initial_session_id)
+        return
+    if not continue_last:
+        return
+    try:
+        sessions = list(state.runtime.list_sessions())
+    except Exception as error:  # noqa: BLE001 - startup failures should stay visible inside the TUI.
+        state.timeline.append(TimelineLine("error", f"failed to continue latest session: {error}", important=True))
+        state.status = "continue failed"
+        return
+    if sessions:
+        session_id = str(sessions[0].get("id") or "")
+        if session_id:
+            state.resume_session(session_id)
 
 
 def _run(stdscr, state: TuiState) -> None:

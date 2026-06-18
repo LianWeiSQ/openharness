@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from openagent.app_server.runtime import OpenAgentAppRuntime, TurnRecord
+from openagent.app_server.runtime import TurnRecord
 from openagent.cli.custom_commands import discover_commands, inject_file_references, render_command, resolve_command
 
 from .formatting import TimelineLine, format_event
@@ -28,7 +28,7 @@ BUILTIN_COMMANDS: tuple[tuple[str, str], ...] = (
 
 @dataclass(slots=True)
 class TuiState:
-    runtime: OpenAgentAppRuntime
+    runtime: Any
     session_id: str | None = None
     active_turn: TurnRecord | None = None
     next_event_index: int = 0
@@ -215,6 +215,9 @@ class TuiState:
         self._resume_session_id(session_id)
         self.session_picker_open = False
         return True
+
+    def resume_session(self, session_id: str) -> None:
+        self._resume_session_id(session_id)
 
     def refresh_file_picker(self) -> None:
         span = self._active_file_mention_span()
