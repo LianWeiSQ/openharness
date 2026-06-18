@@ -1,0 +1,208 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import threading
+import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from openagent.tui.remote_runtime import RemoteAppBridgeRuntime, RemoteTurnRecord
+from openagent.tui.state import TuiState
+
+
+class RemoteRuntimeServer:
+    def __init__(self, *, required_token: str | None = None) -> None:
+        self.records: list[dict[str, object]] = []
+        self.sessions: dict[str, dict[str, object]] = {
+            "session_existing": {
+                "id": "session_existing",
+                "status": "ready",
+                "message_count": 2,
+                "messages": [
+                    {"role": "user", "content": "old question"},
+                    {"role": "assistant", "content": "old answer"},
+                ],
+            }
+        }
+        self.required_token = required_token
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                if not self._authorized():
+                    return
+                owner.records.append({"method": "GET", "path": self.path, "authorization": self.headers.get("Authorization") or ""})
+                if self.path == "/api/sessions":
+                    self._send_json({"sessions": list(owner.sessions.values())})
+                    return
+                if self.path == "/api/sessions/session_existing":
+                    self._send_json({"session": owner.sessions["session_existing"]})
+                    return
+                if self.path == "/api/turns/turn_remote/events":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.end_headers()
+                    self.wfile.write(
+                        (
+                            'data: {"sequence": 1, "method": "turn/started", "params": {"status": "running"}}\n\n'
+                            'data: {"sequence": 2, "method": "item/agentMessage/delta", "params": {"event": {"text": "hello remote"}}}\n\n'
+                            'data: {"sequence": 3, "method": "turn/approval_requested", "params": {"status": "waiting_approval", "approval": {"turn_id": "turn_remote", "request_id": "approval_1", "tool_name": "write", "tool_input": {"path": "a.txt"}}}}\n\n'
+                            'data: {"sequence": 4, "method": "turn/completed", "params": {"status": "completed", "final_answer": "hello remote", "trace": {"id": "trace_1"}}}\n\n'
+                        ).encode("utf-8")
+                    )
+                    return
+                self._send_json({"error": "not found"}, status=404)
+
+            def do_POST(self) -> None:  # noqa: N802
+                if not self._authorized():
+                    return
+                payload = self._read_json()
+                owner.records.append({"method": "POST", "path": self.path, "payload": payload, "authorization": self.headers.get("Authorization") or ""})
+                if self.path == "/api/sessions":
+                    session = {"id": "session_new", "status": "ready", "message_count": 0, "messages": []}
+                    owner.sessions["session_new"] = session
+                    self._send_json({"session": session}, status=201)
+                    return
+                if self.path == "/api/sessions/session_existing/turns":
+                    self._send_json({"turn": {"id": "turn_remote", "session_id": "session_existing", "status": "queued"}}, status=201)
+                    return
+                if self.path == "/api/turns/turn_remote/interrupt":
+                    self._send_json({"turn": {"id": "turn_remote", "status": "interrupting"}})
+                    return
+                if self.path == "/api/turns/turn_remote/approvals/approval_1":
+                    self._send_json(
+                        {
+                            "event": {
+                                "sequence": 5,
+                                "method": "turn/approval_resolved",
+                                "params": {"approval": {"request_id": "approval_1", "action": payload.get("action")}},
+                            }
+                        }
+                    )
+                    return
+                self._send_json({"error": "not found"}, status=404)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+                return
+
+            def _authorized(self) -> bool:
+                if owner.required_token is None:
+                    return True
+                if self.headers.get("Authorization") == f"Bearer {owner.required_token}":
+                    return True
+                self._send_json({"error": "unauthorized"}, status=401)
+                return False
+
+            def _read_json(self) -> dict[str, object]:
+                raw_len = int(self.headers.get("Content-Length") or "0")
+                if raw_len <= 0:
+                    return {}
+                value = json.loads(self.rfile.read(raw_len).decode("utf-8"))
+                return value if isinstance(value, dict) else {}
+
+            def _send_json(self, payload: dict[str, object], *, status: int = 200) -> None:
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        host, port = self.server.server_address
+        self.url = f"http://{host}:{port}"
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+
+
+class RemoteAppBridgeRuntimeTests(unittest.TestCase):
+    def test_remote_runtime_reports_auth_failure_without_token(self) -> None:
+        server = RemoteRuntimeServer(required_token="secret")
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url)
+
+        with self.assertRaisesRegex(Exception, "401|unauthorized"):
+            runtime.list_sessions()
+
+    def test_remote_runtime_sessions_turn_sse_interrupt_approval_and_token_headers(self) -> None:
+        server = RemoteRuntimeServer(required_token="secret")
+        self.addCleanup(server.close)
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            workspace = Path(raw_tmp).resolve()
+            runtime = RemoteAppBridgeRuntime(server_url=server.url + "/", workspace=workspace, auth_token="secret")
+
+            sessions = runtime.list_sessions()
+            resumed = runtime.resume_session("session_existing")
+            fetched = runtime.get_session("session_existing")
+            created = runtime.start_session()
+            turn = runtime.start_turn(session_id="session_existing", user_text="hello")
+            approval_response = runtime.respond_approval("turn_remote", "approval_1", "deny")
+            interrupt_response = runtime.interrupt_turn("turn_remote")
+
+            self.assertTrue(turn.wait_until_terminal(timeout_s=5.0))
+
+        self.assertEqual(sessions[0]["id"], "session_existing")
+        self.assertEqual(resumed["messages"][0]["content"], "old question")
+        self.assertEqual(fetched["id"], "session_existing")
+        self.assertEqual(created["id"], "session_new")
+        self.assertEqual(turn.status, "completed")
+        self.assertEqual(turn.final_answer, "hello remote")
+        self.assertEqual(turn.trace, {"id": "trace_1"})
+        self.assertEqual([event.method for event in turn.events], ["turn/started", "item/agentMessage/delta", "turn/approval_requested", "turn/completed"])
+        self.assertEqual(approval_response["method"], "turn/approval_resolved")
+        self.assertEqual(interrupt_response["status"], "interrupting")
+        self.assertTrue(server.records)
+        self.assertTrue(all(record["authorization"] == "Bearer secret" for record in server.records))
+        create_record = next(record for record in server.records if record["path"] == "/api/sessions" and record["method"] == "POST")
+        self.assertEqual(create_record["payload"]["cwd"], str(workspace))
+
+    def test_tui_state_sends_remote_approval_and_interrupt(self) -> None:
+        server = RemoteRuntimeServer()
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url)
+        state = TuiState(runtime=runtime)
+        state.active_turn = RemoteTurnRecord(id="turn_remote", session_id="session_existing", status="waiting_approval")
+        state.active_approval = {
+            "turn_id": "turn_remote",
+            "request_id": "approval_1",
+            "tool_name": "write",
+            "tool_input": {"path": "a.txt"},
+        }
+
+        self.assertTrue(state.respond_approval("allow"))
+        state.request_interrupt()
+
+        approval_record = next(record for record in server.records if record["path"] == "/api/turns/turn_remote/approvals/approval_1")
+        interrupt_record = next(record for record in server.records if record["path"] == "/api/turns/turn_remote/interrupt")
+        self.assertEqual(approval_record["payload"], {"action": "allow"})
+        self.assertEqual(interrupt_record["payload"], {})
+        self.assertEqual(state.status, "interrupting")
+
+    def test_tui_state_polls_remote_turn_events(self) -> None:
+        server = RemoteRuntimeServer()
+        self.addCleanup(server.close)
+        runtime = RemoteAppBridgeRuntime(server_url=server.url)
+        state = TuiState(runtime=runtime)
+        state.session_id = "session_existing"
+        state.input_buffer = "hello"
+
+        self.assertTrue(state.submit())
+        assert state.active_turn is not None
+        self.assertTrue(state.active_turn.wait_until_terminal(timeout_s=5.0))
+        state.poll_events()
+
+        timeline_text = "\n".join(line.text for line in state.timeline)
+        self.assertEqual(state.status, "completed")
+        self.assertIn("> hello", timeline_text)
+        self.assertIn("hello remote", timeline_text)
+        self.assertIn("approval required: write", timeline_text)
+
+
+if __name__ == "__main__":
+    unittest.main()
