@@ -99,10 +99,12 @@ P0 rows are the first implementation tranche after this matrix:
    MCP OAuth auth/logout/debug parity. The [#43](https://github.com/LianWeiSQ/openagent-ai/issues/43)
    config-management slice unlocks existing MCP runtime/config work, but
    OpenCode's OAuth-oriented MCP flows remain a P0 CLI gap.
-2. [CLI-04 / #67](https://github.com/LianWeiSQ/openagent-ai/issues/67):
-   provider runtime, auth methods, env discovery, and model routing parity. The
+2. [CLI-04 / #68](https://github.com/LianWeiSQ/openagent-ai/issues/68):
+   native provider SDK routing and well-known login parity. The
    [#44](https://github.com/LianWeiSQ/openagent-ai/issues/44) credential slice
-   adds the local storage and active-provider base needed for this.
+   and [#67](https://github.com/LianWeiSQ/openagent-ai/issues/67) env-discovery
+   slice add the local storage, auth-method metadata, and active-provider base
+   needed for this.
 3. [TUI-10 / #63](https://github.com/LianWeiSQ/openagent-ai/issues/63) and
    [#66](https://github.com/LianWeiSQ/openagent-ai/issues/66): finish attach-era
    global App Bridge event transport and server-side TUI control routes after
