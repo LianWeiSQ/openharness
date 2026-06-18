@@ -84,6 +84,44 @@ def login_provider(
     return {"provider": normalized, "auth_file": str(auth_path), "record": public_provider_record(providers[normalized])}
 
 
+def login_wellknown_provider(
+    *,
+    provider: str,
+    api_key: str,
+    provider_url: str,
+    wellknown_url: str,
+    auth_env: str,
+    auth_command_preview: str,
+    base_url: str | None = None,
+    model: str | None = None,
+    wire_api: str | None = None,
+    path: str | Path | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_provider(provider)
+    payload = load_auth_file(path)
+    providers = payload.setdefault("providers", {})
+    existing = providers.get(normalized) if isinstance(providers.get(normalized), dict) else {}
+    env = normalize_env_mapping(existing.get("env"), provider=normalized)
+    env["api_key"] = auth_env
+    record = {
+        "provider": normalized,
+        "type": "wellknown",
+        "api_key": api_key,
+        "base_url": base_url or existing.get("base_url"),
+        "model": model or existing.get("model"),
+        "wire_api": wire_api or existing.get("wire_api"),
+        "env": env,
+        "wellknown_provider_url": provider_url,
+        "wellknown_url": wellknown_url,
+        "auth_env": auth_env,
+        "auth_command_preview": auth_command_preview,
+        "updated_at_ms": int(time.time() * 1000),
+    }
+    providers[normalized] = {key: value for key, value in record.items() if value is not None}
+    auth_path = save_auth_file(payload, path)
+    return {"provider": normalized, "auth_file": str(auth_path), "record": public_provider_record(providers[normalized])}
+
+
 def logout_provider(*, provider: str, path: str | Path | None = None) -> dict[str, Any]:
     normalized = normalize_provider(provider)
     payload = load_auth_file(path)
@@ -169,7 +207,7 @@ def public_provider_record(record: dict[str, Any]) -> dict[str, Any]:
     env_api_key = os.getenv(env["api_key"])
     api_key = stored_api_key if stored_api_key else (env_api_key if source != "env" else "")
     auth_methods = provider_auth_method_overview(provider)
-    return {
+    public_record = {
         "provider": provider,
         "type": str(record.get("type") or "api"),
         "source": source,
@@ -184,6 +222,15 @@ def public_provider_record(record: dict[str, Any]) -> dict[str, Any]:
         "methods": [method["id"] for method in auth_methods],
         "updated_at_ms": record.get("updated_at_ms"),
     }
+    if record.get("wellknown_url"):
+        public_record["wellknown_url"] = record.get("wellknown_url")
+    if record.get("wellknown_provider_url"):
+        public_record["wellknown_provider_url"] = record.get("wellknown_provider_url")
+    if record.get("auth_env"):
+        public_record["auth_env"] = record.get("auth_env")
+    if record.get("auth_command_preview"):
+        public_record["auth_command_preview"] = record.get("auth_command_preview")
+    return public_record
 
 
 def mask_secret(value: str) -> str:
