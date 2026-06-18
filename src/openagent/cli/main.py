@@ -46,6 +46,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or "tui"
+    if command == "mcp":
+        raise SystemExit(run_mcp_command(args))
     load_local_env(getattr(args, "config", None))
     load_auth_env(getattr(args, "auth_file", None))
 
@@ -294,6 +296,38 @@ def build_parser() -> argparse.ArgumentParser:
     add_auth_options(auth_logout)
     auth_logout.add_argument("--provider", "-p", default="openai", help="provider id, currently openai")
 
+    mcp = subparsers.add_parser("mcp", help="manage remote MCP servers")
+    mcp_subparsers = mcp.add_subparsers(dest="mcp_command", required=True)
+
+    mcp_list = mcp_subparsers.add_parser("list", aliases=["ls"], help="list configured MCP servers")
+    add_mcp_options(mcp_list)
+    mcp_list.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    mcp_show = mcp_subparsers.add_parser("show", help="show one configured MCP server")
+    add_mcp_options(mcp_show)
+    mcp_show.add_argument("name", help="MCP server name")
+    mcp_show.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    mcp_add = mcp_subparsers.add_parser("add", help="add or update a remote MCP server")
+    add_mcp_options(mcp_add)
+    mcp_add.add_argument("name", help="MCP server name")
+    mcp_add.add_argument("--url", required=True, help="remote MCP server URL")
+    mcp_add.add_argument("--transport", choices=["auto", "http", "sse"], default="auto", help="transport selection")
+    mcp_add.add_argument("--header", action="append", default=[], help="HTTP header as KEY=VALUE; can be used more than once")
+    mcp_add.add_argument("--timeout-ms", type=int, default=30000, help="request timeout in milliseconds")
+    mcp_add.add_argument("--disabled", action="store_true", help="write the server as disabled")
+    mcp_add.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    mcp_remove = mcp_subparsers.add_parser("remove", aliases=["rm"], help="remove a configured MCP server")
+    add_mcp_options(mcp_remove)
+    mcp_remove.add_argument("name", help="MCP server name")
+    mcp_remove.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
+    mcp_doctor = mcp_subparsers.add_parser("doctor", help="validate MCP configuration and optionally refresh remote tools")
+    add_mcp_options(mcp_doctor)
+    mcp_doctor.add_argument("--refresh", action="store_true", help="refresh remote MCP tool listings")
+    mcp_doctor.add_argument("--format", choices=["table", "json"], default="table", help="output format")
+
     doctor_parser = subparsers.add_parser("doctor", help="check local model gateway configuration")
     add_common_model_options(doctor_parser)
     doctor_parser.add_argument("--format", choices=["text", "json"], default="text", help="output format")
@@ -344,6 +378,11 @@ def add_command_options(parser: argparse.ArgumentParser) -> None:
 
 def add_auth_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--auth-file", default=None, help="auth file; default OPENAGENT_AUTH_FILE or ~/.config/openagent/auth.json")
+
+
+def add_mcp_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", dest="mcp_config", default=None, help="MCP JSON config path; default OPENAGENT_MCP_CONFIG or <workspace>/.openagent/mcp.json")
+    parser.add_argument("--workspace", "--dir", dest="workspace", default=None, help="workspace path used to resolve the default MCP config")
 
 
 def apply_model_env(args: argparse.Namespace, *, defaults: OpenAgentCliDefaults = OpenAgentCliDefaults()) -> None:
@@ -1069,6 +1108,12 @@ def run_auth_command(
         return 0
     print(f"Unknown auth command: {command}", file=err)
     return 2
+
+
+def run_mcp_command(args: argparse.Namespace, *, stdout: object | None = None, stderr: object | None = None) -> int:
+    from openagent.cli.mcp import run_mcp_command as run
+
+    return run(args, stdout=stdout, stderr=stderr)
 
 
 def resolve_session_store_root(args: argparse.Namespace) -> Path:

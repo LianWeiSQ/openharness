@@ -24,6 +24,7 @@ from openagent.cli.main import (
     run_client_command,
     run_config_command,
     run_doctor_command,
+    run_mcp_command,
     run_models_command,
     run_custom_command,
     run_non_interactive,
@@ -617,6 +618,154 @@ Create component $1 for $ARGUMENTS.
             self.assertEqual(payload["app_bridge"]["server_token"], "set")
             self.assertNotIn("private-key", stdout.getvalue())
             self.assertNotIn("server-token", stdout.getvalue())
+
+    def test_mcp_add_list_show_and_remove_manage_config_without_leaking_headers(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            add_stdout = io.StringIO()
+            add_args = parser.parse_args(
+                [
+                    "mcp",
+                    "add",
+                    "demo",
+                    "--config",
+                    str(config_path),
+                    "--url",
+                    "https://example.com/mcp",
+                    "--transport",
+                    "http",
+                    "--header",
+                    "Authorization=Bearer secret-token",
+                    "--header",
+                    "X-Team=platform",
+                    "--timeout-ms",
+                    "45000",
+                    "--format",
+                    "json",
+                ]
+            )
+
+            self.assertEqual(run_mcp_command(add_args, stdout=add_stdout, stderr=io.StringIO()), 0)
+            add_payload = json.loads(add_stdout.getvalue())
+            self.assertEqual(add_payload["server"]["name"], "demo")
+            self.assertEqual(add_payload["server"]["header_names"], ["Authorization", "X-Team"])
+            self.assertNotIn("secret-token", add_stdout.getvalue())
+            self.assertNotIn("platform", add_stdout.getvalue())
+
+            raw = json.loads(config_path.read_text(encoding="utf-8"))
+            self.assertEqual(raw["mcpServers"]["demo"]["url"], "https://example.com/mcp")
+            self.assertEqual(raw["mcpServers"]["demo"]["headers"]["Authorization"], "Bearer secret-token")
+
+            list_stdout = io.StringIO()
+            list_args = parser.parse_args(["mcp", "list", "--config", str(config_path), "--format", "json"])
+            self.assertEqual(run_mcp_command(list_args, stdout=list_stdout, stderr=io.StringIO()), 0)
+            listed = json.loads(list_stdout.getvalue())
+            self.assertEqual(listed["servers"][0]["name"], "demo")
+            self.assertNotIn("secret-token", list_stdout.getvalue())
+
+            show_stdout = io.StringIO()
+            show_args = parser.parse_args(["mcp", "show", "demo", "--config", str(config_path)])
+            self.assertEqual(run_mcp_command(show_args, stdout=show_stdout, stderr=io.StringIO()), 0)
+            self.assertIn("Authorization, X-Team", show_stdout.getvalue())
+            self.assertNotIn("secret-token", show_stdout.getvalue())
+
+            remove_stdout = io.StringIO()
+            remove_args = parser.parse_args(["mcp", "rm", "demo", "--config", str(config_path), "--format", "json"])
+            self.assertEqual(run_mcp_command(remove_args, stdout=remove_stdout, stderr=io.StringIO()), 0)
+            self.assertEqual(json.loads(remove_stdout.getvalue())["removed"], True)
+            self.assertEqual(json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"], {})
+
+    def test_mcp_uses_workspace_default_config_path(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            workspace = Path(raw_tmp)
+            args = parser.parse_args(
+                [
+                    "mcp",
+                    "add",
+                    "demo",
+                    "--workspace",
+                    str(workspace),
+                    "--url",
+                    "https://example.com/mcp",
+                    "--format",
+                    "json",
+                ]
+            )
+            stdout = io.StringIO()
+
+            self.assertEqual(run_mcp_command(args, stdout=stdout, stderr=io.StringIO()), 0)
+
+            payload = json.loads(stdout.getvalue())
+            expected_path = workspace.resolve() / ".openagent" / "mcp.json"
+            self.assertEqual(payload["config_path"], str(expected_path))
+            self.assertTrue(expected_path.exists())
+
+    def test_mcp_doctor_validates_config_without_refresh_by_default(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            "demo": {
+                                "type": "remote",
+                                "url": "https://example.com/mcp",
+                                "transport": "auto",
+                                "headers": {"Authorization": "Bearer secret-token"},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = parser.parse_args(["mcp", "doctor", "--config", str(config_path), "--format", "json"])
+            stdout = io.StringIO()
+
+            self.assertEqual(run_mcp_command(args, stdout=stdout, stderr=io.StringIO()), 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["configured"], True)
+            self.assertEqual(payload["server_count"], 1)
+            self.assertEqual(payload["servers"][0]["status"], "idle")
+            self.assertNotIn("secret-token", stdout.getvalue())
+
+    def test_mcp_doctor_refresh_failure_is_status_not_traceback(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            config_path.write_text(
+                json.dumps({"mcpServers": {"demo": {"url": "https://example.com/mcp"}}}),
+                encoding="utf-8",
+            )
+            args = parser.parse_args(["mcp", "doctor", "--refresh", "--config", str(config_path), "--format", "json"])
+            stdout = io.StringIO()
+
+            with patch("openagent.cli.mcp.RemoteMcpManager.refresh_all_sync", side_effect=RuntimeError("network down")):
+                exit_code = run_mcp_command(args, stdout=stdout, stderr=io.StringIO())
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["servers"][0]["status"], "error")
+            self.assertEqual(payload["servers"][0]["last_error"], "network down")
+            self.assertNotIn("Traceback", stdout.getvalue())
+
+    def test_mcp_rejects_invalid_header_and_missing_server_cleanly(self) -> None:
+        parser = build_parser()
+        with tempfile.TemporaryDirectory() as raw_tmp:
+            config_path = Path(raw_tmp) / "mcp.json"
+            add_args = parser.parse_args(["mcp", "add", "demo", "--config", str(config_path), "--url", "https://example.com/mcp", "--header", "bad"])
+            stderr = io.StringIO()
+
+            self.assertEqual(run_mcp_command(add_args, stdout=io.StringIO(), stderr=stderr), 2)
+            self.assertIn("KEY=VALUE", stderr.getvalue())
+
+            show_args = parser.parse_args(["mcp", "show", "missing", "--config", str(config_path)])
+            stderr = io.StringIO()
+            self.assertEqual(run_mcp_command(show_args, stdout=io.StringIO(), stderr=stderr), 1)
+            self.assertIn("MCP server not found", stderr.getvalue())
 
 
 class FakeTurn:
