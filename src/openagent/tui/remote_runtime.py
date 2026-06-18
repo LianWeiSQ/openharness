@@ -168,7 +168,17 @@ class RemoteAppBridgeRuntime:
         if not turn.id:
             raise ValueError("server returned a turn without an id")
         with self._turns_lock:
-            self._turns[turn.id] = turn
+            existing_turn = self._turns.get(turn.id)
+            if existing_turn is None:
+                self._turns[turn.id] = turn
+            else:
+                existing_turn.session_id = turn.session_id or existing_turn.session_id
+                if existing_turn.status == "queued" or turn.status != "queued":
+                    existing_turn.status = turn.status
+                existing_turn.final_answer = turn.final_answer or existing_turn.final_answer
+                existing_turn.error = turn.error or existing_turn.error
+                existing_turn.trace = turn.trace or existing_turn.trace
+                turn = existing_turn
         if self._should_start_turn_stream():
             thread = threading.Thread(target=self._consume_turn_events, args=(turn,), daemon=True)
             thread.start()

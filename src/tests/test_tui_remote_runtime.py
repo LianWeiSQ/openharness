@@ -8,6 +8,7 @@ import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from openagent.app_server.protocol import AppEvent
 from openagent.tui.remote_runtime import RemoteAppBridgeRuntime, RemoteTurnRecord
@@ -222,6 +223,31 @@ class RemoteAppBridgeRuntimeTests(unittest.TestCase):
         self.assertEqual(turn.final_answer, "from global")
         self.assertEqual([event.method for event in turn.events], ["turn/started", "item/agentMessage/delta", "turn/completed"])
         self.assertFalse(any(record["path"] == "/api/turns/turn_global/events" for record in server.records))
+
+    def test_start_turn_reuses_existing_global_stream_record(self) -> None:
+        runtime = RemoteAppBridgeRuntime(server_url="http://127.0.0.1:9", use_global_events=False)
+        runtime._route_global_event(  # noqa: SLF001 - regression covers internal global-stream routing race.
+            AppEvent(
+                sequence=1,
+                global_sequence=1,
+                method="turn/started",
+                params={"thread_id": "session_existing", "turn_id": "turn_race", "status": "running"},
+            )
+        )
+        existing = runtime.get_turn("turn_race")
+
+        with (
+            patch(
+                "openagent.tui.remote_runtime.app_bridge_post_json",
+                return_value={"turn": {"id": "turn_race", "session_id": "session_existing", "status": "queued"}},
+            ),
+            patch.object(runtime, "_should_start_turn_stream", return_value=False),
+        ):
+            turn = runtime.start_turn(session_id="session_existing", user_text="hello")
+
+        self.assertIs(turn, existing)
+        self.assertEqual(turn.status, "running")
+        self.assertEqual([event.method for event in turn.events], ["turn/started"])
 
     def test_remote_turn_record_deduplicates_replayed_global_events(self) -> None:
         turn = RemoteTurnRecord(id="turn_remote", session_id="session_existing")
