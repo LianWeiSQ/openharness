@@ -5,6 +5,71 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 12 - Rust HTTP Runtime Contract
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `http_runtime.json` Python oracle coverage for SDK
+  HTTP-runtime exports, `serve` option wiring, command/stdin prompt extraction,
+  file attachment prompt construction, client session-selection request shapes,
+  SSE parsing, text/json event emission, HTTP error formatting, runtime health
+  and route response contracts, Dockerfile lines, and Docker smoke command
+  output.
+- Replaced the placeholder `openagent-http-runtime` crate with Rust runtime
+  config, health payloads, route response specs, SSE parsing, HTTP error
+  formatting, App Bridge event text/json emission, prompt helpers, Dockerfile
+  and smoke command contracts, Python-compatible JSON line rendering, and CLI
+  argument parsing.
+- Replaced the placeholder `openagent-http-runtime` binary with a runnable
+  entry point supporting `--health-json` and `--docker-smoke` for compiled
+  binary smoke checks.
+- Added `Dockerfile.openagent-http-runtime` and Rust integration tests that
+  compare the Dockerfile contents and binary health output against the Python
+  oracle.
+
+Verification:
+
+```bash
+cargo test -p openagent-http-runtime -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_openagent_cli.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+docker --version
+docker info --format '{{.ServerVersion}}'
+```
+
+Evidence:
+
+- `openagent-http-runtime` targeted tests: 4 tests OK, including
+  `http_runtime.json` parity, compiled `--health-json` binary smoke, and
+  Dockerfile contract parity.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus Python CLI tests: 57 tests OK.
+- Full Python baseline: 422 tests OK.
+- Docker CLI is installed (`Docker version 29.4.0`), but the local Docker
+  daemon was not running, so full `docker build/run` could not be executed in
+  this environment.
+
+Residual risks:
+
+- The Dockerfile and binary smoke contract are verified locally, but a real
+  image build/run still needs a running Docker daemon or CI runner with Docker
+  enabled.
+- The Rust HTTP runtime now owns the tested API/client/container contracts; the
+  final no-Python path still depends on Goal 14 entry point removal/wiring.
+
+Next:
+
+- Goal 13: migrate eval, benchmark, and integration report contracts into Rust.
+
+---
+
 ## 2026-06-19 Goal 11 - Rust App Bridge And TUI State
 
 Status: complete.

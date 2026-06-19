@@ -1,5 +1,5 @@
 {
-  "fixture_count": 13,
+  "fixture_count": 14,
   "fixtures": [
     "agent_loop.json",
     "app_bridge_tui.json",
@@ -7,6 +7,7 @@
     "context_state.json",
     "core_context_policy.json",
     "core_protocol.json",
+    "http_runtime.json",
     "mcp_runtime.json",
     "permission_rulesets.json",
     "provider_adapters.json",

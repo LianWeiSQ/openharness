@@ -572,9 +572,12 @@ name = "openagent-http-runtime"
 version = "0.1.0"
 dependencies = [
  "openagent-app-server",
+ "openagent-app-server-client",
  "openagent-core",
  "openagent-provider",
  "openagent-session",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

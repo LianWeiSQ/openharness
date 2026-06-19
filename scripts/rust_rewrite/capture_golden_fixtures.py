@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sys
+import urllib.error
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -36,8 +37,13 @@ from openagent.app_server.server import (
 )
 from openagent.app_server.runtime import TurnRecord
 from openagent.cli.main import (
+    build_run_prompt,
+    command_text_from_args,
+    emit_app_bridge_events,
+    format_http_error,
     join_server_url,
     normalize_server_url,
+    parse_sse_response,
     quote_path,
     apply_model_env,
     build_parser,
@@ -46,6 +52,8 @@ from openagent.cli.main import (
     run_custom_command,
     run_doctor_command,
     run_mcp_command,
+    run_serve,
+    select_client_session,
 )
 from openagent.core.context_budget import (
     check_context_budget,
@@ -60,6 +68,7 @@ from openagent.tui.remote_runtime import (
     _remote_event_key,
 )
 from openagent.tui.state import TuiState, _normalize_control_action
+from openagent.sdk import http_runtime as sdk_http_runtime
 from openagent.core.context_pack import ContextItem, ContextPackBuildOptions, ContextPackBuilder, estimate_text_tokens
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.instructions import InstructionContextLoader, InstructionLoadOptions
@@ -2196,6 +2205,241 @@ def _app_bridge_tui_fixture() -> dict[str, Any]:
     return _scrub_fixture_root(payload, fixture_root)
 
 
+def _http_runtime_fixture() -> dict[str, Any]:
+    fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal12")
+    shutil.rmtree(fixture_root, ignore_errors=True)
+    workspace = fixture_root / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    attached_file = workspace / "notes.txt"
+    attached_file.write_text("alpha\nbeta\n", encoding="utf-8")
+
+    parser = build_parser()
+    serve_calls: list[dict[str, Any]] = []
+
+    def _fake_serve(**kwargs: Any) -> None:
+        serve_calls.append(kwargs)
+
+    serve_args = parser.parse_args(
+        [
+            "serve",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8787",
+            "--workspace",
+            str(workspace),
+            "--session-root",
+            str(workspace / ".openagent" / "sessions"),
+            "--headless",
+            "--auth-token",
+            "server-secret",
+        ]
+    )
+    run_serve(serve_args, serve_fn=_fake_serve)
+
+    class _FixtureStdin:
+        def __init__(self, text: str, *, is_tty: bool) -> None:
+            self.text = text
+            self._is_tty = is_tty
+
+        def isatty(self) -> bool:
+            return self._is_tty
+
+        def read(self) -> str:
+            return self.text
+
+    message_text = command_text_from_args(SimpleNamespace(message=["hello", "runtime"]), stdin=_FixtureStdin("", is_tty=True))
+    stdin_text = command_text_from_args(SimpleNamespace(message=[]), stdin=_FixtureStdin("from stdin\n", is_tty=False))
+    empty_tty_text = command_text_from_args(SimpleNamespace(message=[]), stdin=_FixtureStdin("", is_tty=True))
+    prompt_with_file = build_run_prompt("summarize", files=["notes.txt"], workspace=workspace)
+
+    events = [
+        {
+            "sequence": 1,
+            "method": "item/agentMessage/delta",
+            "params": {"event": {"text": "hello from server"}},
+        },
+        {
+            "sequence": 2,
+            "method": "turn/completed",
+            "params": {"status": "completed", "final_answer": "hello from server"},
+        },
+    ]
+    sse_lines = [
+        b": ping\n",
+        b"\n",
+        b"id: 1\n",
+        b"event: item/agentMessage/delta\n",
+        b'data: {"sequence": 1, "method": "item/agentMessage/delta", "params": {"event": {"text": "hello from server"}}}\n',
+        b"\n",
+        b"id: 2\n",
+        b"event: turn/completed\n",
+        b'data: {"sequence": 2, "method": "turn/completed", "params": {"status": "completed", "final_answer": "hello from server"}}\n',
+        b"\n",
+    ]
+    parsed_sse = list(parse_sse_response(sse_lines))
+
+    text_stdout = io.StringIO()
+    text_stderr = io.StringIO()
+    json_stdout = io.StringIO()
+    json_stderr = io.StringIO()
+    with patch("openagent.cli.main.stream_app_bridge_events", return_value=iter(events)):
+        text_exit = emit_app_bridge_events(
+            "http://app.test",
+            "turn_1",
+            output_format="text",
+            verbose=True,
+            stdout=text_stdout,
+            stderr=text_stderr,
+            auth_token="server-secret",
+        )
+    with patch("openagent.cli.main.stream_app_bridge_events", return_value=iter(events)):
+        json_exit = emit_app_bridge_events(
+            "http://app.test",
+            "turn_1",
+            output_format="json",
+            verbose=False,
+            stdout=json_stdout,
+            stderr=json_stderr,
+            auth_token=None,
+        )
+
+    http_error = urllib.error.HTTPError(
+        "http://app.test/api/health",
+        401,
+        "Unauthorized",
+        hdrs={},
+        fp=io.BytesIO(b'{"error":"unauthorized"}'),
+    )
+
+    select_records: list[dict[str, Any]] = []
+
+    def _fake_get(server_url: str, path: str, *, auth_token: str | None = None) -> dict[str, Any]:
+        select_records.append({"method": "GET", "server_url": server_url, "path": path, "auth_token": auth_token})
+        if path == "/api/sessions":
+            return {"sessions": [{"id": "session_latest"}]}
+        return {"session": {"id": path.rsplit("/", 1)[-1]}}
+
+    def _fake_post(server_url: str, path: str, payload: dict[str, object], *, auth_token: str | None = None) -> dict[str, Any]:
+        select_records.append({"method": "POST", "server_url": server_url, "path": path, "payload": payload, "auth_token": auth_token})
+        return {"session": {"id": "session_new"}}
+
+    with (
+        patch("openagent.cli.main.app_bridge_get_json", new=_fake_get),
+        patch("openagent.cli.main.app_bridge_post_json", new=_fake_post),
+    ):
+        explicit_session = select_client_session(
+            "http://app.test",
+            SimpleNamespace(session="session_existing", continue_last=False),
+            workspace=workspace,
+            auth_token="server-secret",
+        )
+        continue_session = select_client_session(
+            "http://app.test",
+            SimpleNamespace(session=None, continue_last=True),
+            workspace=workspace,
+            auth_token="server-secret",
+        )
+        new_session = select_client_session(
+            "http://app.test",
+            SimpleNamespace(session=None, continue_last=False),
+            workspace=workspace,
+            auth_token="server-secret",
+        )
+
+    dockerfile_lines = [
+        "FROM rust:1.85-bookworm AS builder",
+        "WORKDIR /app",
+        "COPY . .",
+        "RUN cargo build --release -p openagent-http-runtime",
+        "FROM debian:bookworm-slim",
+        "COPY --from=builder /app/target/release/openagent-http-runtime /usr/local/bin/openagent-http-runtime",
+        "EXPOSE 8787",
+        'HEALTHCHECK CMD ["openagent-http-runtime", "--health-json"]',
+        'ENTRYPOINT ["openagent-http-runtime"]',
+        'CMD ["--host", "0.0.0.0", "--port", "8787", "--headless"]',
+    ]
+
+    payload = {
+        "schema_version": 1,
+        "sdk": {
+            "http_runtime_exports": list(sdk_http_runtime.__all__),
+        },
+        "serve": {
+            "args": {
+                "host": serve_args.host,
+                "port": serve_args.port,
+                "workspace": str(workspace),
+                "session_root": str(workspace / ".openagent" / "sessions"),
+                "headless": serve_args.headless,
+            },
+            "call": serve_calls[0],
+        },
+        "prompt": {
+            "message_text": message_text,
+            "stdin_text": stdin_text,
+            "empty_tty_text": empty_tty_text,
+            "with_file": prompt_with_file,
+        },
+        "client": {
+            "select_sessions": {
+                "records": select_records,
+                "explicit": explicit_session,
+                "continue": continue_session,
+                "new": new_session,
+            },
+            "sse_parse": parsed_sse,
+            "emit_text": {
+                "exit_code": text_exit,
+                "stdout": text_stdout.getvalue(),
+                "stderr": text_stderr.getvalue(),
+            },
+            "emit_json": {
+                "exit_code": json_exit,
+                "stdout_lines": json_stdout.getvalue().splitlines(),
+                "stderr": json_stderr.getvalue(),
+            },
+            "http_error": format_http_error("GET", "/api/health", http_error),
+        },
+        "runtime": {
+            "config": {
+                "host": "0.0.0.0",
+                "port": 8787,
+                "serve_static": False,
+                "workspace": workspace.as_posix(),
+                "session_store_root": (workspace / ".openagent" / "sessions").as_posix(),
+                "auth_required": True,
+            },
+            "health": {
+                "ok": True,
+                "service": "openagent-http-runtime",
+                "app_bridge": "openagent-app-server",
+                "ui_enabled": False,
+                "auth_required": True,
+            },
+            "routes": {
+                "health": {"status": 200, "content_type": "application/json; charset=utf-8"},
+                "unauthorized": {"status": 401, "body": {"error": "unauthorized"}},
+                "options": {"status": 204, "headers": {"Access-Control-Allow-Methods": "GET, POST, OPTIONS"}},
+                "unknown": {"status": 404, "body": {"error": "unknown endpoint"}},
+            },
+        },
+        "docker": {
+            "dockerfile": dockerfile_lines,
+            "smoke_command": ["docker", "run", "--rm", "openagent-http-runtime:goal12", "--health-json"],
+            "expected_stdout_json": {
+                "ok": True,
+                "service": "openagent-http-runtime",
+                "app_bridge": "openagent-app-server",
+                "ui_enabled": False,
+                "auth_required": False,
+            },
+            "daemon_required": True,
+        },
+    }
+    return _scrub_fixture_root(payload, fixture_root)
+
+
 def _cli_commands_fixture() -> dict[str, Any]:
     fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal10")
     shutil.rmtree(fixture_root, ignore_errors=True)
@@ -2503,6 +2747,7 @@ def capture(output_dir: Path) -> None:
         "session_trace_observability.json": _session_trace_observability_fixture(),
         "mcp_runtime.json": _mcp_runtime_fixture(),
         "app_bridge_tui.json": _app_bridge_tui_fixture(),
+        "http_runtime.json": _http_runtime_fixture(),
         "cli_commands.json": _cli_commands_fixture(),
     }
     for name, payload in fixtures.items():

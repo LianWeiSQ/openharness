@@ -1,0 +1,192 @@
+{
+  "client": {
+    "emit_json": {
+      "exit_code": 0,
+      "stderr": "",
+      "stdout_lines": [
+        "{\"method\": \"item/agentMessage/delta\", \"params\": {\"event\": {\"text\": \"hello from server\"}}, \"sequence\": 1}",
+        "{\"method\": \"turn/completed\", \"params\": {\"final_answer\": \"hello from server\", \"status\": \"completed\"}, \"sequence\": 2}"
+      ]
+    },
+    "emit_text": {
+      "exit_code": 0,
+      "stderr": "[turn/completed]\n",
+      "stdout": "hello from server\n"
+    },
+    "http_error": "GET /api/health returned HTTP 401: unauthorized",
+    "select_sessions": {
+      "continue": {
+        "id": "session_latest"
+      },
+      "explicit": {
+        "id": "session_existing"
+      },
+      "new": {
+        "id": "session_new"
+      },
+      "records": [
+        {
+          "auth_token": "server-secret",
+          "method": "GET",
+          "path": "/api/sessions/session_existing",
+          "server_url": "http://app.test"
+        },
+        {
+          "auth_token": "server-secret",
+          "method": "GET",
+          "path": "/api/sessions",
+          "server_url": "http://app.test"
+        },
+        {
+          "auth_token": "server-secret",
+          "method": "POST",
+          "path": "/api/sessions",
+          "payload": {
+            "cwd": "/tmp/openagent-rust-rewrite-fixture-goal12/workspace"
+          },
+          "server_url": "http://app.test"
+        }
+      ]
+    },
+    "sse_parse": [
+      {
+        "method": "item/agentMessage/delta",
+        "params": {
+          "event": {
+            "text": "hello from server"
+          }
+        },
+        "sequence": 1
+      },
+      {
+        "method": "turn/completed",
+        "params": {
+          "final_answer": "hello from server",
+          "status": "completed"
+        },
+        "sequence": 2
+      }
+    ]
+  },
+  "docker": {
+    "daemon_required": true,
+    "dockerfile": [
+      "FROM rust:1.85-bookworm AS builder",
+      "WORKDIR /app",
+      "COPY . .",
+      "RUN cargo build --release -p openagent-http-runtime",
+      "FROM debian:bookworm-slim",
+      "COPY --from=builder /app/target/release/openagent-http-runtime /usr/local/bin/openagent-http-runtime",
+      "EXPOSE 8787",
+      "HEALTHCHECK CMD [\"openagent-http-runtime\", \"--health-json\"]",
+      "ENTRYPOINT [\"openagent-http-runtime\"]",
+      "CMD [\"--host\", \"0.0.0.0\", \"--port\", \"8787\", \"--headless\"]"
+    ],
+    "expected_stdout_json": {
+      "app_bridge": "openagent-app-server",
+      "auth_required": false,
+      "ok": true,
+      "service": "openagent-http-runtime",
+      "ui_enabled": false
+    },
+    "smoke_command": [
+      "docker",
+      "run",
+      "--rm",
+      "openagent-http-runtime:goal12",
+      "--health-json"
+    ]
+  },
+  "prompt": {
+    "empty_tty_text": "",
+    "message_text": "hello runtime",
+    "stdin_text": "from stdin",
+    "with_file": "summarize\n\nAttached file: /tmp/openagent-rust-rewrite-fixture-goal12/workspace/notes.txt\n\n```text\nalpha\nbeta\n\n```"
+  },
+  "runtime": {
+    "config": {
+      "auth_required": true,
+      "host": "0.0.0.0",
+      "port": 8787,
+      "serve_static": false,
+      "session_store_root": "/tmp/openagent-rust-rewrite-fixture-goal12/workspace/.openagent/sessions",
+      "workspace": "/tmp/openagent-rust-rewrite-fixture-goal12/workspace"
+    },
+    "health": {
+      "app_bridge": "openagent-app-server",
+      "auth_required": true,
+      "ok": true,
+      "service": "openagent-http-runtime",
+      "ui_enabled": false
+    },
+    "routes": {
+      "health": {
+        "content_type": "application/json; charset=utf-8",
+        "status": 200
+      },
+      "options": {
+        "headers": {
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+        },
+        "status": 204
+      },
+      "unauthorized": {
+        "body": {
+          "error": "unauthorized"
+        },
+        "status": 401
+      },
+      "unknown": {
+        "body": {
+          "error": "unknown endpoint"
+        },
+        "status": 404
+      }
+    }
+  },
+  "schema_version": 1,
+  "sdk": {
+    "http_runtime_exports": [
+      "AgentConfig",
+      "AgentLoop",
+      "ExploreAgent",
+      "LanguageModel",
+      "Model",
+      "OpenAIProvider",
+      "PermissionAction",
+      "PermissionManager",
+      "PermissionRule",
+      "PermissionRuleset",
+      "PlanAgent",
+      "QuestionManager",
+      "RemoteMcpManager",
+      "Session",
+      "SkillDiscoveryReport",
+      "SkillDocument",
+      "SkillInfo",
+      "SkillIssue",
+      "SkillRegistry",
+      "ToolkitAdapter",
+      "UniversalAgent",
+      "load_mcp_config_from_sources",
+      "new_id"
+    ]
+  },
+  "serve": {
+    "args": {
+      "headless": true,
+      "host": "0.0.0.0",
+      "port": 8787,
+      "session_root": "/tmp/openagent-rust-rewrite-fixture-goal12/workspace/.openagent/sessions",
+      "workspace": "/tmp/openagent-rust-rewrite-fixture-goal12/workspace"
+    },
+    "call": {
+      "auth_token": "server-secret",
+      "host": "0.0.0.0",
+      "port": 8787,
+      "serve_static": false,
+      "session_store_root": "/tmp/openagent-rust-rewrite-fixture-goal12/workspace/.openagent/sessions",
+      "workspace": "/tmp/openagent-rust-rewrite-fixture-goal12/workspace"
+    }
+  }
+}
