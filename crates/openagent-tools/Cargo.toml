@@ -7,6 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+openagent-core.workspace = true
 openagent-protocol.workspace = true
 regex.workspace = true
 serde.workspace = true

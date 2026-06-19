@@ -1,7 +1,48 @@
-//! Core runtime crate for the Rust rewrite.
+//! Core permission, context, instruction, and skill behavior for the Rust rewrite.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
+    fs, io,
+    path::{Path, PathBuf},
+};
+
+use openagent_protocol::{
+    ChatMessage, MaterializedPayload, Model, PermissionAction, PermissionRule, PermissionRuleset,
+    Role, ToolSchema, WorkState, WorkStateFile, materialize_openai_compatible_payload,
+    render_work_state, ruleset,
+};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
+use sha1::{Digest, Sha1};
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 
+pub const DEFAULT_BYTES_PER_TOKEN: u64 = 3;
+pub const DEFAULT_GUARD_RATIO: f64 = 0.9;
+pub const DEFAULT_INPUT_SAFETY_MARGIN_TOKENS: u64 = 1024;
+pub const DEFAULT_TOOL_DISPLAY_MAX_BYTES: u64 = 50 * 1024;
+pub const DEFAULT_TOOL_CONTEXT_PREVIEW_BYTES: u64 = 4096;
+pub const DEFAULT_TOOL_CONTEXT_PREVIEW_LINES: u64 = 40;
+pub const DEFAULT_TOOL_CONTEXT_LINE_MAX_CHARS: u64 = 240;
+pub const DEFAULT_PRUNE_OLD_TOOL_OUTPUTS: bool = true;
+pub const DEFAULT_PRUNE_KEEP_RECENT_USER_TURNS: u64 = 2;
+pub const DEFAULT_PRUNE_PROTECT_INPUT_TOKENS: u64 = 12_000;
+pub const DEFAULT_PRUNE_MIN_INPUT_TOKENS: u64 = 4_000;
+pub const DEFAULT_COMPACT_SUMMARY_MAX_OUTPUT_TOKENS: u64 = 512;
+pub const DEFAULT_COMPACT_REFRESH_MIN_NEW_MESSAGES: u64 = 6;
+pub const DEFAULT_OVERFLOW_KEEP_RECENT_USER_TURNS: u64 = 2;
+pub const DEFAULT_COMPACTION_MODE: &str = "structured_work_state";
+
+pub const DEFAULT_MAX_FILE_BYTES: usize = 16 * 1024;
+pub const DEFAULT_MAX_TOTAL_BYTES: usize = 48 * 1024;
+pub const DEFAULT_WORKSPACE_FILES: &[&str] = &["OPENAGENT.md", "AGENTS.md", "CLAUDE.md"];
+pub const DEFAULT_USER_FILES: &[&str] = &["OPENAGENT.md", "instructions.md"];
+
+const SUPPORTED_STRATEGIES: &[&str] = &["auto", "error", "compact"];
+const SUPPORTED_COUNTING: &[&str] = &["auto", "tiktoken", "heuristic"];
+const SUPPORTED_COMPACTION_MODES: &[&str] = &["structured_work_state"];
 #[must_use]
 pub const fn crate_name() -> &'static str {
     CRATE_NAME
@@ -10,6 +51,2021 @@ pub const fn crate_name() -> &'static str {
 #[must_use]
 pub fn protocol_crate_name() -> &'static str {
     openagent_protocol::crate_name()
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct PermissionManager {
+    rules: Vec<PermissionRule>,
+}
+
+impl PermissionManager {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_ruleset(&mut self, name: PermissionRuleset) {
+        self.rules = ruleset(name).rules;
+    }
+
+    pub fn add_rule(&mut self, rule: PermissionRule) {
+        self.rules.push(rule);
+    }
+
+    #[must_use]
+    pub fn evaluate(&self, tool: &str, pattern: &str) -> Option<&PermissionRule> {
+        let mut matched = None;
+        for rule in &self.rules {
+            if glob_match(&rule.tool, tool)
+                && rule
+                    .pattern
+                    .as_deref()
+                    .is_none_or(|rule_pattern| glob_match(rule_pattern, pattern))
+            {
+                matched = Some(rule);
+            }
+        }
+        matched
+    }
+
+    pub fn check(&self, tool_call: &Value) -> Result<PermissionAction, String> {
+        let tool = tool_call
+            .get("name")
+            .or_else(|| tool_call.get("tool"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let payload = tool_call.get("input").cloned().unwrap_or_else(|| json!({}));
+        let pattern = pattern_for(&payload);
+        let action = self
+            .evaluate(tool, &pattern)
+            .map(|rule| rule.action.clone())
+            .unwrap_or(PermissionAction::Ask);
+        if action == PermissionAction::Ask {
+            return Err(format!("Permission requires user confirmation: {tool}"));
+        }
+        Ok(action)
+    }
+}
+
+#[must_use]
+pub fn permission_rule(
+    tool: &str,
+    action: PermissionAction,
+    pattern: Option<&str>,
+) -> PermissionRule {
+    PermissionRule {
+        tool: tool.to_string(),
+        action,
+        pattern: pattern.map(str::to_string),
+        condition: None,
+    }
+}
+
+#[must_use]
+pub fn pattern_for(payload: &Value) -> String {
+    if let Some(object) = payload.as_object() {
+        for key in [
+            "file_path",
+            "filePath",
+            "path",
+            "pattern",
+            "command",
+            "name",
+        ] {
+            if let Some(value) = object.get(key).and_then(Value::as_str)
+                && !value.is_empty()
+            {
+                return value.to_string();
+            }
+        }
+    }
+    python_json_dumps(payload)
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ContextBudgetOptions {
+    pub enabled: bool,
+    pub strategy: String,
+    pub counting: String,
+    pub compaction_mode: String,
+    pub reserve_output_tokens: u64,
+    pub guard_ratio: f64,
+    pub input_safety_margin_tokens: u64,
+    pub use_safety_margin_tokens: bool,
+    pub explicit_input_safety_margin_tokens: bool,
+    pub bytes_per_token: u64,
+    pub tool_display_max_bytes: u64,
+    pub tool_context_preview_bytes: u64,
+    pub tool_context_preview_lines: u64,
+    pub tool_context_line_max_chars: u64,
+    pub prune_old_tool_outputs: bool,
+    pub prune_keep_recent_user_turns: u64,
+    pub prune_protect_input_tokens: u64,
+    pub prune_min_input_tokens: u64,
+    pub compact_summary_max_output_tokens: u64,
+    pub compact_refresh_min_new_messages: u64,
+    pub overflow_keep_recent_user_turns: u64,
+    pub overflow_disable_tools_on_final_attempt: bool,
+    pub overflow_final_max_output_tokens: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ContextBudgetResult {
+    pub estimated_input_tokens: u64,
+    pub input_limit_tokens: u64,
+    pub context_window: u64,
+    pub reserved_output_tokens: u64,
+    pub overflowed: bool,
+    pub tool_message_count: u64,
+    pub largest_tool_message_tokens: u64,
+    pub largest_tool_message_name: String,
+    pub counting_method: String,
+    pub counting_exact: bool,
+    pub fallback_stage: String,
+    pub payload_kind: String,
+}
+
+#[must_use]
+pub fn format_context_budget_error(result: &ContextBudgetResult) -> String {
+    let mut message = format!(
+        "Context budget exceeded before model call: estimated_input_tokens={}, input_limit_tokens={}, context_window={}, reserved_output_tokens={}, counting_method={}, counting_exact={}, payload_kind={}, fallback_stage={}",
+        result.estimated_input_tokens,
+        result.input_limit_tokens,
+        result.context_window,
+        result.reserved_output_tokens,
+        result.counting_method,
+        result.counting_exact,
+        result.payload_kind,
+        result.fallback_stage
+    );
+    if result.tool_message_count > 0 {
+        message.push_str(&format!(
+            ", tool_message_count={}, largest_tool_message_tokens={}, largest_tool_message_name={}",
+            result.tool_message_count,
+            result.largest_tool_message_tokens,
+            if result.largest_tool_message_name.is_empty() {
+                "unknown"
+            } else {
+                &result.largest_tool_message_name
+            }
+        ));
+    }
+    message
+}
+
+pub fn load_context_budget_options(
+    options: Option<&Value>,
+    model: Option<&Model>,
+) -> Result<ContextBudgetOptions, String> {
+    let merged = merge_compaction_facade_options(options)?;
+    let enabled = expect_bool(
+        merged.get("enabled").unwrap_or(&Value::Bool(true)),
+        "enabled",
+        "context_budget",
+    )?;
+    let strategy = expect_non_empty_string(
+        merged
+            .get("strategy")
+            .unwrap_or(&Value::String("auto".to_string())),
+        "context_budget.strategy",
+    )?;
+    let counting = expect_non_empty_string(
+        merged
+            .get("counting")
+            .unwrap_or(&Value::String("auto".to_string())),
+        "context_budget.counting",
+    )?;
+    let compaction_mode = expect_non_empty_string(
+        merged
+            .get("compaction_mode")
+            .unwrap_or(&Value::String(DEFAULT_COMPACTION_MODE.to_string())),
+        "context_budget.compaction_mode",
+    )?;
+    if !SUPPORTED_COMPACTION_MODES.contains(&compaction_mode.as_str()) {
+        return Err(format!(
+            "Unsupported context_budget.compaction_mode: {compaction_mode}. Supported modes: structured_work_state."
+        ));
+    }
+
+    let model_max_output = model.map(|item| item.max_output).unwrap_or(0);
+    let reserve_output_tokens = expect_int(
+        merged
+            .get("reserve_output_tokens")
+            .unwrap_or(&json!(model_max_output)),
+        "reserve_output_tokens",
+        0,
+        "context_budget",
+    )?;
+    let guard_ratio = expect_float(
+        merged
+            .get("guard_ratio")
+            .unwrap_or(&json!(DEFAULT_GUARD_RATIO)),
+        "guard_ratio",
+        0.0,
+        1.0,
+        false,
+    )?;
+    let explicit_input_safety_margin_tokens = merged.contains_key("input_safety_margin_tokens");
+    let use_safety_margin_tokens =
+        explicit_input_safety_margin_tokens || !merged.contains_key("guard_ratio");
+    let safety_margin_default = if use_safety_margin_tokens {
+        DEFAULT_INPUT_SAFETY_MARGIN_TOKENS
+    } else {
+        0
+    };
+    let input_safety_margin_tokens = expect_int(
+        merged
+            .get("input_safety_margin_tokens")
+            .unwrap_or(&json!(safety_margin_default)),
+        "input_safety_margin_tokens",
+        0,
+        "context_budget",
+    )?;
+    let bytes_per_token = expect_int(
+        merged
+            .get("bytes_per_token")
+            .unwrap_or(&json!(DEFAULT_BYTES_PER_TOKEN)),
+        "bytes_per_token",
+        1,
+        "context_budget",
+    )?;
+    let tool_display_max_bytes = expect_int(
+        merged
+            .get("tool_display_max_bytes")
+            .unwrap_or(&json!(DEFAULT_TOOL_DISPLAY_MAX_BYTES)),
+        "tool_display_max_bytes",
+        1,
+        "context_budget",
+    )?;
+    let tool_context_preview_bytes = expect_int(
+        merged
+            .get("tool_context_preview_bytes")
+            .unwrap_or(&json!(DEFAULT_TOOL_CONTEXT_PREVIEW_BYTES)),
+        "tool_context_preview_bytes",
+        1,
+        "context_budget",
+    )?;
+    let tool_context_preview_lines = expect_int(
+        merged
+            .get("tool_context_preview_lines")
+            .unwrap_or(&json!(DEFAULT_TOOL_CONTEXT_PREVIEW_LINES)),
+        "tool_context_preview_lines",
+        1,
+        "context_budget",
+    )?;
+    let tool_context_line_max_chars = expect_int(
+        merged
+            .get("tool_context_line_max_chars")
+            .unwrap_or(&json!(DEFAULT_TOOL_CONTEXT_LINE_MAX_CHARS)),
+        "tool_context_line_max_chars",
+        1,
+        "context_budget",
+    )?;
+    let prune_old_tool_outputs = expect_bool(
+        merged
+            .get("prune_old_tool_outputs")
+            .unwrap_or(&Value::Bool(DEFAULT_PRUNE_OLD_TOOL_OUTPUTS)),
+        "prune_old_tool_outputs",
+        "context_budget",
+    )?;
+    let prune_keep_recent_user_turns = expect_int(
+        merged
+            .get("prune_keep_recent_user_turns")
+            .unwrap_or(&json!(DEFAULT_PRUNE_KEEP_RECENT_USER_TURNS)),
+        "prune_keep_recent_user_turns",
+        1,
+        "context_budget",
+    )?;
+    let prune_protect_input_tokens = expect_int(
+        merged
+            .get("prune_protect_input_tokens")
+            .unwrap_or(&json!(DEFAULT_PRUNE_PROTECT_INPUT_TOKENS)),
+        "prune_protect_input_tokens",
+        0,
+        "context_budget",
+    )?;
+    let prune_min_input_tokens = expect_int(
+        merged
+            .get("prune_min_input_tokens")
+            .unwrap_or(&json!(DEFAULT_PRUNE_MIN_INPUT_TOKENS)),
+        "prune_min_input_tokens",
+        0,
+        "context_budget",
+    )?;
+    let compact_summary_max_output_tokens = expect_int(
+        merged
+            .get("compact_summary_max_output_tokens")
+            .unwrap_or(&json!(DEFAULT_COMPACT_SUMMARY_MAX_OUTPUT_TOKENS)),
+        "compact_summary_max_output_tokens",
+        1,
+        "context_budget",
+    )?;
+    let compact_refresh_min_new_messages = expect_int(
+        merged
+            .get("compact_refresh_min_new_messages")
+            .unwrap_or(&json!(DEFAULT_COMPACT_REFRESH_MIN_NEW_MESSAGES)),
+        "compact_refresh_min_new_messages",
+        1,
+        "context_budget",
+    )?;
+    let overflow_keep_recent_user_turns = expect_int(
+        merged
+            .get("overflow_keep_recent_user_turns")
+            .unwrap_or(&json!(DEFAULT_OVERFLOW_KEEP_RECENT_USER_TURNS)),
+        "overflow_keep_recent_user_turns",
+        1,
+        "context_budget",
+    )?;
+    let overflow_disable_tools_on_final_attempt = expect_bool(
+        merged
+            .get("overflow_disable_tools_on_final_attempt")
+            .unwrap_or(&Value::Bool(true)),
+        "overflow_disable_tools_on_final_attempt",
+        "context_budget",
+    )?;
+    let overflow_final_max_output_default =
+        model.map(|item| item.max_output.min(512)).unwrap_or(512);
+    let overflow_final_max_output_tokens = expect_int(
+        merged
+            .get("overflow_final_max_output_tokens")
+            .unwrap_or(&json!(overflow_final_max_output_default)),
+        "overflow_final_max_output_tokens",
+        1,
+        "context_budget",
+    )?;
+
+    Ok(ContextBudgetOptions {
+        enabled,
+        strategy,
+        counting,
+        compaction_mode,
+        reserve_output_tokens,
+        guard_ratio,
+        input_safety_margin_tokens,
+        use_safety_margin_tokens,
+        explicit_input_safety_margin_tokens,
+        bytes_per_token,
+        tool_display_max_bytes,
+        tool_context_preview_bytes,
+        tool_context_preview_lines,
+        tool_context_line_max_chars,
+        prune_old_tool_outputs,
+        prune_keep_recent_user_turns,
+        prune_protect_input_tokens,
+        prune_min_input_tokens,
+        compact_summary_max_output_tokens,
+        compact_refresh_min_new_messages,
+        overflow_keep_recent_user_turns,
+        overflow_disable_tools_on_final_attempt,
+        overflow_final_max_output_tokens,
+    })
+}
+
+pub fn check_context_budget(
+    system: Option<&str>,
+    messages: &[ChatMessage],
+    tools: &[ToolSchema],
+    model: Option<&Model>,
+    options: Option<&Value>,
+    fallback_stage: &str,
+) -> Result<Option<ContextBudgetResult>, String> {
+    let Some(model) = model else {
+        return Ok(None);
+    };
+    if model.context_window == 0 {
+        return Ok(None);
+    }
+    let config = load_context_budget_options(options, Some(model))?;
+    if !config.enabled {
+        return Ok(None);
+    }
+    if !SUPPORTED_STRATEGIES.contains(&config.strategy.as_str()) {
+        return Err(format!(
+            "Unsupported context budget strategy: {}. Supported strategies: auto, error, compact.",
+            config.strategy
+        ));
+    }
+    if !SUPPORTED_COUNTING.contains(&config.counting.as_str()) {
+        return Err(format!(
+            "Unsupported context budget counting mode: {}. Supported modes: auto, tiktoken, heuristic.",
+            config.counting
+        ));
+    }
+
+    let provider_options = options_to_btree(options);
+    let payload = materialize_openai_compatible_payload(
+        system,
+        messages,
+        tools,
+        Some(model),
+        Some(&provider_options),
+    );
+    let payload_kind = if is_openai_compatible_model(model) {
+        "openai_compatible"
+    } else {
+        "generic"
+    };
+    let count = estimate_payload_tokens(&payload, config.bytes_per_token);
+    let diagnostics = tool_message_diagnostics(messages, model, options, config.bytes_per_token);
+    let input_limit_tokens = compute_input_limit_tokens(model, &config);
+    Ok(Some(ContextBudgetResult {
+        estimated_input_tokens: count,
+        input_limit_tokens,
+        context_window: model.context_window,
+        reserved_output_tokens: config.reserve_output_tokens,
+        overflowed: count > input_limit_tokens,
+        tool_message_count: diagnostics.tool_message_count,
+        largest_tool_message_tokens: diagnostics.largest_tool_message_tokens,
+        largest_tool_message_name: diagnostics.largest_tool_message_name,
+        counting_method: "heuristic".to_string(),
+        counting_exact: false,
+        fallback_stage: fallback_stage.to_string(),
+        payload_kind: payload_kind.to_string(),
+    }))
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ContextItem {
+    pub id: String,
+    pub kind: String,
+    pub source: String,
+    pub content: String,
+    pub priority: i64,
+    pub token_estimate: u64,
+    pub pinned: bool,
+    pub stable_prefix: bool,
+    pub ttl_turns: Option<u64>,
+    pub metadata: BTreeMap<String, Value>,
+}
+
+impl ContextItem {
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        kind: impl Into<String>,
+        source: impl Into<String>,
+        content: impl Into<String>,
+        priority: i64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            source: source.into(),
+            content: content.into(),
+            priority,
+            token_estimate: 0,
+            pinned: false,
+            stable_prefix: false,
+            ttl_turns: None,
+            metadata: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ContextPackTraceEntry {
+    pub item_id: String,
+    pub kind: String,
+    pub source: String,
+    pub priority: i64,
+    pub pinned: bool,
+    pub stable_prefix: bool,
+    pub token_estimate: u64,
+    pub included: bool,
+    pub drop_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ContextPack {
+    pub messages: Vec<ChatMessage>,
+    pub items: Vec<ContextItem>,
+    pub trace: Vec<ContextPackTraceEntry>,
+    pub estimated_input_tokens: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ContextPackBuildOptions {
+    pub token_budget: Option<u64>,
+    pub bytes_per_token: u64,
+    pub trace_only: bool,
+}
+
+impl Default for ContextPackBuildOptions {
+    fn default() -> Self {
+        Self {
+            token_budget: None,
+            bytes_per_token: DEFAULT_BYTES_PER_TOKEN,
+            trace_only: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ContextPackBuilder {
+    pub options: ContextPackBuildOptions,
+}
+
+impl ContextPackBuilder {
+    #[must_use]
+    pub fn new(options: Option<ContextPackBuildOptions>) -> Self {
+        Self {
+            options: options.unwrap_or_default(),
+        }
+    }
+
+    #[must_use]
+    pub fn build(&self, input: ContextPackInput) -> ContextPack {
+        let mut items = self.collect_items(&input);
+        items = self.with_estimates(self.dedupe_items(items));
+        let trace = self.project(&items);
+        let included_ids = trace
+            .iter()
+            .filter(|entry| entry.included)
+            .map(|entry| entry.item_id.clone())
+            .collect::<BTreeSet<_>>();
+        let estimated_input_tokens = items
+            .iter()
+            .filter(|item| included_ids.contains(&item.id))
+            .map(|item| item.token_estimate)
+            .sum();
+        let messages = if self.options.trace_only {
+            input.messages
+        } else {
+            items
+                .iter()
+                .filter(|item| included_ids.contains(&item.id))
+                .map(item_to_message)
+                .collect()
+        };
+        ContextPack {
+            messages,
+            items,
+            trace,
+            estimated_input_tokens,
+        }
+    }
+
+    #[must_use]
+    pub fn collect_items(&self, input: &ContextPackInput) -> Vec<ContextItem> {
+        let mut items = Vec::new();
+        if let Some(runtime_context) = input.runtime_context.as_ref().map(|item| item.trim())
+            && !runtime_context.is_empty()
+        {
+            let mut item =
+                ContextItem::new("runtime:current", "runtime", "runtime", runtime_context, 90);
+            item.pinned = true;
+            item.metadata
+                .insert("synthetic".to_string(), Value::Bool(true));
+            items.push(item);
+        }
+        if let Some(work_state) = work_state_item(&input.metadata, input.messages.len()) {
+            items.push(work_state);
+        }
+        let empty_execution = Value::Object(Map::new());
+        let execution = input
+            .sandbox_metadata
+            .as_ref()
+            .or_else(|| input.metadata.get("execution"))
+            .unwrap_or(&empty_execution);
+        if let Some(sandbox) = sandbox_item(execution) {
+            items.push(sandbox);
+        }
+        if let Some(todo) = todo_item(&input.todos) {
+            items.push(todo);
+        }
+        items.extend(message_items(&input.messages));
+        items.extend(input.extra_items.clone());
+        items
+    }
+
+    fn with_estimates(&self, items: Vec<ContextItem>) -> Vec<ContextItem> {
+        items
+            .into_iter()
+            .map(|mut item| {
+                if item.token_estimate == 0 {
+                    item.token_estimate =
+                        estimate_text_tokens(&item.content, self.options.bytes_per_token);
+                }
+                item
+            })
+            .collect()
+    }
+
+    fn project(&self, items: &[ContextItem]) -> Vec<ContextPackTraceEntry> {
+        let mut included = BTreeSet::new();
+        let mut dropped = BTreeMap::new();
+        let mut used = 0u64;
+        let mut ranked = items.iter().enumerate().collect::<Vec<_>>();
+        ranked.sort_by(|(left_index, left), (right_index, right)| {
+            (
+                !left.pinned,
+                -left.priority,
+                i64::try_from(*left_index).unwrap_or(i64::MAX),
+            )
+                .cmp(&(
+                    !right.pinned,
+                    -right.priority,
+                    i64::try_from(*right_index).unwrap_or(i64::MAX),
+                ))
+        });
+        for (_index, item) in ranked {
+            if self.options.token_budget.is_none_or(|budget| budget == 0)
+                || item.pinned
+                || used + item.token_estimate <= self.options.token_budget.unwrap_or(0)
+            {
+                included.insert(item.id.clone());
+                used += item.token_estimate;
+            } else {
+                dropped.insert(item.id.clone(), "budget".to_string());
+            }
+        }
+        items
+            .iter()
+            .map(|item| {
+                let is_included = included.contains(&item.id);
+                ContextPackTraceEntry {
+                    item_id: item.id.clone(),
+                    kind: item.kind.clone(),
+                    source: item.source.clone(),
+                    priority: item.priority,
+                    pinned: item.pinned,
+                    stable_prefix: item.stable_prefix,
+                    token_estimate: item.token_estimate,
+                    included: is_included,
+                    drop_reason: if is_included {
+                        None
+                    } else {
+                        Some(
+                            dropped
+                                .get(&item.id)
+                                .cloned()
+                                .unwrap_or_else(|| "not_selected".to_string()),
+                        )
+                    },
+                }
+            })
+            .collect()
+    }
+
+    fn dedupe_items(&self, items: Vec<ContextItem>) -> Vec<ContextItem> {
+        let mut by_id = BTreeMap::<String, ContextItem>::new();
+        let mut order = Vec::new();
+        for item in items {
+            if let Some(existing) = by_id.get(&item.id) {
+                if item_rank(&item) > item_rank(existing) {
+                    by_id.insert(item.id.clone(), item);
+                }
+            } else {
+                order.push(item.id.clone());
+                by_id.insert(item.id.clone(), item);
+            }
+        }
+        order
+            .into_iter()
+            .filter_map(|item_id| by_id.remove(&item_id))
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ContextPackInput {
+    pub messages: Vec<ChatMessage>,
+    pub metadata: BTreeMap<String, Value>,
+    pub todos: Vec<Value>,
+    pub runtime_context: Option<String>,
+    pub sandbox_metadata: Option<Value>,
+    pub extra_items: Vec<ContextItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InstructionLoadOptions {
+    pub max_file_bytes: usize,
+    pub max_total_bytes: usize,
+    pub include_user: bool,
+    pub user_config_dir: Option<PathBuf>,
+    pub workspace_files: Vec<String>,
+    pub user_files: Vec<String>,
+}
+
+impl Default for InstructionLoadOptions {
+    fn default() -> Self {
+        Self {
+            max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            include_user: true,
+            user_config_dir: None,
+            workspace_files: DEFAULT_WORKSPACE_FILES
+                .iter()
+                .map(|item| (*item).to_string())
+                .collect(),
+            user_files: DEFAULT_USER_FILES
+                .iter()
+                .map(|item| (*item).to_string())
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InstructionItem {
+    pub path: String,
+    pub display_path: String,
+    pub source: String,
+    pub scope: String,
+    pub content: String,
+    pub bytes_read: usize,
+    pub truncated: bool,
+}
+
+impl InstructionItem {
+    #[must_use]
+    pub fn to_context_item(&self) -> ContextItem {
+        let digest = sha1_hex_12(&self.path);
+        let mut metadata = BTreeMap::new();
+        metadata.insert("path".to_string(), json!(self.path));
+        metadata.insert("display_path".to_string(), json!(self.display_path));
+        metadata.insert("scope".to_string(), json!(self.scope));
+        metadata.insert("bytes_read".to_string(), json!(self.bytes_read));
+        metadata.insert("truncated".to_string(), json!(self.truncated));
+        let mut item = ContextItem::new(
+            format!("instruction:{}:{digest}", self.scope),
+            "instruction",
+            self.source.clone(),
+            format!("[Instruction: {}]\n{}", self.display_path, self.content)
+                .trim()
+                .to_string(),
+            100,
+        );
+        item.pinned = true;
+        item.stable_prefix = true;
+        item.metadata = metadata;
+        item
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct InstructionContext {
+    pub items: Vec<InstructionItem>,
+    pub total_bytes: usize,
+    pub truncated: bool,
+    pub issues: Vec<String>,
+}
+
+impl InstructionContext {
+    #[must_use]
+    pub fn to_context_items(&self) -> Vec<ContextItem> {
+        self.items
+            .iter()
+            .map(InstructionItem::to_context_item)
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct InstructionContextLoader {
+    workspace_root: PathBuf,
+    options: InstructionLoadOptions,
+}
+
+impl InstructionContextLoader {
+    #[must_use]
+    pub fn new(
+        workspace_root: impl Into<PathBuf>,
+        options: Option<InstructionLoadOptions>,
+    ) -> Self {
+        let root = canonicalize_existing(&workspace_root.into());
+        Self {
+            workspace_root: root,
+            options: options.unwrap_or_default(),
+        }
+    }
+
+    #[must_use]
+    pub fn load(&self) -> InstructionContext {
+        let mut issues = Vec::new();
+        let mut items = Vec::new();
+        let mut total_bytes = 0usize;
+        let mut truncated = false;
+        let mut seen = BTreeSet::new();
+        for candidate in self.candidates() {
+            let path = canonicalize_existing(&candidate.path);
+            if seen.contains(&path) || !path.is_file() {
+                continue;
+            }
+            seen.insert(path.clone());
+            if !self.is_allowed_path(&path) {
+                issues.push(format!("skipped_out_of_scope:{}", candidate.display_path));
+                continue;
+            }
+            if total_bytes >= self.options.max_total_bytes {
+                truncated = true;
+                issues.push("total_limit_reached".to_string());
+                break;
+            }
+            match self.load_candidate(&candidate, self.options.max_total_bytes - total_bytes) {
+                Some((item, issue)) => {
+                    if let Some(issue) = issue {
+                        issues.push(issue);
+                    }
+                    total_bytes += item.bytes_read;
+                    truncated |= item.truncated;
+                    items.push(item);
+                }
+                None => issues.push(format!("skipped_unreadable:{}", candidate.display_path)),
+            }
+        }
+        InstructionContext {
+            items,
+            total_bytes,
+            truncated,
+            issues,
+        }
+    }
+
+    fn candidates(&self) -> Vec<InstructionCandidate> {
+        let mut candidates = Vec::new();
+        for base in self.workspace_ancestors() {
+            for filename in &self.options.workspace_files {
+                let path = base.join(filename);
+                let display = self.display_workspace_path(&path);
+                candidates.push(InstructionCandidate {
+                    path,
+                    display_path: display.clone(),
+                    source: format!("instructions.workspace:{display}"),
+                    scope: "workspace".to_string(),
+                });
+            }
+            let path = base.join(".openagent").join("instructions.md");
+            let display = self.display_workspace_path(&path);
+            candidates.push(InstructionCandidate {
+                path,
+                display_path: display.clone(),
+                source: format!("instructions.workspace:{display}"),
+                scope: "workspace".to_string(),
+            });
+            let rules_dir = base.join(".openagent").join("rules");
+            let mut rules = read_dir_paths(&rules_dir)
+                .into_iter()
+                .filter(|path| path.extension().and_then(OsStr::to_str) == Some("md"))
+                .collect::<Vec<_>>();
+            rules.sort();
+            for rule in rules {
+                let display = self.display_workspace_path(&rule);
+                candidates.push(InstructionCandidate {
+                    path: rule,
+                    display_path: display.clone(),
+                    source: format!("instructions.workspace:{display}"),
+                    scope: "workspace".to_string(),
+                });
+            }
+        }
+        if self.options.include_user {
+            let user_dir = self.user_config_dir();
+            for filename in &self.options.user_files {
+                candidates.push(InstructionCandidate {
+                    path: user_dir.join(filename),
+                    display_path: format!("~/.openagent/{filename}"),
+                    source: format!("instructions.user:{filename}"),
+                    scope: "user".to_string(),
+                });
+            }
+            let mut rules = read_dir_paths(&user_dir.join("rules"))
+                .into_iter()
+                .filter(|path| path.extension().and_then(OsStr::to_str) == Some("md"))
+                .collect::<Vec<_>>();
+            rules.sort();
+            for rule in rules {
+                let name = rule
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .unwrap_or_default()
+                    .to_string();
+                candidates.push(InstructionCandidate {
+                    path: rule,
+                    display_path: format!("~/.openagent/rules/{name}"),
+                    source: format!("instructions.user:rules/{name}"),
+                    scope: "user".to_string(),
+                });
+            }
+        }
+        candidates
+    }
+
+    fn load_candidate(
+        &self,
+        candidate: &InstructionCandidate,
+        remaining_bytes: usize,
+    ) -> Option<(InstructionItem, Option<String>)> {
+        let raw = fs::read(&candidate.path).ok()?;
+        if raw.iter().take(1024).any(|byte| *byte == 0) {
+            return None;
+        }
+        if std::str::from_utf8(&raw).is_err() {
+            return None;
+        }
+        let mut allowed = raw
+            .len()
+            .min(self.options.max_file_bytes)
+            .min(remaining_bytes);
+        while allowed > 0 && std::str::from_utf8(&raw[..allowed]).is_err() {
+            allowed -= 1;
+        }
+        if allowed == 0 {
+            return None;
+        }
+        let truncated = allowed < raw.len();
+        let content = std::str::from_utf8(&raw[..allowed])
+            .ok()?
+            .trim()
+            .to_string();
+        let path = canonicalize_existing(&candidate.path);
+        let issue = truncated.then(|| format!("truncated:{}", candidate.display_path));
+        Some((
+            InstructionItem {
+                path: path_to_string(&path),
+                display_path: candidate.display_path.clone(),
+                source: candidate.source.clone(),
+                scope: candidate.scope.clone(),
+                content,
+                bytes_read: allowed,
+                truncated,
+            },
+            issue,
+        ))
+    }
+
+    fn workspace_ancestors(&self) -> Vec<PathBuf> {
+        let mut result = vec![self.workspace_root.clone()];
+        result.extend(
+            self.workspace_root
+                .ancestors()
+                .skip(1)
+                .map(Path::to_path_buf),
+        );
+        result
+    }
+
+    fn user_config_dir(&self) -> PathBuf {
+        self.options
+            .user_config_dir
+            .as_ref()
+            .map(|path| canonicalize_existing(path))
+            .unwrap_or_else(|| default_home_dir().join(".openagent"))
+    }
+
+    fn is_allowed_path(&self, path: &Path) -> bool {
+        if path.starts_with(&self.workspace_root) {
+            return true;
+        }
+        for ancestor in self.workspace_root.ancestors().skip(1) {
+            if path.parent() == Some(ancestor) || path.starts_with(ancestor.join(".openagent")) {
+                return true;
+            }
+        }
+        self.options.include_user && path.starts_with(self.user_config_dir())
+    }
+
+    fn display_workspace_path(&self, path: &Path) -> String {
+        let resolved = canonicalize_existing(path);
+        resolved
+            .strip_prefix(&self.workspace_root)
+            .map(path_to_string)
+            .unwrap_or_else(|_| {
+                resolved
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .unwrap_or_default()
+                    .to_string()
+            })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct InstructionCandidate {
+    path: PathBuf,
+    display_path: String,
+    source: String,
+    scope: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SkillInfo {
+    pub name: String,
+    pub description: String,
+    pub location: String,
+    pub directory: String,
+    pub metadata: BTreeMap<String, Value>,
+    pub score: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SkillDocument {
+    pub name: String,
+    pub description: String,
+    pub location: String,
+    pub directory: String,
+    pub metadata: BTreeMap<String, Value>,
+    pub score: Option<i64>,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SkillIssue {
+    pub kind: String,
+    pub path: String,
+    pub message: String,
+    pub duplicate_of: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SkillDiscoveryReport {
+    pub skills: Vec<SkillInfo>,
+    pub scanned_files: u64,
+    pub loaded_count: u64,
+    pub invalid_count: u64,
+    pub duplicate_count: u64,
+    pub issues: Vec<SkillIssue>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SkillRegistry {
+    session_root: PathBuf,
+    roots: Vec<String>,
+    home_dir: PathBuf,
+}
+
+impl SkillRegistry {
+    #[must_use]
+    pub fn new(
+        session_root: Option<impl Into<PathBuf>>,
+        roots: Option<Vec<String>>,
+        home_dir: Option<impl Into<PathBuf>>,
+    ) -> Self {
+        Self {
+            session_root: canonicalize_existing(
+                &session_root.map(Into::into).unwrap_or_else(|| {
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                }),
+            ),
+            roots: roots.unwrap_or_default(),
+            home_dir: canonicalize_existing(
+                &home_dir.map(Into::into).unwrap_or_else(default_home_dir),
+            ),
+        }
+    }
+
+    #[must_use]
+    pub fn all(&self) -> Vec<SkillInfo> {
+        self.discover()
+            .documents
+            .values()
+            .map(|document| to_skill_info(document, None))
+            .collect()
+    }
+
+    #[must_use]
+    pub fn search(&self, query: &str, limit: Option<usize>) -> Vec<SkillInfo> {
+        let terms = query_terms(query);
+        if terms.is_empty() {
+            let all = self.all();
+            return limit.map_or(all.clone(), |limit| all.into_iter().take(limit).collect());
+        }
+        let mut scored = self
+            .discover()
+            .documents
+            .values()
+            .filter_map(|document| {
+                let score = score_document(document, &terms);
+                (score > 0).then(|| to_skill_info(document, Some(score)))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|left, right| {
+            right
+                .score
+                .unwrap_or(0)
+                .cmp(&left.score.unwrap_or(0))
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        limit.map_or(scored.clone(), |limit| {
+            scored.into_iter().take(limit).collect()
+        })
+    }
+
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<SkillDocument> {
+        self.discover().documents.remove(name.trim())
+    }
+
+    #[must_use]
+    pub fn report(&self, query: Option<&str>, limit: Option<usize>) -> SkillDiscoveryReport {
+        let discovery = self.discover();
+        let mut skills = if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
+            let terms = query_terms(query);
+            discovery
+                .documents
+                .values()
+                .filter_map(|document| {
+                    let score = score_document(document, &terms);
+                    (score > 0).then(|| to_skill_info(document, Some(score)))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            discovery
+                .documents
+                .values()
+                .map(|document| to_skill_info(document, None))
+                .collect::<Vec<_>>()
+        };
+        if query.is_some() {
+            skills.sort_by(|left, right| {
+                right
+                    .score
+                    .unwrap_or(0)
+                    .cmp(&left.score.unwrap_or(0))
+                    .then_with(|| left.name.cmp(&right.name))
+            });
+        }
+        if let Some(limit) = limit {
+            skills.truncate(limit);
+        }
+        let invalid_count = discovery
+            .issues
+            .iter()
+            .filter(|issue| issue.kind == "invalid")
+            .count() as u64;
+        let duplicate_count = discovery
+            .issues
+            .iter()
+            .filter(|issue| issue.kind == "duplicate")
+            .count() as u64;
+        SkillDiscoveryReport {
+            skills,
+            scanned_files: discovery.scanned_files,
+            loaded_count: discovery.documents.len() as u64,
+            invalid_count,
+            duplicate_count,
+            issues: discovery.issues,
+        }
+    }
+
+    fn discover(&self) -> DiscoveryResult {
+        let mut documents: BTreeMap<String, SkillDocument> = BTreeMap::new();
+        let mut issues = Vec::new();
+        let mut scanned_files = 0u64;
+        for path in self.iter_skill_files() {
+            scanned_files += 1;
+            let document = match load_skill_document(&path) {
+                Ok(document) => document,
+                Err(error) => {
+                    issues.push(SkillIssue {
+                        kind: "invalid".to_string(),
+                        path: path_to_string(&path),
+                        message: error,
+                        duplicate_of: None,
+                    });
+                    continue;
+                }
+            };
+            if let Some(existing) = documents.get(&document.name) {
+                issues.push(SkillIssue {
+                    kind: "duplicate".to_string(),
+                    path: document.location.clone(),
+                    message: format!("Duplicate skill name: {}", document.name),
+                    duplicate_of: Some(existing.location.clone()),
+                });
+                continue;
+            }
+            documents.insert(document.name.clone(), document);
+        }
+        DiscoveryResult {
+            documents,
+            issues,
+            scanned_files,
+        }
+    }
+
+    fn iter_skill_files(&self) -> Vec<PathBuf> {
+        if !self.roots.is_empty() {
+            return self.iter_explicit_skill_files();
+        }
+        let mut seen = BTreeSet::new();
+        let mut result = Vec::new();
+        for base in self.workspace_ancestors() {
+            result.extend(iter_pattern_matches(&base, &mut seen));
+        }
+        result.extend(iter_pattern_matches(&self.home_dir, &mut seen));
+        result
+    }
+
+    fn iter_explicit_skill_files(&self) -> Vec<PathBuf> {
+        let mut seen = BTreeSet::new();
+        let mut result = Vec::new();
+        for raw_root in &self.roots {
+            let raw = PathBuf::from(raw_root);
+            let root = if raw.is_absolute() {
+                canonicalize_existing(&raw)
+            } else {
+                canonicalize_existing(&self.session_root.join(raw))
+            };
+            if root.is_file() && root.file_name().and_then(OsStr::to_str) == Some("SKILL.md") {
+                if seen.insert(root.clone()) {
+                    result.push(root);
+                }
+                continue;
+            }
+            if root.is_dir() {
+                for path in recursive_skill_files(&root) {
+                    if seen.insert(path.clone()) {
+                        result.push(path);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn workspace_ancestors(&self) -> Vec<PathBuf> {
+        let current = if self.session_root.is_dir() {
+            self.session_root.clone()
+        } else {
+            self.session_root
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| self.session_root.clone())
+        };
+        let mut result = Vec::new();
+        for ancestor in current.ancestors() {
+            if ancestor != self.home_dir {
+                result.push(ancestor.to_path_buf());
+            }
+        }
+        result
+    }
+}
+
+struct DiscoveryResult {
+    documents: BTreeMap<String, SkillDocument>,
+    issues: Vec<SkillIssue>,
+    scanned_files: u64,
+}
+
+pub fn load_skill_document(path: impl AsRef<Path>) -> Result<SkillDocument, String> {
+    let skill_path = canonicalize_existing(path.as_ref());
+    if !skill_path.is_file() {
+        return Err(format!("Skill file not found: {}", skill_path.display()));
+    }
+    let text = fs::read_to_string(&skill_path).map_err(io_error)?;
+    let parsed = parse_frontmatter(&text, &skill_path)?;
+    let name = parsed
+        .data
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let description = parsed
+        .data
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return Err(format!(
+            "Skill file missing required frontmatter field 'name': {}",
+            skill_path.display()
+        ));
+    }
+    if description.is_empty() {
+        return Err(format!(
+            "Skill file missing required frontmatter field 'description': {}",
+            skill_path.display()
+        ));
+    }
+    let metadata = parsed
+        .data
+        .into_iter()
+        .filter(|(key, _value)| key != "name" && key != "description")
+        .collect::<BTreeMap<_, _>>();
+    Ok(SkillDocument {
+        name,
+        description,
+        location: path_to_string(&skill_path),
+        directory: path_to_string(skill_path.parent().unwrap_or_else(|| Path::new(""))),
+        metadata,
+        score: None,
+        content: parsed.content,
+    })
+}
+
+#[must_use]
+pub fn render_skill_document(document: &SkillDocument, include_header: bool) -> String {
+    let mut lines = Vec::new();
+    if include_header {
+        lines.extend([
+            format!("## Skill: {}", document.name),
+            String::new(),
+            format!("**Base directory**: {}", document.directory),
+            String::new(),
+        ]);
+    }
+    lines.push(document.content.clone());
+    lines.join("\n").trim().to_string()
+}
+
+#[must_use]
+pub fn estimate_text_tokens(text: &str, bytes_per_token: u64) -> u64 {
+    let bytes_per_token = if bytes_per_token == 0 {
+        DEFAULT_BYTES_PER_TOKEN
+    } else {
+        bytes_per_token
+    };
+    let byte_count = text.len() as u64;
+    byte_count.div_ceil(bytes_per_token).max(1)
+}
+
+fn merge_compaction_facade_options(
+    options: Option<&Value>,
+) -> Result<BTreeMap<String, Value>, String> {
+    let raw_options = options.and_then(Value::as_object);
+    let mut raw_context = match raw_options.and_then(|items| items.get("context_budget")) {
+        Some(Value::Null) | None => BTreeMap::new(),
+        Some(Value::Object(items)) => items
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        Some(_) => return Err("AgentConfig.options['context_budget'] must be a dict.".to_string()),
+    };
+    let Some(raw_compaction) = raw_options.and_then(|items| items.get("compaction")) else {
+        return Ok(raw_context);
+    };
+    let Value::Object(compaction) = raw_compaction else {
+        return Err("AgentConfig.options['compaction'] must be a dict.".to_string());
+    };
+    let mut merged = BTreeMap::new();
+    if let Some(value) = compaction.get("auto") {
+        let auto = expect_bool(value, "auto", "compaction")?;
+        merged.insert(
+            "strategy".to_string(),
+            Value::String(if auto { "auto" } else { "error" }.to_string()),
+        );
+    }
+    if let Some(value) = compaction.get("prune") {
+        merged.insert(
+            "prune_old_tool_outputs".to_string(),
+            Value::Bool(expect_bool(value, "prune", "compaction")?),
+        );
+    }
+    if let Some(value) = compaction.get("reserved") {
+        merged.insert(
+            "input_safety_margin_tokens".to_string(),
+            json!(expect_int(value, "reserved", 0, "compaction")?),
+        );
+    }
+    if let Some(value) = compaction.get("mode") {
+        let mode = expect_non_empty_string(value, "compaction.mode")?;
+        merged.insert("compaction_mode".to_string(), Value::String(mode));
+    }
+    merged.append(&mut raw_context);
+    Ok(merged)
+}
+
+fn expect_non_empty_string(value: &Value, field_name: &str) -> Result<String, String> {
+    let text = value
+        .as_str()
+        .ok_or_else(|| format!("{field_name} must be a non-empty string."))?
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err(format!("{field_name} must be a non-empty string."));
+    }
+    Ok(text)
+}
+
+fn expect_bool(value: &Value, field_name: &str, prefix: &str) -> Result<bool, String> {
+    value
+        .as_bool()
+        .ok_or_else(|| format!("{prefix}.{field_name} must be a bool."))
+}
+
+fn expect_int(value: &Value, field_name: &str, minimum: u64, prefix: &str) -> Result<u64, String> {
+    let Some(number) = value.as_u64() else {
+        return Err(format!("{prefix}.{field_name} must be an int."));
+    };
+    if number < minimum {
+        return Err(format!("{prefix}.{field_name} must be >= {minimum}."));
+    }
+    Ok(number)
+}
+
+fn expect_float(
+    value: &Value,
+    field_name: &str,
+    minimum: f64,
+    maximum: f64,
+    include_minimum: bool,
+) -> Result<f64, String> {
+    let Some(number) = value.as_f64() else {
+        return Err(format!("context_budget.{field_name} must be a number."));
+    };
+    if include_minimum {
+        if number < minimum {
+            return Err(format!("context_budget.{field_name} must be >= {minimum}."));
+        }
+    } else if number <= minimum {
+        return Err(format!("context_budget.{field_name} must be > {minimum}."));
+    }
+    if number > maximum {
+        return Err(format!("context_budget.{field_name} must be <= {maximum}."));
+    }
+    Ok(number)
+}
+
+fn compute_input_limit_tokens(model: &Model, config: &ContextBudgetOptions) -> u64 {
+    if config.use_safety_margin_tokens {
+        let limit = model
+            .context_window
+            .saturating_sub(config.reserve_output_tokens)
+            .saturating_sub(config.input_safety_margin_tokens);
+        if limit > 0 || config.explicit_input_safety_margin_tokens {
+            return limit;
+        }
+    }
+    ((model.context_window as f64 * config.guard_ratio) as u64)
+        .saturating_sub(config.reserve_output_tokens)
+}
+
+fn options_to_btree(options: Option<&Value>) -> BTreeMap<String, Value> {
+    options
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(Map::iter)
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn is_openai_compatible_model(model: &Model) -> bool {
+    matches!(
+        model.provider_id.as_str(),
+        "openai" | "azure_openai" | "openai_compatible"
+    )
+}
+
+fn estimate_payload_tokens(payload: &MaterializedPayload, bytes_per_token: u64) -> u64 {
+    let serialized = serde_json::to_string(payload).unwrap_or_default();
+    let bytes_per_token = bytes_per_token.max(1);
+    (serialized.len() as u64).div_ceil(bytes_per_token).max(1)
+}
+
+struct ToolDiagnostics {
+    tool_message_count: u64,
+    largest_tool_message_tokens: u64,
+    largest_tool_message_name: String,
+}
+
+fn tool_message_diagnostics(
+    messages: &[ChatMessage],
+    model: &Model,
+    options: Option<&Value>,
+    bytes_per_token: u64,
+) -> ToolDiagnostics {
+    let mut result = ToolDiagnostics {
+        tool_message_count: 0,
+        largest_tool_message_tokens: 0,
+        largest_tool_message_name: String::new(),
+    };
+    for message in messages {
+        if message.role != Role::Tool {
+            continue;
+        }
+        result.tool_message_count += 1;
+        let payload = materialize_openai_compatible_payload(
+            None,
+            std::slice::from_ref(message),
+            &[],
+            Some(model),
+            Some(&options_to_btree(options)),
+        );
+        let estimate = estimate_payload_tokens(&payload, bytes_per_token);
+        if estimate > result.largest_tool_message_tokens {
+            result.largest_tool_message_tokens = estimate;
+            result.largest_tool_message_name = message.name.clone().unwrap_or_default();
+        }
+    }
+    result
+}
+
+fn work_state_item(
+    metadata: &BTreeMap<String, Value>,
+    message_count: usize,
+) -> Option<ContextItem> {
+    let compaction = get_context_compaction(metadata, message_count)?;
+    let summary = compaction.get("summary")?.as_str()?.to_string();
+    let mut item = ContextItem::new(
+        "work_state:context_compaction",
+        "work_state",
+        "session.metadata.context_compaction",
+        summary,
+        95,
+    );
+    item.pinned = true;
+    item.metadata.insert(
+        "compacted_until".to_string(),
+        compaction
+            .get("compacted_until")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    item.metadata.insert(
+        "format".to_string(),
+        compaction.get("format").cloned().unwrap_or(Value::Null),
+    );
+    item.metadata.insert(
+        "schema_version".to_string(),
+        compaction
+            .get("schema_version")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    item.metadata.insert(
+        "source".to_string(),
+        compaction.get("source").cloned().unwrap_or(Value::Null),
+    );
+    Some(item)
+}
+
+fn get_context_compaction(
+    metadata: &BTreeMap<String, Value>,
+    message_count: usize,
+) -> Option<BTreeMap<String, Value>> {
+    let raw = metadata.get("context_compaction")?.as_object()?;
+    let compacted_until = raw.get("compacted_until")?.as_u64()?;
+    if compacted_until == 0 || compacted_until as usize > message_count {
+        return None;
+    }
+    let summary = render_compaction_summary(raw)?;
+    if summary.trim().is_empty() {
+        return None;
+    }
+    let mut result = BTreeMap::new();
+    result.insert(
+        "summary".to_string(),
+        Value::String(summary.trim().to_string()),
+    );
+    result.insert("compacted_until".to_string(), json!(compacted_until));
+    result.insert(
+        "updated_at".to_string(),
+        raw.get("updated_at")
+            .and_then(Value::as_u64)
+            .map_or_else(|| json!(0), |value| json!(value)),
+    );
+    for key in ["schema_version", "format", "state", "source", "parse_error"] {
+        if let Some(value) = raw.get(key) {
+            result.insert(key.to_string(), value.clone());
+        }
+    }
+    Some(result)
+}
+
+fn render_compaction_summary(raw: &Map<String, Value>) -> Option<String> {
+    if raw.get("format").and_then(Value::as_str) == Some("structured_work_state")
+        && let Some(state) = raw.get("state").and_then(Value::as_object)
+    {
+        return Some(render_work_state(&work_state_from_map(state)));
+    }
+    if let Some(summary) = raw.get("summary").and_then(Value::as_str)
+        && !summary.trim().is_empty()
+    {
+        return Some(summary.trim().to_string());
+    }
+    raw.get("state")
+        .and_then(Value::as_object)
+        .map(|state| render_work_state(&work_state_from_map(state)))
+}
+
+fn work_state_from_map(state: &Map<String, Value>) -> WorkState {
+    WorkState {
+        task: string_field(state, "task"),
+        progress: string_vec_field(state, "progress"),
+        decisions: string_vec_field(state, "decisions"),
+        files: state
+            .get("files")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_object)
+            .map(|item| WorkStateFile {
+                path: string_field(item, "path"),
+                status: string_field(item, "status"),
+                note: string_field(item, "note"),
+            })
+            .collect(),
+        tool_findings: string_vec_field(state, "tool_findings"),
+        todos: string_vec_field(state, "todos"),
+        open_questions: string_vec_field(state, "open_questions"),
+        blockers: string_vec_field(state, "blockers"),
+        next_steps: string_vec_field(state, "next_steps"),
+        risks: string_vec_field(state, "risks"),
+    }
+}
+
+fn sandbox_item(execution: &Value) -> Option<ContextItem> {
+    let execution = execution.as_object()?;
+    let mode = execution.get("mode").and_then(Value::as_str)?.trim();
+    if mode.is_empty() || mode == "local" {
+        return None;
+    }
+    let mut safe_payload = BTreeMap::new();
+    for key in ["mode", "sandbox_id", "remote_workdir"] {
+        if let Some(value) = execution.get(key)
+            && !value.is_null()
+        {
+            safe_payload.insert(key.to_string(), value.clone());
+        }
+    }
+    let mut item = ContextItem::new(
+        "sandbox:execution",
+        "sandbox",
+        "session.metadata.execution",
+        format!(
+            "[Sandbox context]\n{}",
+            python_json_dumps(&json!(safe_payload))
+        ),
+        85,
+    );
+    item.pinned = true;
+    item.stable_prefix = true;
+    item.metadata = safe_payload;
+    Some(item)
+}
+
+fn todo_item(todos: &[Value]) -> Option<ContextItem> {
+    if todos.is_empty() {
+        return None;
+    }
+    let mut normalized = Vec::new();
+    for (index, todo) in todos.iter().enumerate() {
+        let mut payload = todo.as_object().cloned().unwrap_or_default();
+        payload
+            .entry("id".to_string())
+            .or_insert_with(|| json!(format!("todo-{}", index + 1)));
+        normalized.push(payload);
+    }
+    if normalized.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["[Todos]".to_string()];
+    for todo in &normalized {
+        lines.push(format!(
+            "- ({}/{}) {}",
+            todo.get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending"),
+            todo.get("priority")
+                .and_then(Value::as_str)
+                .unwrap_or("medium"),
+            todo.get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        ));
+    }
+    let mut item = ContextItem::new(
+        "todo:session",
+        "todo",
+        "session.todos",
+        lines.join("\n").trim().to_string(),
+        80,
+    );
+    item.metadata
+        .insert("count".to_string(), json!(normalized.len()));
+    Some(item)
+}
+
+fn message_items(messages: &[ChatMessage]) -> Vec<ContextItem> {
+    messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let kind = if message.role == Role::Tool {
+                "tool_result"
+            } else {
+                "message"
+            };
+            let identifier = message
+                .tool_call_id
+                .clone()
+                .unwrap_or_else(|| format!("{}:{index}", role_str(&message.role)));
+            let mut metadata = BTreeMap::new();
+            metadata.insert("role".to_string(), json!(role_str(&message.role)));
+            metadata.insert(
+                "name".to_string(),
+                message.name.clone().map_or(Value::Null, Value::String),
+            );
+            metadata.insert(
+                "tool_call_id".to_string(),
+                message
+                    .tool_call_id
+                    .clone()
+                    .map_or(Value::Null, Value::String),
+            );
+            let mut item = ContextItem::new(
+                format!("{kind}:{identifier}"),
+                kind,
+                format!("session.messages[{index}]"),
+                message.content.clone(),
+                if kind == "tool_result" { 50 } else { 40 },
+            );
+            item.metadata = metadata;
+            item
+        })
+        .collect()
+}
+
+fn item_to_message(item: &ContextItem) -> ChatMessage {
+    ChatMessage {
+        role: Role::Assistant,
+        content: item.content.clone(),
+        name: None,
+        tool_call_id: None,
+        metadata: BTreeMap::from([
+            ("synthetic_context_item".to_string(), json!(true)),
+            ("context_item_id".to_string(), json!(item.id)),
+            ("context_item_kind".to_string(), json!(item.kind)),
+            ("context_item_source".to_string(), json!(item.source)),
+        ]),
+    }
+}
+
+fn item_rank(item: &ContextItem) -> (u8, i64, u64) {
+    (u8::from(item.pinned), item.priority, item.token_estimate)
+}
+
+fn parse_frontmatter(text: &str, path: &Path) -> Result<ParsedFrontmatter, String> {
+    let lines = text.lines().collect::<Vec<_>>();
+    if lines.first().map(|line| line.trim()) != Some("---") {
+        return Err(format!(
+            "Skill file missing YAML frontmatter: {}",
+            path.display()
+        ));
+    }
+    let Some(closing_index) = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(index, line)| (line.trim() == "---").then_some(index))
+    else {
+        return Err(format!(
+            "Skill file has unterminated YAML frontmatter: {}",
+            path.display()
+        ));
+    };
+    let frontmatter_text = lines[1..closing_index].join("\n");
+    let body = lines[closing_index + 1..].join("\n");
+    let data = serde_yaml::from_str::<serde_yaml::Value>(&frontmatter_text).map_err(|error| {
+        format!(
+            "Failed to parse skill frontmatter: {}: {error}",
+            path.display()
+        )
+    })?;
+    let serde_yaml::Value::Mapping(mapping) = data else {
+        return Err(format!(
+            "Skill frontmatter must be a YAML object: {}",
+            path.display()
+        ));
+    };
+    let mut normalized = BTreeMap::new();
+    for (key, value) in mapping {
+        let key = match key {
+            serde_yaml::Value::String(key) => key,
+            other => serde_yaml::to_string(&other)
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        };
+        let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
+        normalized.insert(key, value);
+    }
+    Ok(ParsedFrontmatter {
+        data: normalized,
+        content: body,
+    })
+}
+
+struct ParsedFrontmatter {
+    data: BTreeMap<String, Value>,
+    content: String,
+}
+
+fn iter_pattern_matches(base_dir: &Path, seen: &mut BTreeSet<PathBuf>) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    for parts in [
+        [".openagent", "skill"],
+        [".openagent", "skills"],
+        [".opencode", "skill"],
+        [".opencode", "skills"],
+        [".claude", "skills"],
+    ] {
+        let candidate = base_dir.join(parts[0]).join(parts[1]);
+        if !candidate.is_dir() {
+            continue;
+        }
+        for path in recursive_skill_files(&candidate) {
+            if seen.insert(path.clone()) {
+                result.push(path);
+            }
+        }
+    }
+    result
+}
+
+fn recursive_skill_files(root: &Path) -> Vec<PathBuf> {
+    let mut result = Vec::new();
+    if root.is_file() {
+        if root.file_name().and_then(OsStr::to_str) == Some("SKILL.md") {
+            result.push(canonicalize_existing(root));
+        }
+        return result;
+    }
+    let mut entries = read_dir_paths(root);
+    entries.sort();
+    for entry in entries {
+        if entry.is_dir() {
+            result.extend(recursive_skill_files(&entry));
+        } else if entry.file_name().and_then(OsStr::to_str) == Some("SKILL.md") {
+            result.push(canonicalize_existing(&entry));
+        }
+    }
+    result
+}
+
+fn to_skill_info(document: &SkillDocument, score: Option<i64>) -> SkillInfo {
+    SkillInfo {
+        name: document.name.clone(),
+        description: document.description.clone(),
+        location: document.location.clone(),
+        directory: document.directory.clone(),
+        metadata: document.metadata.clone(),
+        score,
+    }
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    query
+        .to_lowercase()
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+fn score_document(document: &SkillDocument, terms: &[String]) -> i64 {
+    let name = document.name.to_lowercase();
+    let description = document.description.to_lowercase();
+    let content = document.content.to_lowercase();
+    let metadata_text = document
+        .metadata
+        .iter()
+        .map(|(key, value)| format!("{key} {value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    let mut score = 0;
+    for term in terms {
+        if name.contains(term) {
+            score += 8;
+        }
+        if description.contains(term) {
+            score += 5;
+        }
+        if metadata_text.contains(term) {
+            score += 3;
+        }
+        if content.contains(term) {
+            score += 1;
+        }
+    }
+    score
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let regex = format!("^{}$", glob_to_regex(pattern));
+    Regex::new(&regex)
+        .map(|regex| regex.is_match(text))
+        .unwrap_or(false)
+}
+
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::new();
+    for ch in pattern.chars() {
+        match ch {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '.' | '+' | '(' | ')' | '|' | '^' | '$' | '[' | ']' | '{' | '}' | '\\' => {
+                regex.push('\\');
+                regex.push(ch);
+            }
+            other => regex.push(other),
+        }
+    }
+    regex
+}
+
+fn python_json_dumps(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => serde_json::to_string(value).unwrap_or_default(),
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(python_json_dumps)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Object(items) => {
+            let mut keys = items.keys().collect::<Vec<_>>();
+            keys.sort();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| {
+                        let value = items.get(key).unwrap_or(&Value::Null);
+                        format!(
+                            "{}: {}",
+                            serde_json::to_string(key).unwrap_or_default(),
+                            python_json_dumps(value)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    }
+}
+
+fn string_field(state: &Map<String, Value>, key: &str) -> String {
+    state
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn string_vec_field(state: &Map<String, Value>, key: &str) -> Vec<String> {
+    state
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn role_str(role: &Role) -> &'static str {
+    match role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    }
+}
+
+fn read_dir_paths(path: &Path) -> Vec<PathBuf> {
+    fs::read_dir(path)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect()
+}
+
+fn canonicalize_existing(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn path_to_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn default_home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn io_error(error: io::Error) -> String {
+    error.to_string()
+}
+
+fn sha1_hex_12(value: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(value.as_bytes());
+    let digest = hasher.finalize();
+    format!("{digest:x}").chars().take(12).collect()
 }
 
 #[cfg(test)]

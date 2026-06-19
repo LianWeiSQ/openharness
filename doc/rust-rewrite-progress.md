@@ -5,6 +5,76 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 6 - Rust Core Context And Policy
+
+Status: complete.
+
+Changed:
+
+- Implemented Rust `openagent-core` permission rules and `PermissionManager`
+  behavior, including built-in rule sets, last-match precedence, fnmatch-style
+  pattern checks, and Python-compatible payload pattern extraction.
+- Implemented Rust context budget option loading, compaction facade merging,
+  heuristic token estimates, tool-message diagnostics, budget errors, and
+  context pack construction with pinned item handling and trace records.
+- Implemented Rust instruction loading for workspace/user instruction files,
+  rule directories, byte limits, issue reporting, and conversion into pinned
+  context items.
+- Implemented Rust skill frontmatter parsing, registry discovery across
+  OpenAgent/OpenCode/Claude skill roots, duplicate/invalid diagnostics, skill
+  search scoring, and document rendering.
+- Added a Rust `skill` built-in tool in `openagent-tools` that lists, filters,
+  loads, and diagnoses skills, with explicit `skill_roots` support for tests
+  and controlled runtime contexts.
+- Extended the Python golden fixture generator with deterministic
+  `core_context_policy.json` coverage for permissions, context budget,
+  context pack, instructions, and skills.
+- Added Rust integration tests comparing the Rust behavior against the Python
+  oracle and exercising filesystem workflows for instruction and skill
+  discovery.
+
+Verification:
+
+```bash
+cargo test -p openagent-core -- --nocapture
+cargo test -p openagent-tools -- --nocapture
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-core` targeted tests: 4 tests OK including 3 integration tests
+  for Python fixture parity, permission rules, instruction loading, and skill
+  registry behavior.
+- `openagent-tools` targeted tests: 6 tests OK including the skill tool
+  listing/loading/filtering workflow.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Python fixture drift test: OK with the new Goal 6 fixture included.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates the core policy/context/skill substrate. Python AgentLoop
+  wiring still owns the main execution path until later orchestration goals
+  replace it.
+- The Rust context pack and budget implementation is fixture-backed for the
+  current production semantics; live provider request assembly is deferred to
+  Goal 7.
+- Remote skill distribution, MCP/app integration, UI surfacing, packaging, and
+  final Python removal remain intentionally deferred to later goals.
+
+Next:
+
+- Goal 7: migrate provider interfaces, option filtering, payload conversion,
+  and provider tests into Rust.
+
+---
+
 ## 2026-06-19 Goal 5 - Rust Workspace Runtime And Tools
 
 Status: complete.

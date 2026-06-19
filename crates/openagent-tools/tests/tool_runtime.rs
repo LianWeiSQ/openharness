@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -255,6 +255,85 @@ fn todo_memory_and_question_tools_round_trip_session_state() -> Result<(), Box<d
     Ok(())
 }
 
+#[test]
+fn skill_tool_lists_loads_filters_and_respects_explicit_roots() -> Result<(), Box<dyn Error>> {
+    let root = unique_temp_dir("openagent-tools-skill")?;
+    let workspace = root.join("workspace");
+    let shared = root.join("shared-skills");
+    fs::create_dir_all(&workspace)?;
+    write_skill(
+        &workspace,
+        ".openagent/skills/code-review/SKILL.md",
+        "code-review",
+        "Review code carefully",
+        "Inspect diffs and tests.",
+    )?;
+    write_skill(
+        &workspace,
+        ".openagent/skills/research/SKILL.md",
+        "research",
+        "Research external sources",
+        "Collect evidence.",
+    )?;
+    write_skill(
+        &shared,
+        "review/SKILL.md",
+        "review",
+        "Shared review",
+        "Use shared guidance.",
+    )?;
+
+    let toolkit = Toolkit::with_builtins();
+    let mut ctx = ToolContext::new(&workspace).with_session_id("session-skill");
+
+    let listed = toolkit.execute(
+        "skill",
+        json!({"query": "review", "include_content": true}),
+        "call_skill_list",
+        &mut ctx,
+    );
+    assert!(listed.error.is_none());
+    assert!(listed.output.contains("Matched skills for \"review\""));
+    assert!(listed.output.contains("code-review"));
+    assert!(listed.output.contains("Inspect diffs and tests."));
+    assert_eq!(listed.metadata["query"], json!("review"));
+
+    let loaded = toolkit.execute(
+        "skill",
+        json!({"name": "code-review"}),
+        "call_skill_load",
+        &mut ctx,
+    );
+    assert!(loaded.error.is_none());
+    assert!(loaded.output.contains("## Skill: code-review"));
+    assert_eq!(loaded.metadata["skill_name"], json!("code-review"));
+
+    let missing = toolkit.execute(
+        "skill",
+        json!({"name": "missing"}),
+        "call_skill_missing",
+        &mut ctx,
+    );
+    assert!(
+        missing
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Skill \"missing\" not found")
+    );
+
+    ctx.agent_options.insert(
+        "skill_roots".to_string(),
+        json!([shared.to_string_lossy().to_string()]),
+    );
+    let explicit = toolkit.execute("skill", json!({}), "call_skill_explicit", &mut ctx);
+    assert!(explicit.output.contains("review"));
+    assert!(!explicit.output.contains("code-review"));
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 fn tool_runtime_fixture() -> Result<Value, Box<dyn Error>> {
     let mut registry = ToolRegistry::new();
     register_builtin_tools(&mut registry);
@@ -364,4 +443,22 @@ fn unique_temp_dir(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
     let path = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
     fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+fn write_skill(
+    base: &Path,
+    relative: &str,
+    name: &str,
+    description: &str,
+    body: &str,
+) -> Result<(), Box<dyn Error>> {
+    let path = base.join(relative);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        path,
+        format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+    )?;
+    Ok(())
 }
