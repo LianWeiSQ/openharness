@@ -5,6 +5,62 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 2 - Rust Protocol/Data Models
+
+Status: complete.
+
+Changed:
+
+- Implemented Rust serde models in `openagent-protocol` for core OpenAgent
+  protocol records: model metadata, chat messages, tools, tool calls, tool
+  results, usage, stream events, provider payload materialization, and runtime
+  option filtering.
+- Implemented permission ruleset models and rule expansion for `FULL`,
+  `READONLY`, `PLAN_ONLY`, and `NONE`.
+- Implemented swarm protocol records for agent specs, descriptors, run
+  contexts, fanout budgets, results, artifacts, and usage.
+- Implemented tool execution schema, tool definition schema fixture records,
+  structured work-state records, and compaction record rendering.
+- Added Rust golden fixture tests that compare serde JSON against all Goal 0
+  fixture groups: core protocol, permission rulesets, swarm protocol, tool
+  schema, and context state.
+- Added `serde` and `serde_json` as workspace dependencies.
+
+Verification:
+
+```bash
+cargo test -p openagent-protocol
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-protocol` golden fixture tests: 5 tests OK against Goal 0 JSON.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Goal 0 Python fixture drift test: 1 test OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- These are protocol and deterministic fixture contracts only. Live provider,
+  MCP, sandbox, CLI, HTTP, and TUI behavior still remains Python-backed until
+  later goals.
+- `RunLimits.timeout_seconds` intentionally preserves JSON number shape because
+  the Python oracle emits an integer for the fixture even though the conceptual
+  field allows seconds as a numeric value.
+
+Next:
+
+- Goal 3: migrate the swarm kernel behavior into Rust, starting from the
+  now-verified swarm protocol records.
+
+---
+
 ## 2026-06-19 Goal 1 - Rust Workspace
 
 Status: complete.
