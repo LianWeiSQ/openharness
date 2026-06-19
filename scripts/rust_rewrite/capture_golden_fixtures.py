@@ -17,8 +17,26 @@ if str(SRC_ROOT) not in sys.path:
 
 from openagent.core.context_state import build_compaction_record, render_work_state
 from openagent.core.message_materializer import RUNTIME_OPTION_KEYS, materialize_openai_compatible_payload
+from openagent.core.observability import (
+    ObservationConfig,
+    ObservationEvent,
+    TraceRecord,
+    input_preview,
+    output_stats,
+    sanitize_observation_value,
+)
 from openagent.core.permission.ruleset import PermissionRuleset, ruleset
+from openagent.core.runtime_logging import RuntimeLogRecord, RuntimeLoggingConfig
+from openagent.core.runtime_warnings import (
+    RuntimeWarningConfig,
+    RuntimeWarningRecord,
+    format_runtime_warning_event,
+)
+from openagent.core.session.todo import TodoItem
 from openagent.core.tool.definition import ToolDefinition, ToolExecutionSchema
+from openagent.core.trace import render_trace_summary
+from openagent.core.trace.recorder import sanitize_trace_value
+from openagent.core.trace.schema import RunRecord, TraceConfig, TraceEvent
 from openagent.core.types import (
     ChatMessage,
     Model,
@@ -271,6 +289,230 @@ def _context_state_fixture() -> dict[str, Any]:
     }
 
 
+def _session_trace_observability_fixture() -> dict[str, Any]:
+    session_event = {
+        "schema_version": "openagent.session_event.v1",
+        "seq": 1,
+        "event": "model.usage",
+        "timestamp_ms": 1781840000100,
+        "session_id": "session_fixture",
+        "run_id": "run_fixture",
+        "kind": "model",
+        "status": "ok",
+        "duration_ms": 12,
+        "attributes": {
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "cost": 0.001,
+            "authorization": "secret",
+        },
+    }
+    session_part = {
+        "schema_version": "openagent.session_part.v1",
+        "part_id": "part_fixture",
+        "seq": 1,
+        "type": "usage",
+        "timestamp_ms": 1781840000110,
+        "session_id": "session_fixture",
+        "run_id": "run_fixture",
+        "step_index": 1,
+        "status": "ok",
+        "attributes": {"input_tokens": 11, "output_tokens": 7},
+    }
+    session_summary = {
+        "schema_version": "openagent.run_summary.v1",
+        "session_id": "session_fixture",
+        "run_id": "run_fixture",
+        "event_count": 2,
+        "part_count": 1,
+        "part_type_counts": {"usage": 1},
+        "message_count": 1,
+        "step_count": 0,
+        "tool_call_count": 0,
+        "runtime_warning_count": 0,
+        "patch_count": 0,
+        "total_input_tokens": 11,
+        "total_output_tokens": 7,
+        "total_cost": 0.001,
+        "status": "completed",
+    }
+    session_state = {
+        "schema_version": "openagent.session_state.v1",
+        "session_id": "session_fixture",
+        "run_id": "run_fixture",
+        "workspace": "/tmp/openagent-fixture",
+        "status": "idle",
+        "updated_at_ms": 1781840000120,
+        "messages": [
+            {
+                "message_id": "msg_fixture",
+                "index": 0,
+                "role": "user",
+                "content": "Remember this fixture.",
+                "name": None,
+                "tool_call_id": None,
+                "metadata": {"message_id": "msg_fixture"},
+            }
+        ],
+        "todos": [TodoItem(content="port session store", status="in_progress", priority="high", id="todo-fixture")],
+        "metadata": {
+            "session_store": {
+                "enabled": True,
+                "type": "file",
+                "root_dir": "/tmp/openagent-fixture/.openagent/sessions",
+                "session_id": "session_fixture",
+                "run_id": "run_fixture",
+            }
+        },
+    }
+
+    run = RunRecord(
+        run_id="run_fixture",
+        trace_id="trace_fixture",
+        session_id="session_fixture",
+        agent_name="fixture-agent",
+        model_id="fixture-model",
+        provider_id="fixture-provider",
+        workspace="/tmp/openagent-fixture",
+        started_at_ms=1781840000000,
+    )
+    trace_event = TraceEvent(
+        seq=1,
+        event="model.call.finished",
+        event_id="event_fixture",
+        timestamp_ms=1781840000200,
+        run_id=run.run_id,
+        trace_id=run.trace_id,
+        session_id=run.session_id,
+        kind="model",
+        status="ok",
+        span_id="span_model",
+        parent_span_id="span_step",
+        duration_ms=25,
+        attributes=sanitize_trace_value(
+            {
+                "api_key": "secret",
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "cost": 0.001,
+                "prompt": "P" * 4100,
+            }
+        ),
+    )
+    trace_summary = {
+        **run.to_dict(),
+        "status": "completed",
+        "started_at_ms": run.started_at_ms,
+        "ended_at_ms": 1781840000300,
+        "duration_ms": 300,
+        "event_count": 2,
+        "step_count": 1,
+        "model_call_count": 1,
+        "tool_call_count": 0,
+        "mcp_call_count": 0,
+        "skill_call_count": 0,
+        "local_tool_call_count": 0,
+        "artifact_count": 0,
+        "error_count": 0,
+        "runtime_warning_count": 1,
+        "total_latency_ms": 25,
+        "total_input_tokens": 11,
+        "total_output_tokens": 7,
+        "total_reasoning_tokens": 0,
+        "total_cache_read_tokens": 0,
+        "total_cache_write_tokens": 0,
+        "total_cost": 0.001,
+        "errors": [],
+        "paths": {
+            "run_dir": "/tmp/openagent-fixture/.openagent/runs/run_fixture",
+            "trace": "/tmp/openagent-fixture/.openagent/runs/run_fixture/trace.jsonl",
+            "summary": "/tmp/openagent-fixture/.openagent/runs/run_fixture/summary.json",
+            "process": "/tmp/openagent-fixture/.openagent/runs/run_fixture/process.md",
+            "artifacts": "/tmp/openagent-fixture/.openagent/runs/run_fixture/artifacts",
+        },
+    }
+
+    observation_trace = TraceRecord(
+        trace_id="trace_fixture",
+        session_id="session_fixture",
+        run_id="run_fixture",
+        agent_name="fixture-agent",
+        model_id="fixture-model",
+        provider_id="fixture-provider",
+        workspace="/tmp/openagent-fixture",
+        started_at_ms=1781840000000,
+    )
+    observation_event = ObservationEvent(
+        event_id="event_observation",
+        trace_id=observation_trace.trace_id,
+        run_id=observation_trace.run_id,
+        session_id=observation_trace.session_id,
+        span_id="span_tool",
+        parent_span_id="span_step",
+        name="tool.call.finished",
+        kind="tool",
+        timestamp_ms=1781840000400,
+        duration_ms=9,
+        status="ok",
+        attributes=sanitize_observation_value({"token": "secret", "output_lines": 2, "result_summary": "ok"}),
+    )
+    log_record = RuntimeLogRecord(
+        log_id="log_fixture",
+        timestamp_ms=1781840000500,
+        level="WARNING",
+        message="Tool output was truncated.",
+        category="tool",
+        session_id="session_fixture",
+        run_id="run_fixture",
+        trace_id="trace_fixture",
+        span_id="span_tool",
+        attributes=sanitize_observation_value({"authorization": "secret", "output_lines": 2}),
+    )
+    warning_record = RuntimeWarningRecord(
+        code="step_total_tokens_exceeded",
+        severity="warning",
+        message="Step total tokens exceeded budget: 18 > 12.",
+        metrics={"step_index": 1, "input_tokens": 11, "output_tokens": 7, "total_tokens": 18, "threshold": 12},
+    )
+    warning_event = warning_record.to_event()
+
+    return {
+        "schema_version": 1,
+        "session": {
+            "todo": TodoItem(content="port session store", status="in_progress", priority="high", id="todo-fixture"),
+            "message": ChatMessage(role="user", content="Remember this fixture.", metadata={"message_id": "msg_fixture"}),
+            "event": session_event,
+            "part": session_part,
+            "state": session_state,
+            "summary": session_summary,
+        },
+        "trace": {
+            "config": TraceConfig(root_dir="runs", max_events=12, exporters={"langfuse": {"enabled": False}}),
+            "run": run,
+            "event": trace_event,
+            "summary": trace_summary,
+            "rendered_summary": render_trace_summary(trace_summary),
+        },
+        "observability": {
+            "config": ObservationConfig(jsonl=True, jsonl_dir="observability", max_events=3),
+            "trace": observation_trace,
+            "event": observation_event,
+            "input_preview": input_preview({"api_key": "secret", "path": "README.md"}, max_chars=80),
+            "output_stats": output_stats("one\ntwo\n"),
+        },
+        "runtime_logging": {
+            "config": RuntimeLoggingConfig(jsonl=True, jsonl_dir="logs", level="WARNING", python_logging=False),
+            "record": log_record,
+        },
+        "runtime_warnings": {
+            "config": RuntimeWarningConfig(enabled=True, max_step_total_tokens=12),
+            "record": warning_record,
+            "event": warning_event,
+            "formatted": format_runtime_warning_event(warning_event),
+        },
+    }
+
+
 def capture(output_dir: Path) -> None:
     fixtures = {
         "core_protocol.json": _core_protocol_fixture(),
@@ -278,6 +520,7 @@ def capture(output_dir: Path) -> None:
         "tool_definition_schema.json": _tool_definition_schema_fixture(),
         "swarm_protocol.json": _swarm_protocol_fixture(),
         "context_state.json": _context_state_fixture(),
+        "session_trace_observability.json": _session_trace_observability_fixture(),
     }
     for name, payload in fixtures.items():
         _write_json(output_dir, name, payload)

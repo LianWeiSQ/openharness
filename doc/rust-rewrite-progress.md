@@ -5,6 +5,63 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 4 - Rust Session, Trace, And Observability
+
+Status: complete.
+
+Changed:
+
+- Implemented Rust `openagent-session` records and file-backed session store
+  for session state snapshots, transcripts, JSONL run ledgers, parts ledgers,
+  run summaries, and session restore.
+- Implemented Rust trace records, trace JSONL writer, summary writer,
+  summary renderer, and run checker for required trace events.
+- Implemented Rust observability recorder, runtime logger, runtime warning
+  records, warning formatting, redaction, truncation, input preview, and output
+  stats helpers.
+- Extended the Python golden fixture generator with a deterministic
+  `session_trace_observability.json` oracle covering session, trace,
+  observability, runtime logging, and runtime warnings.
+- Added Rust integration tests that compare the Rust data model against the
+  Python oracle and exercise file store write/restore, trace check, sanitized
+  observability/logging, and runtime warning generation.
+
+Verification:
+
+```bash
+cargo test -p openagent-session -- --nocapture
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-session` targeted tests: 5 tests OK including 4 integration
+  tests for Python fixture parity and write/read behavior.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Python fixture drift test: 1 test OK with the new Goal 4 fixture included.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates the storage/trace/observability substrate. AgentLoop still
+  calls the Python implementation until later goals wire the Rust loop/runtime
+  into user-facing execution.
+- Langfuse live exporter behavior remains Python-backed; the Rust side now
+  preserves local trace files and sanitized records needed for later exporter
+  work.
+
+Next:
+
+- Goal 5: migrate workspace runtime and built-in tools into Rust with path
+  safety, permissions, truncation, and metadata tests.
+
+---
+
 ## 2026-06-19 Goal 3 - Rust Swarm Kernel
 
 Status: complete.
