@@ -131,7 +131,9 @@ from openagent.core.tool.toolkit import ToolkitAdapter
 from openagent.core.tool.truncation import Truncate
 from openagent.core.tool.utils import ensure_within_root
 from openagent.core.skill import SkillRegistry
-from openagent.core.trace import render_trace_summary
+from openagent.core.trace import TRACE_METADATA_KEY, render_trace_summary
+from openagent.core.eval import ci_gate as eval_ci_gate
+from openagent.core.eval import runner as eval_runner
 from openagent.core.trace.recorder import sanitize_trace_value
 from openagent.core.trace.schema import RunRecord, TraceConfig, TraceEvent
 from openagent.core.types import (
@@ -146,6 +148,8 @@ from openagent.core.types import (
     ToolSchema,
     Usage,
 )
+from openagent.integrations import harbor as harbor_integration
+from openagent.integrations import terminal_bench as terminal_bench_integration
 from mcp.types import TextContent
 from swarm.protocol import (
     AgentDescriptor,
@@ -252,6 +256,36 @@ class _FixtureMcpBridgeClient:
     async def call_tool(self, dynamic_name: str, arguments: dict[str, object] | None) -> RemoteMcpToolCallResult:
         self.calls.append({"dynamic_name": dynamic_name, "arguments": arguments or {}})
         return self.result
+
+
+class _FixtureLangfuseScoreClient:
+    def __init__(self, *, fail_scores: bool = False) -> None:
+        self.fail_scores = fail_scores
+        self.scores: list[dict[str, Any]] = []
+        self.flush_count = 0
+
+    def create_score(self, **payload: Any) -> None:
+        if self.fail_scores:
+            raise RuntimeError("fixture score export failed")
+        self.scores.append(dict(payload))
+
+    def flush(self) -> None:
+        self.flush_count += 1
+
+
+class _FixtureHarborEnvironment:
+    def __init__(self, *, return_code: int = 0, stdout: str = "", stderr: str = "", fail_timeout: bool = False) -> None:
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+        self.fail_timeout = fail_timeout
+        self.commands: list[dict[str, Any]] = []
+
+    async def exec(self, command: str, *, cwd: str | None = None, timeout_sec: int | None = None, **kwargs: Any) -> Any:
+        self.commands.append({"command": command, "cwd": cwd, "timeout_sec": timeout_sec, **kwargs})
+        if self.fail_timeout:
+            raise TimeoutError("fixture timeout")
+        return SimpleNamespace(return_code=self.return_code, stdout=self.stdout, stderr=self.stderr)
 
 
 def _stable(value: Any) -> Any:
@@ -2205,6 +2239,302 @@ def _app_bridge_tui_fixture() -> dict[str, Any]:
     return _scrub_fixture_root(payload, fixture_root)
 
 
+def _eval_integrations_fixture() -> dict[str, Any]:
+    fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal13")
+    shutil.rmtree(fixture_root, ignore_errors=True)
+    fixture_root.mkdir(parents=True, exist_ok=True)
+
+    pass_result = eval_runner.EvalResult(
+        case_id="pass_case",
+        status="pass",
+        score=1.0,
+        duration_ms=1200,
+        steps=2,
+        tool_calls=1,
+        input_tokens=100,
+        output_tokens=40,
+        cost=0.0123,
+        error_kind=None,
+        failure_reasons=[],
+        trace_path=(fixture_root / "pass.trace.jsonl").as_posix(),
+        session_id="session_pass",
+        run_id="run_fixture",
+        ledger_path=(fixture_root / "pass.ledger.jsonl").as_posix(),
+        session_state_path=(fixture_root / "pass.session.json").as_posix(),
+        trace_summary_path=(fixture_root / "pass.summary.json").as_posix(),
+        trace_check_ok=True,
+        trace_check_errors=[],
+        trace_event_count=12,
+        model_calls=1,
+        mcp_calls=0,
+        skill_calls=1,
+        local_tool_calls=1,
+        artifact_count=1,
+        error_count=0,
+        runtime_warning_count=0,
+        runtime_warning_codes=[],
+        total_latency_ms=900,
+    )
+    fail_result = eval_runner.EvalResult(
+        case_id="fail_case",
+        status="fail",
+        score=0.0,
+        duration_ms=4200,
+        steps=6,
+        tool_calls=4,
+        input_tokens=250,
+        output_tokens=60,
+        cost=0.09,
+        error_kind="model_error",
+        failure_reasons=[
+            "final answer missing required text: expected",
+            "runtime warning count exceeded max_runtime_warnings: 2 > 0",
+        ],
+        trace_path=(fixture_root / "fail.trace.jsonl").as_posix(),
+        session_id="session_fail",
+        run_id="run_fixture",
+        ledger_path=(fixture_root / "fail.ledger.jsonl").as_posix(),
+        session_state_path=(fixture_root / "fail.session.json").as_posix(),
+        trace_summary_path=(fixture_root / "fail.summary.json").as_posix(),
+        trace_check_ok=False,
+        trace_check_errors=["missing span"],
+        trace_event_count=20,
+        model_calls=3,
+        mcp_calls=1,
+        skill_calls=0,
+        local_tool_calls=3,
+        artifact_count=0,
+        error_count=1,
+        runtime_warning_count=2,
+        runtime_warning_codes=["step_total_tokens_exceeded", "tool_call_failed"],
+        total_latency_ms=4100,
+    )
+    results = [pass_result, fail_result]
+    aggregate = eval_runner._aggregate_results(results)
+    summary = eval_runner._render_summary(results)
+
+    baseline_path = fixture_root / "baseline.json"
+    current_report_path = fixture_root / "report.json"
+    baseline_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "openagent.eval.report.v1",
+                "regression_thresholds": {
+                    "max_cost_delta": 0.02,
+                    "max_duration_delta_ms": 500,
+                    "max_model_calls_delta": 1,
+                    "max_total_tokens_delta": 10,
+                },
+                "results": [
+                    {
+                        "case_id": "pass_case",
+                        "status": "pass",
+                        "score": 1.0,
+                        "duration_ms": 1000,
+                        "steps": 2,
+                        "model_calls": 1,
+                        "tool_calls": 1,
+                        "input_tokens": 90,
+                        "output_tokens": 30,
+                        "cost": 0.01,
+                        "trace_check_ok": True,
+                        "runtime_warning_count": 0,
+                    },
+                    {
+                        "case_id": "fail_case",
+                        "status": "pass",
+                        "score": 1.0,
+                        "duration_ms": 3000,
+                        "steps": 5,
+                        "model_calls": 1,
+                        "tool_calls": 2,
+                        "input_tokens": 200,
+                        "output_tokens": 50,
+                        "cost": 0.05,
+                        "trace_check_ok": True,
+                        "runtime_warning_count": 0,
+                    },
+                    {
+                        "case_id": "removed_case",
+                        "status": "pass",
+                        "score": 1.0,
+                        "duration_ms": 500,
+                        "steps": 1,
+                        "model_calls": 1,
+                        "tool_calls": 0,
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cost": 0.001,
+                        "trace_check_ok": True,
+                        "runtime_warning_count": 0,
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    regression = eval_runner._compare_with_baseline(
+        baseline_report=baseline_path,
+        current_results=results,
+        current_report_path=current_report_path,
+    )
+    regression_summary = eval_runner._render_regression_summary(regression)
+    report_payload = {
+        "schema_version": "openagent.eval.report.v1",
+        "aggregate": aggregate,
+        "results": [asdict(result) for result in results],
+        "regression": regression,
+    }
+    current_report_path.write_text(json.dumps(report_payload, ensure_ascii=False), encoding="utf-8")
+    regression_path = fixture_root / "regression.json"
+    regression_path.write_text(json.dumps(regression, ensure_ascii=False), encoding="utf-8")
+
+    clean_report_path = fixture_root / "clean-report.json"
+    clean_report_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "openagent.eval.report.v1",
+                "aggregate": eval_runner._aggregate_results([pass_result]),
+                "results": [asdict(pass_result)],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    ci_gate = {
+        "pass": eval_ci_gate.check_eval_ci_gate(clean_report_path, max_runtime_warnings=0).to_dict(),
+        "fail": eval_ci_gate.check_eval_ci_gate(
+            current_report_path,
+            regression_path=regression_path,
+            min_success_rate=0.75,
+            max_runtime_warnings=1,
+        ).to_dict(),
+    }
+
+    langfuse_session = Session(id="session_langfuse", directory=fixture_root / "langfuse")
+    langfuse_session.metadata[TRACE_METADATA_KEY] = {
+        "run_id": "run_fixture",
+        "exporters": {
+            "langfuse": {
+                "trace_id": "trace_fixture_123",
+                "scores_enabled": True,
+            }
+        },
+    }
+    langfuse_case = eval_runner.EvalCase(id="langfuse_case", input="continue")
+    score_client = _FixtureLangfuseScoreClient()
+    with patch("openagent.core.eval.runner.load_langfuse_client", return_value=score_client):
+        langfuse_success = eval_runner._export_langfuse_eval_scores(
+            fail_result,
+            case=langfuse_case,
+            session=langfuse_session,
+            trace_options={"enabled": True},
+        )
+    failing_client = _FixtureLangfuseScoreClient(fail_scores=True)
+    with patch("openagent.core.eval.runner.load_langfuse_client", return_value=failing_client):
+        langfuse_failure = eval_runner._export_langfuse_eval_scores(
+            pass_result,
+            case=langfuse_case,
+            session=langfuse_session,
+            trace_options={"enabled": True},
+        )
+
+    terminal_runtime = terminal_bench_integration.TerminalBenchWorkspaceRuntime(
+        SimpleNamespace(get_incremental_output=lambda: ""),
+        workspace_root="/app",
+    )
+    terminal_marker = "__OPENAGENT_TBENCH_EXIT_fixture__"
+    terminal_observation = f"$ command\nhello\n{terminal_marker}7\ntrailing"
+    terminal_agent = terminal_bench_integration.OpenAgentTerminalBenchAgent(workspace_root="/workspace")
+
+    harbor_success_environment = _FixtureHarborEnvironment(return_code=7, stdout="hello from harbor\n", stderr="warn")
+    harbor_success_runtime = harbor_integration.HarborWorkspaceRuntime(harbor_success_environment, workspace_root="/app")
+    with patch("openagent.integrations.harbor.time.time", side_effect=[100.0, 100.321]):
+        harbor_success = asyncio.run(harbor_success_runtime.run_command("echo hello", cwd="/app/project", timeout_ms=5200))
+    harbor_timeout_environment = _FixtureHarborEnvironment(fail_timeout=True)
+    harbor_timeout_runtime = harbor_integration.HarborWorkspaceRuntime(harbor_timeout_environment, workspace_root="/app")
+    with patch("openagent.integrations.harbor.time.time", side_effect=[200.0, 201.234]):
+        harbor_timeout = asyncio.run(harbor_timeout_runtime.run_command("sleep 10", cwd=None, timeout_ms=1))
+    harbor_agent = harbor_integration.OpenAgentHarborAgent(logs_dir=fixture_root / "harbor-logs", model_name="OpenAI/gpt-test", workspace_root="/workspace")
+
+    payload = {
+        "schema_version": 1,
+        "eval": {
+            "results": [asdict(result) for result in results],
+            "aggregate": aggregate,
+            "summary": summary,
+            "regression": regression,
+            "regression_summary": regression_summary,
+            "ci_gate": ci_gate,
+            "langfuse": {
+                "success_result": asdict(langfuse_success),
+                "success_scores": score_client.scores,
+                "success_flush_count": score_client.flush_count,
+                "failure_result": asdict(langfuse_failure),
+            },
+        },
+        "terminal_bench": {
+            "defaults": {
+                "max_steps": terminal_bench_integration.DEFAULT_MAX_STEPS,
+                "context_window": terminal_bench_integration.DEFAULT_CONTEXT_WINDOW,
+                "max_output": terminal_bench_integration.DEFAULT_MAX_OUTPUT,
+                "workdir": terminal_bench_integration.DEFAULT_WORKDIR,
+            },
+            "metadata": terminal_runtime.execution_metadata,
+            "display_paths": {
+                "root": terminal_runtime.display_path("/app"),
+                "nested": terminal_runtime.display_path("/app/project/file.txt"),
+                "external": terminal_runtime.display_path("/tmp/file.txt"),
+            },
+            "wrapped_command": terminal_runtime._wrap_command(
+                command="printf 'hello world'",
+                cwd="/app/project",
+                marker=terminal_marker,
+            ),
+            "extract_returncode": list(terminal_runtime._extract_returncode(terminal_observation, terminal_marker)),
+            "format_observation": {
+                "with_body": terminal_runtime._format_observation("hello", returncode=7, elapsed_ms=321),
+                "empty": terminal_runtime._format_observation("", returncode=0, elapsed_ms=1),
+            },
+            "failure_modes": {
+                "timeout": _stable(terminal_agent._failure_mode_for_error("agent timeout")),
+                "context": _stable(terminal_agent._failure_mode_for_error("context length exceeded")),
+                "output": _stable(terminal_agent._failure_mode_for_error("output length exceeded")),
+                "unknown": _stable(terminal_agent._failure_mode_for_error("boom")),
+            },
+            "system_prompt": terminal_agent._system_prompt(),
+        },
+        "harbor": {
+            "defaults": {
+                "max_steps": harbor_integration.DEFAULT_MAX_STEPS,
+                "context_window": harbor_integration.DEFAULT_CONTEXT_WINDOW,
+                "max_output": harbor_integration.DEFAULT_MAX_OUTPUT,
+                "workdir": harbor_integration.DEFAULT_WORKDIR,
+            },
+            "metadata": harbor_success_runtime.execution_metadata,
+            "display_paths": {
+                "root": harbor_success_runtime.display_path("/app"),
+                "nested": harbor_success_runtime.display_path("/app/project/file.txt"),
+                "external": harbor_success_runtime.display_path("/tmp/file.txt"),
+            },
+            "success_command": harbor_success_environment.commands[0],
+            "success_result": asdict(harbor_success),
+            "timeout_command": harbor_timeout_environment.commands[0],
+            "timeout_result": asdict(harbor_timeout),
+            "normalized_models": {
+                "openai": harbor_agent._normalized_model_name("OpenAI/gpt-test"),
+                "openai_compatible": harbor_agent._normalized_model_name("openai-compatible/gpt-test"),
+                "other_provider": harbor_agent._normalized_model_name("vendor/model"),
+                "plain": harbor_agent._normalized_model_name("plain-model"),
+                "empty": harbor_agent._normalized_model_name(""),
+            },
+            "system_prompt": harbor_agent._system_prompt(),
+        },
+    }
+    return _scrub_fixture_root(payload, fixture_root)
+
+
 def _http_runtime_fixture() -> dict[str, Any]:
     fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal12")
     shutil.rmtree(fixture_root, ignore_errors=True)
@@ -2748,6 +3078,7 @@ def capture(output_dir: Path) -> None:
         "mcp_runtime.json": _mcp_runtime_fixture(),
         "app_bridge_tui.json": _app_bridge_tui_fixture(),
         "http_runtime.json": _http_runtime_fixture(),
+        "eval_integrations.json": _eval_integrations_fixture(),
         "cli_commands.json": _cli_commands_fixture(),
     }
     for name, payload in fixtures.items():

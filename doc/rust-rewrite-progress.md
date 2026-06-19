@@ -5,6 +5,65 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 13 - Rust Eval And Benchmark Integrations
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `eval_integrations.json` Python oracle coverage for eval
+  result aggregation, markdown summary rendering, baseline regression
+  comparison, regression markdown rendering, CI gate pass/fail metrics and
+  reasons, Langfuse eval score payload/export success and failure fields,
+  Terminal-Bench adapter defaults/metadata/path display/command wrapping/exit
+  code extraction/output formatting/failure modes/system prompt, and Harbor
+  adapter defaults/metadata/path display/success-timeout command/result
+  formatting/model normalization/system prompt.
+- Replaced the placeholder `openagent-eval` crate with Rust eval result models,
+  aggregate and summary rendering, baseline regression comparison, regression
+  markdown rendering, CI gate options/results, Langfuse score payload helpers,
+  Terminal-Bench helper contracts, and Harbor helper contracts.
+- Added Rust integration tests comparing the full eval/integration fixture
+  against the Python oracle plus targeted adapter edge-case checks.
+
+Verification:
+
+```bash
+cargo test -p openagent-eval -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_eval_runner.py src/tests/test_eval_ci_gate.py src/tests/test_terminal_bench_adapter.py src/tests/test_harbor_adapter.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-eval` targeted tests: 4 tests OK, including full
+  `eval_integrations.json` parity and adapter edge-case checks.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus eval/CI/Terminal-Bench/Harbor tests: 21 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates deterministic eval/report/benchmark integration contracts.
+  Real external benchmark runners and Langfuse network I/O still need final
+  entry-point wiring and/or CI environment credentials before Python can be
+  removed.
+- The final no-Python requirement remains Goal 14, where remaining Python
+  production runtime files must be deleted or quarantined and Rust binaries
+  become the only supported runtime entry points.
+
+Next:
+
+- Goal 14: remove/quarantine remaining production Python runtime entry points,
+  wire final Rust binaries, run no-Python verification, then open one final PR.
+
+---
+
 ## 2026-06-19 Goal 12 - Rust HTTP Runtime Contract
 
 Status: complete.

@@ -565,6 +565,9 @@ dependencies = [
  "openagent-core",
  "openagent-protocol",
  "openagent-session",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
