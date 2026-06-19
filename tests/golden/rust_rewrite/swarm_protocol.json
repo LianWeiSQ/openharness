@@ -1,0 +1,101 @@
+{
+  "budget": {
+    "max_concurrent": 1,
+    "max_total_cost": 1.5,
+    "max_total_tokens": 100,
+    "max_total_workers": 1
+  },
+  "descriptor": {
+    "id": "fixture-runner",
+    "kind": "function",
+    "max_context": 8192,
+    "metadata": {
+      "fixture": true
+    },
+    "model_tier": "worker",
+    "roles": [
+      "reviewer",
+      "*"
+    ],
+    "supports_streaming": true,
+    "tool_groups": [
+      "readonly"
+    ]
+  },
+  "result": {
+    "artifacts": [
+      {
+        "kind": "trace",
+        "metadata": {},
+        "title": "Trace",
+        "uri": "runs/fixture/trace.jsonl"
+      }
+    ],
+    "confidence": 0.92,
+    "evidence": [
+      "README.md fixture evidence"
+    ],
+    "metadata": {
+      "runner": "fixture"
+    },
+    "open_questions": [],
+    "status": "completed",
+    "summary": "Fixture review completed.",
+    "usage": {
+      "cost": 0.0001,
+      "input_tokens": 10,
+      "latency_ms": 12,
+      "output_tokens": 5,
+      "steps": 1
+    }
+  },
+  "run_context": {
+    "budget": {
+      "max_concurrent": 4,
+      "max_total_cost": null,
+      "max_total_tokens": null,
+      "max_total_workers": 8
+    },
+    "cancellation": null,
+    "metadata": {
+      "fixture": true
+    },
+    "parent_span_id": "span_parent",
+    "run_id": "run_fixture"
+  },
+  "schema_version": 1,
+  "spec": {
+    "boundaries": "Do not modify files.",
+    "context": "The fixture should be stable and network-free.",
+    "inputs": {
+      "path": "README.md"
+    },
+    "limits": {
+      "max_cost": 0.25,
+      "max_input_tokens": 2048,
+      "max_output_tokens": 512,
+      "max_steps": 4,
+      "timeout_seconds": 30
+    },
+    "metadata": {
+      "fixture": true
+    },
+    "objective": "Review a deterministic fixture.",
+    "output_schema": {
+      "properties": {
+        "confidence": {
+          "type": "number"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "type": "object"
+    },
+    "permissions": "READONLY",
+    "role": "reviewer"
+  }
+}
