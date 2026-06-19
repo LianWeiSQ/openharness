@@ -117,7 +117,7 @@ async fn function_runner_reports_spec_validation_failures() {
 
 #[tokio::test]
 async fn subprocess_runner_executes_json_worker() {
-    let script = r#"printf '%s\n' '{"status":"completed","summary":"subprocess worker","evidence":["objective:Deliver the answer"],"usage":{"input_tokens":5,"output_tokens":7,"cost":0.25,"steps":1,"latency_ms":9},"metadata":{"seen_runner":"subprocess-one"}}'"#;
+    let script = r#"cat >/dev/null; printf '%s\n' '{"status":"completed","summary":"subprocess worker","evidence":["objective:Deliver the answer"],"usage":{"input_tokens":5,"output_tokens":7,"cost":0.25,"steps":1,"latency_ms":9},"metadata":{"seen_runner":"subprocess-one"}}'"#;
     let mut registry = RunnerRegistry::new();
     registry.register(SubprocessRunner::new(
         descriptor("subprocess-one", "subprocess", &["worker"]),
@@ -273,7 +273,7 @@ tasks:
 
 #[test]
 fn cli_run_executes_configured_subprocess_task() {
-    let script = r#"printf '%s\n' '{"status":"completed","summary":"cli cli","usage":{"input_tokens":3,"output_tokens":4,"cost":0.02,"steps":1,"latency_ms":5}}'"#;
+    let script = r#"cat >/dev/null; printf '%s\n' '{"status":"completed","summary":"cli cli","usage":{"input_tokens":3,"output_tokens":4,"cost":0.02,"steps":1,"latency_ms":5}}'"#;
     let config = json!({
         "fanout_budget": {
             "max_concurrent": 1,
