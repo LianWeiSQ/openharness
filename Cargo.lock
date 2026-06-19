@@ -576,6 +576,9 @@ version = "0.1.0"
 dependencies = [
  "openagent-protocol",
  "openagent-tools",
+ "serde",
+ "serde_json",
+ "sha1",
 ]
 
 [[package]]

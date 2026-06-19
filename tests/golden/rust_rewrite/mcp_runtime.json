@@ -1,0 +1,512 @@
+{
+  "bridge": {
+    "calls": [
+      {
+        "arguments": {
+          "city": "Shanghai"
+        },
+        "dynamic_name": "mcp_tool_demo_server_weather_search"
+      }
+    ],
+    "definition": {
+      "dangerous": true,
+      "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'Weather.Search'.\n\nFind a forecast for a city.",
+      "execution_schema": {
+        "batch_group": "remote-mcp",
+        "concurrency": "unknown",
+        "conflict_key_template": null,
+        "external_io": true,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": false,
+        "mutates_workspace": false,
+        "read_only": false,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "agnostic",
+      "group": "remote-mcp",
+      "id": "mcp_tool_demo_server_weather_search",
+      "parameters_schema": {
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      }
+    },
+    "output": {
+      "attachments": [],
+      "error": null,
+      "metadata": {
+        "backend": "mcp",
+        "custom": "kept",
+        "mcp_non_text_blocks": [],
+        "mcp_original_tool_name": "Weather.Search",
+        "mcp_server": "Demo Server",
+        "mcp_tool_name": "mcp_tool_demo_server_weather_search",
+        "mcp_transport": "sse",
+        "title": "MCP Demo Server/Weather.Search",
+        "tool": "mcp_tool_demo_server_weather_search"
+      },
+      "output": "Bridge output",
+      "title": "MCP Demo Server/Weather.Search",
+      "truncated": false
+    }
+  },
+  "config": {
+    "enabled": true,
+    "errors": {
+      "invalid_headers": "MCP headers must be an object.",
+      "invalid_tools": "MCP tools filter must be an object with allow/deny arrays.",
+      "invalid_transport": "MCP server 'bad' has unsupported transport 'websocket'. Supported values are auto, http, sse.",
+      "invalid_type": "MCP server 'bad' only supports type='remote', 'streamableHttp', or 'sse' in v1."
+    },
+    "parsed": {
+      "refresh_ttl_s": 12.5,
+      "servers": [
+        {
+          "enabled": true,
+          "headers": {
+            "Authorization": "Bearer secret-token",
+            "X-Client": "openagent-fixture",
+            "X-Token": "token-secret"
+          },
+          "name": "Demo Server",
+          "timeout_ms": 1000,
+          "tools": {
+            "allow": [
+              "Weather*",
+              "weather search",
+              "Data-*"
+            ],
+            "deny": [
+              "Data-secret"
+            ]
+          },
+          "transport": "auto",
+          "url": "https://mcp.example.test/demo"
+        },
+        {
+          "enabled": false,
+          "headers": {},
+          "name": "Event Server",
+          "timeout_ms": 30000,
+          "tools": {
+            "allow": [
+              "*"
+            ],
+            "deny": []
+          },
+          "transport": "sse",
+          "url": "https://mcp.example.test/sse"
+        },
+        {
+          "enabled": true,
+          "headers": {
+            "Authorization": "Bearer stream-secret"
+          },
+          "name": "Stream Server",
+          "timeout_ms": 30000,
+          "tools": {
+            "allow": [
+              "*"
+            ],
+            "deny": []
+          },
+          "transport": "http",
+          "url": "https://mcp.example.test/stream"
+        }
+      ]
+    },
+    "source_cli": {
+      "refresh_ttl_s": 12.5,
+      "servers": [
+        {
+          "enabled": true,
+          "headers": {
+            "Authorization": "Bearer secret-token",
+            "X-Client": "openagent-fixture",
+            "X-Token": "token-secret"
+          },
+          "name": "Demo Server",
+          "timeout_ms": 1000,
+          "tools": {
+            "allow": [
+              "Weather*",
+              "weather search",
+              "Data-*"
+            ],
+            "deny": [
+              "Data-secret"
+            ]
+          },
+          "transport": "auto",
+          "url": "https://mcp.example.test/demo"
+        },
+        {
+          "enabled": false,
+          "headers": {},
+          "name": "Event Server",
+          "timeout_ms": 30000,
+          "tools": {
+            "allow": [
+              "*"
+            ],
+            "deny": []
+          },
+          "transport": "sse",
+          "url": "https://mcp.example.test/sse"
+        },
+        {
+          "enabled": true,
+          "headers": {
+            "Authorization": "Bearer stream-secret"
+          },
+          "name": "Stream Server",
+          "timeout_ms": 30000,
+          "tools": {
+            "allow": [
+              "*"
+            ],
+            "deny": []
+          },
+          "transport": "http",
+          "url": "https://mcp.example.test/stream"
+        }
+      ]
+    },
+    "source_empty": null,
+    "source_env": {
+      "refresh_ttl_s": 30.0,
+      "servers": [
+        {
+          "enabled": true,
+          "headers": {},
+          "name": "Env Server",
+          "timeout_ms": 30000,
+          "tools": {
+            "allow": [
+              "*"
+            ],
+            "deny": []
+          },
+          "transport": "http",
+          "url": "https://mcp.example.test/env"
+        }
+      ]
+    }
+  },
+  "discovery": {
+    "descriptors": [
+      {
+        "annotations": {
+          "readOnlyHint": true
+        },
+        "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'Weather.Search'.\n\nFind a forecast for a city.",
+        "dynamic_name": "mcp_tool_demo_server_weather_search",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "original_name": "Weather.Search",
+        "raw_metadata": {
+          "annotations": {
+            "readOnlyHint": true
+          },
+          "description": "Find a forecast for a city.",
+          "execution": {
+            "read_only": true
+          },
+          "title": "Weather Search"
+        },
+        "server_name": "Demo Server",
+        "title": "Weather Search"
+      },
+      {
+        "annotations": {},
+        "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'weather search'.\n\nDuplicate sanitized name.",
+        "dynamic_name": "mcp_tool_demo_server_weather_search_039da0",
+        "input_schema": {
+          "properties": {},
+          "type": "object"
+        },
+        "original_name": "weather search",
+        "raw_metadata": {
+          "annotations": {},
+          "description": "Duplicate sanitized name.",
+          "execution": null,
+          "title": "weather search"
+        },
+        "server_name": "Demo Server",
+        "title": "weather search"
+      },
+      {
+        "annotations": {
+          "dangerous": false
+        },
+        "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'Data-List'.\n\nSchema starts as an array and must be wrapped.",
+        "dynamic_name": "mcp_tool_demo_server_data_list",
+        "input_schema": {
+          "properties": {},
+          "type": "object",
+          "x-mcp-original-schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "original_name": "Data-List",
+        "raw_metadata": {
+          "annotations": {
+            "dangerous": false
+          },
+          "description": "Schema starts as an array and must be wrapped.",
+          "execution": {
+            "external_io": true
+          },
+          "title": "Data List"
+        },
+        "server_name": "Demo Server",
+        "title": "Data List"
+      }
+    ],
+    "helpers": {
+      "dynamic_name": "mcp_tool_demo_server_weather_search",
+      "timeout_floor": 1.0,
+      "timeout_regular": 45.0,
+      "tool_allowed_denied": false,
+      "tool_allowed_weather": true,
+      "transport_auto": [
+        "http",
+        "sse"
+      ],
+      "transport_http": [
+        "http"
+      ],
+      "transport_sse": [
+        "sse"
+      ]
+    },
+    "listed": [
+      {
+        "annotations": {
+          "dangerous": false
+        },
+        "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'Data-List'.\n\nSchema starts as an array and must be wrapped.",
+        "dynamic_name": "mcp_tool_demo_server_data_list",
+        "input_schema": {
+          "properties": {},
+          "type": "object",
+          "x-mcp-original-schema": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "original_name": "Data-List",
+        "raw_metadata": {
+          "annotations": {
+            "dangerous": false
+          },
+          "description": "Schema starts as an array and must be wrapped.",
+          "execution": {
+            "external_io": true
+          },
+          "title": "Data List"
+        },
+        "server_name": "Demo Server",
+        "title": "Data List"
+      },
+      {
+        "annotations": {
+          "readOnlyHint": true
+        },
+        "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'Weather.Search'.\n\nFind a forecast for a city.",
+        "dynamic_name": "mcp_tool_demo_server_weather_search",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "original_name": "Weather.Search",
+        "raw_metadata": {
+          "annotations": {
+            "readOnlyHint": true
+          },
+          "description": "Find a forecast for a city.",
+          "execution": {
+            "read_only": true
+          },
+          "title": "Weather Search"
+        },
+        "server_name": "Demo Server",
+        "title": "Weather Search"
+      },
+      {
+        "annotations": {},
+        "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'weather search'.\n\nDuplicate sanitized name.",
+        "dynamic_name": "mcp_tool_demo_server_weather_search_039da0",
+        "input_schema": {
+          "properties": {},
+          "type": "object"
+        },
+        "original_name": "weather search",
+        "raw_metadata": {
+          "annotations": {},
+          "description": "Duplicate sanitized name.",
+          "execution": null,
+          "title": "weather search"
+        },
+        "server_name": "Demo Server",
+        "title": "weather search"
+      }
+    ],
+    "snapshot": {
+      "configured": true,
+      "enabled": true,
+      "server_count": 1,
+      "servers": [
+        {
+          "configured_transport": "auto",
+          "enabled": true,
+          "last_error": null,
+          "last_refreshed_at": 1781840000.25,
+          "name": "Demo Server",
+          "selected_transport": "http",
+          "status": "ready",
+          "tool_count": 3,
+          "tools": [
+            {
+              "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'Data-List'.\n\nSchema starts as an array and must be wrapped.",
+              "name": "mcp_tool_demo_server_data_list",
+              "original_name": "Data-List",
+              "title": "Data List"
+            },
+            {
+              "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'Weather.Search'.\n\nFind a forecast for a city.",
+              "name": "mcp_tool_demo_server_weather_search",
+              "original_name": "Weather.Search",
+              "title": "Weather Search"
+            },
+            {
+              "description": "Remote MCP tool from server 'Demo Server'. Original MCP tool name: 'weather search'.\n\nDuplicate sanitized name.",
+              "name": "mcp_tool_demo_server_weather_search_039da0",
+              "original_name": "weather search",
+              "title": "weather search"
+            }
+          ],
+          "url": "https://mcp.example.test/demo"
+        }
+      ]
+    }
+  },
+  "redaction": {
+    "observability": {
+      "api_key": "[redacted]",
+      "headers": {
+        "Authorization": "[redacted]",
+        "X-Client": "openagent-fixture",
+        "X-Token": "[redacted]"
+      },
+      "nested": {
+        "input_tokens": 123,
+        "prompt": "visible",
+        "session_token": "[redacted]"
+      }
+    },
+    "trace": {
+      "api_key": "[redacted]",
+      "headers": {
+        "Authorization": "[redacted]",
+        "X-Client": "openagent-fixture",
+        "X-Token": "[redacted]"
+      },
+      "nested": {
+        "input_tokens": 123,
+        "prompt": "visible",
+        "session_token": "[redacted]"
+      }
+    }
+  },
+  "schema_version": 1,
+  "tool_call": {
+    "empty": {
+      "error": null,
+      "metadata": {
+        "backend": "mcp",
+        "is_error": false,
+        "mcp_non_text_blocks": [],
+        "mcp_original_tool_name": "Weather.Search",
+        "mcp_server": "Demo Server",
+        "mcp_tool_name": "mcp_tool_demo_server_weather_search",
+        "mcp_transport": "http",
+        "title": "MCP Demo Server/Weather.Search",
+        "tool": "mcp_tool_demo_server_weather_search"
+      },
+      "output": "(Remote MCP tool completed with no textual output.)"
+    },
+    "error": {
+      "error": "Remote MCP rejected the request.",
+      "metadata": {
+        "backend": "mcp",
+        "is_error": true,
+        "mcp_non_text_blocks": [],
+        "mcp_original_tool_name": "Weather.Search",
+        "mcp_server": "Demo Server",
+        "mcp_tool_name": "mcp_tool_demo_server_weather_search",
+        "mcp_transport": "sse",
+        "title": "MCP Demo Server/Weather.Search",
+        "tool": "mcp_tool_demo_server_weather_search"
+      },
+      "output": ""
+    },
+    "text_non_text": {
+      "error": null,
+      "metadata": {
+        "backend": "mcp",
+        "is_error": false,
+        "mcp_non_text_blocks": [
+          "image",
+          "resource",
+          "binary",
+          "unknown"
+        ],
+        "mcp_original_tool_name": "Weather.Search",
+        "mcp_server": "Demo Server",
+        "mcp_tool_name": "mcp_tool_demo_server_weather_search",
+        "mcp_transport": "http",
+        "title": "MCP Demo Server/Weather.Search",
+        "tool": "mcp_tool_demo_server_weather_search"
+      },
+      "output": "Weather summary\nCloudy with light wind.\n\n[MCP content ignored: image]\n\n[MCP content ignored: image]\n\n[MCP content ignored: resource]\n\n[MCP content ignored: binary]\n\n[MCP content ignored: unknown]"
+    },
+    "unavailable": {
+      "error": "Remote MCP tool 'mcp_tool_missing' is not available.",
+      "metadata": {
+        "backend": "mcp",
+        "mcp_tool_name": "mcp_tool_missing",
+        "tool": "mcp_tool_missing"
+      },
+      "output": ""
+    }
+  }
+}

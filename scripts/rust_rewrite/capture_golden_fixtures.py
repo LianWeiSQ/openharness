@@ -9,6 +9,7 @@ import sys
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 from unittest.mock import patch
 
@@ -29,6 +30,19 @@ from openagent.core.agent.universal import UniversalAgent
 from openagent.core.instructions import InstructionContextLoader, InstructionLoadOptions
 from openagent.core.loop.processor import AgentLoop, AgentLoopConfig
 from openagent.core.message_materializer import RUNTIME_OPTION_KEYS, materialize_openai_compatible_payload
+from openagent.core.mcp.bridge import register_mcp_tools
+from openagent.core.mcp.config import load_mcp_config, load_mcp_config_from_sources
+from openagent.core.mcp.runtime import (
+    RemoteMcpManager,
+    _build_result_metadata,
+    _build_tool_descriptors,
+    _dynamic_tool_name,
+    _render_tool_result_output,
+    _timeout_seconds,
+    _tool_allowed,
+    _transport_candidates,
+)
+from openagent.core.mcp.types import McpConfig, RemoteMcpToolCallResult
 from openagent.core.observability import (
     ObservationConfig,
     ObservationEvent,
@@ -88,6 +102,7 @@ from openagent.core.types import (
     ToolSchema,
     Usage,
 )
+from mcp.types import TextContent
 from swarm.protocol import (
     AgentDescriptor,
     AgentResult,
@@ -179,6 +194,20 @@ class _FixtureAnthropicClient:
         self.events = events
         self.requests: list[dict[str, Any]] = []
         self.messages = _FixtureAnthropicMessages(self)
+
+
+class _FixtureMcpBridgeClient:
+    def __init__(self, descriptors: list[Any], result: RemoteMcpToolCallResult) -> None:
+        self.descriptors = descriptors
+        self.result = result
+        self.calls: list[dict[str, Any]] = []
+
+    def list_tool_descriptors(self) -> list[Any]:
+        return self.descriptors
+
+    async def call_tool(self, dynamic_name: str, arguments: dict[str, object] | None) -> RemoteMcpToolCallResult:
+        self.calls.append({"dynamic_name": dynamic_name, "arguments": arguments or {}})
+        return self.result
 
 
 def _stable(value: Any) -> Any:
@@ -1480,6 +1509,261 @@ def _session_trace_observability_fixture() -> dict[str, Any]:
     }
 
 
+async def _execute_fixture_tool(tool: ToolDefinition, args: dict[str, Any]) -> ToolOutput:
+    result = tool.execute(
+        args,
+        ToolContext(
+            session_id="session_mcp",
+            session_root=Path("/tmp/openagent-mcp-fixture"),
+            call_id="call_mcp",
+        ),
+    )
+    if asyncio.iscoroutine(result):
+        return await result
+    return result
+
+
+def _mcp_call_result_fixture(descriptor: Any, result: Any, *, transport: str | None) -> RemoteMcpToolCallResult:
+    output, non_text_blocks = _render_tool_result_output(result)
+    is_error = bool(getattr(result, "isError", False))
+    metadata = _build_result_metadata(
+        descriptor,
+        transport=transport,  # type: ignore[arg-type]
+        is_error=is_error,
+        non_text_blocks=non_text_blocks,
+    )
+    error = None
+    if is_error:
+        error = output or "Remote MCP tool returned an error."
+        output = ""
+    elif not output:
+        output = "(Remote MCP tool completed with no textual output.)"
+    return RemoteMcpToolCallResult(output=output, error=error, metadata=metadata)
+
+
+def _mcp_runtime_fixture() -> dict[str, Any]:
+    raw_config = {
+        "refresh_ttl_s": "12.5",
+        "mcp": {
+            "Demo Server": {
+                "type": "remote",
+                "url": "https://mcp.example.test/demo",
+                "transport": "auto",
+                "enabled": True,
+                "headers": {
+                    "Authorization": "Bearer secret-token",
+                    "X-Token": "token-secret",
+                    "X-Client": "openagent-fixture",
+                },
+                "timeout_ms": 500,
+                "tools": {
+                    "allow": ["Weather*", "weather search", "Data-*"],
+                    "deny": ["Data-secret"],
+                },
+            },
+            "Event Server": {
+                "type": "sse",
+                "url": "https://mcp.example.test/sse",
+                "enabled": False,
+            },
+            "Stream Server": {
+                "type": "streamableHttp",
+                "url": "https://mcp.example.test/stream",
+                "headers": {"Authorization": "Bearer stream-secret"},
+            },
+        },
+    }
+    env_config = {
+        "mcpServers": {
+            "Env Server": {
+                "type": "streamable_http",
+                "url": "https://mcp.example.test/env",
+                "transport": "http",
+            }
+        }
+    }
+    parsed = load_mcp_config(raw_config)
+    source_cli = load_mcp_config_from_sources(
+        cli_value=json.dumps(raw_config, sort_keys=True),
+        env={"OPENAGENT_MCP_CONFIG": json.dumps(env_config, sort_keys=True)},
+    )
+    source_env = load_mcp_config_from_sources(
+        env={"OPENAGENT_MCP_CONFIG": json.dumps(env_config, sort_keys=True)}
+    )
+
+    errors: dict[str, str] = {}
+    for key, source in {
+        "invalid_type": {"mcp": {"bad": {"type": "stdio", "url": "https://example.test"}}},
+        "invalid_transport": {"mcp": {"bad": {"url": "https://example.test", "transport": "websocket"}}},
+        "invalid_headers": {"mcp": {"bad": {"url": "https://example.test", "headers": ["nope"]}}},
+        "invalid_tools": {"mcp": {"bad": {"url": "https://example.test", "tools": ["nope"]}}},
+    }.items():
+        try:
+            load_mcp_config(source)
+        except ValueError as error:
+            errors[key] = str(error)
+        else:
+            raise AssertionError(f"{key} fixture did not fail")
+
+    primary_server = parsed.servers[0]
+    raw_tools = [
+        SimpleNamespace(
+            name="Weather.Search",
+            title="Weather Search",
+            description="Find a forecast for a city.",
+            inputSchema={
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+            annotations={"readOnlyHint": True},
+            execution=SimpleNamespace(read_only=True),
+        ),
+        SimpleNamespace(
+            name="weather search",
+            title=None,
+            description="Duplicate sanitized name.",
+            inputSchema=None,
+            annotations=None,
+            execution=None,
+        ),
+        SimpleNamespace(
+            name="Data-List",
+            title="Data List",
+            description="Schema starts as an array and must be wrapped.",
+            inputSchema={"type": "array", "items": {"type": "string"}},
+            annotations={"dangerous": False},
+            execution={"external_io": True},
+        ),
+        SimpleNamespace(
+            name="Data-secret",
+            title="Denied",
+            description="This tool is denied by filter.",
+            inputSchema={"type": "object"},
+            annotations={},
+            execution=None,
+        ),
+        SimpleNamespace(
+            name="",
+            title="Empty",
+            description="This tool is ignored because it has no name.",
+            inputSchema={"type": "object"},
+            annotations={},
+            execution=None,
+        ),
+    ]
+    descriptors = _build_tool_descriptors(primary_server, raw_tools)
+    manager = RemoteMcpManager(McpConfig(servers=(primary_server,)))
+    state = manager._servers[primary_server.name]
+    state.status = "ready"
+    state.selected_transport = "http"
+    state.last_error = None
+    state.last_refreshed_at = 1781840000.25
+    state.tools_by_dynamic_name = {descriptor.dynamic_name: descriptor for descriptor in descriptors}
+
+    text_result = SimpleNamespace(
+        content=[
+            TextContent(type="text", text="Weather summary\nCloudy with light wind."),
+            SimpleNamespace(type="image"),
+            SimpleNamespace(type="image"),
+            SimpleNamespace(type="resource"),
+            SimpleNamespace(type="blob"),
+            SimpleNamespace(type="weird"),
+        ],
+        structuredContent={"city": "Shanghai", "temperature": 24},
+        isError=False,
+    )
+    empty_result = SimpleNamespace(content=[], structuredContent={"only": "structured"}, isError=False)
+    error_result = SimpleNamespace(
+        content=[TextContent(type="text", text="Remote MCP rejected the request.")],
+        structuredContent={"debug": "ignored"},
+        isError=True,
+    )
+    descriptor = descriptors[0]
+    normalized_text = _mcp_call_result_fixture(descriptor, text_result, transport="http")
+    normalized_empty = _mcp_call_result_fixture(descriptor, empty_result, transport="http")
+    normalized_error = _mcp_call_result_fixture(descriptor, error_result, transport="sse")
+    unavailable = asyncio.run(RemoteMcpManager(McpConfig()).call_tool("mcp_tool_missing", {}))
+
+    registry = ToolRegistry()
+    bridge_client = _FixtureMcpBridgeClient(
+        [descriptor],
+        RemoteMcpToolCallResult(
+            output="Bridge output",
+            metadata={"mcp_transport": "sse", "custom": "kept"},
+        ),
+    )
+    register_mcp_tools(registry, bridge_client, group="remote-mcp")  # type: ignore[arg-type]
+    bridge_tool = registry.get(descriptor.dynamic_name)
+    if bridge_tool is None:
+        raise AssertionError("MCP bridge did not register the fixture tool")
+    bridge_output = asyncio.run(_execute_fixture_tool(bridge_tool, {"city": "Shanghai"}))
+
+    auth_payload = {
+        "headers": {
+            "Authorization": "Bearer secret-token",
+            "X-Token": "token-secret",
+            "X-Client": "openagent-fixture",
+        },
+        "api_key": "secret-api-key",
+        "nested": {
+            "session_token": "secret-session-token",
+            "input_tokens": 123,
+            "prompt": "visible",
+        },
+    }
+
+    return {
+        "schema_version": 1,
+        "config": {
+            "parsed": parsed,
+            "enabled": parsed.enabled,
+            "source_cli": source_cli,
+            "source_env": source_env,
+            "source_empty": load_mcp_config_from_sources(env={}),
+            "errors": errors,
+        },
+        "discovery": {
+            "descriptors": descriptors,
+            "listed": manager.list_tool_descriptors(),
+            "snapshot": manager.snapshot().to_dict(),
+            "helpers": {
+                "dynamic_name": _dynamic_tool_name("Demo Server", "Weather.Search"),
+                "transport_auto": _transport_candidates("auto"),
+                "transport_http": _transport_candidates("http"),
+                "transport_sse": _transport_candidates("sse"),
+                "timeout_floor": _timeout_seconds(500),
+                "timeout_regular": _timeout_seconds(45000),
+                "tool_allowed_weather": _tool_allowed("Weather.Search", primary_server.tools),
+                "tool_allowed_denied": _tool_allowed("Data-secret", primary_server.tools),
+            },
+        },
+        "tool_call": {
+            "text_non_text": normalized_text,
+            "empty": normalized_empty,
+            "error": normalized_error,
+            "unavailable": unavailable,
+        },
+        "bridge": {
+            "definition": {
+                "id": bridge_tool.id,
+                "description": bridge_tool.description,
+                "parameters_schema": bridge_tool.parameters_schema(),
+                "dangerous": bridge_tool.dangerous,
+                "group": bridge_tool.group,
+                "execution_scope": bridge_tool.execution_scope,
+                "execution_schema": bridge_tool.execution_schema.as_dict(),
+            },
+            "output": bridge_output,
+            "calls": bridge_client.calls,
+        },
+        "redaction": {
+            "trace": sanitize_trace_value(auth_payload),
+            "observability": sanitize_observation_value(auth_payload),
+        },
+    }
+
+
 def capture(output_dir: Path) -> None:
     fixtures = {
         "core_protocol.json": _core_protocol_fixture(),
@@ -1492,6 +1776,7 @@ def capture(output_dir: Path) -> None:
         "agent_loop.json": _agent_loop_fixture(),
         "provider_adapters.json": _provider_adapters_fixture(),
         "session_trace_observability.json": _session_trace_observability_fixture(),
+        "mcp_runtime.json": _mcp_runtime_fixture(),
     }
     for name, payload in fixtures.items():
         _write_json(output_dir, name, payload)

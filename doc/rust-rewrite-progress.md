@@ -5,6 +5,69 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 9 - Rust MCP Runtime
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `mcp_runtime.json` Python oracle coverage for MCP
+  config parsing, CLI/env source precedence, invalid config errors, transport
+  defaults, auth headers, tool filters, dynamic tool name sanitization,
+  duplicate-name suffixes, schema normalization, descriptor metadata, manager
+  snapshots, tool-call output normalization, bridge tool metadata, and
+  trace/observability redaction.
+- Replaced the placeholder `openagent-mcp` crate with Rust MCP config types,
+  source loaders, remote server config parsing, tool descriptor generation,
+  fnmatch-style allow/deny filtering, transport candidate selection, snapshot
+  state, tool-call result normalization, bridge `ToolDefinition` construction,
+  bridge output metadata defaults, and MCP auth/redaction helpers.
+- Added Rust integration tests comparing MCP config, discovery, snapshots,
+  redaction, bridge metadata, and text/non-text/empty/error/unavailable
+  tool-call results against the Python oracle.
+- Extended the golden fixture manifest to include `mcp_runtime.json`.
+
+Verification:
+
+```bash
+cargo test -p openagent-mcp -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_mcp_config.py src/tests/test_mcp_runtime.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-mcp` targeted tests: 2 tests OK, including Python fixture parity
+  for MCP config, discovery, auth redaction, bridge metadata, and tool-call
+  result normalization.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus MCP config/runtime tests: 9 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates deterministic MCP config/runtime behavior and bridge
+  metadata. Live remote MCP network session execution is still represented by
+  normalized runtime contracts and remains to be wired into the later CLI/App
+  runtime entry points.
+- The Rust MCP wildcard matcher covers the current fixture and production
+  allow/deny patterns with `*` and `?`; more exotic Python `fnmatch` bracket
+  patterns are not yet asserted by the oracle.
+- CLI, App Bridge/TUI, HTTP runtime, eval wiring, packaging, and final Python
+  removal remain deferred to later goals.
+
+Next:
+
+- Goal 10: migrate CLI command parsing, JSON/table output fixtures, and CLI
+  smoke behavior into Rust.
+
+---
+
 ## 2026-06-19 Goal 8 - Rust AgentLoop Kernel
 
 Status: complete.
