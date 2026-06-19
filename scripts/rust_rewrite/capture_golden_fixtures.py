@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +38,17 @@ from openagent.core.observability import (
 from openagent.core.permission.manager import PermissionManager
 from openagent.core.permission.rule import PermissionAction, PermissionRule
 from openagent.core.permission.ruleset import PermissionRuleset, ruleset
+from openagent.core.provider.anthropic import AnthropicLanguageModel
+from openagent.core.provider.metadata import (
+    default_env_mapping,
+    known_provider_ids,
+    provider_auth_methods,
+    provider_default_base_url,
+    provider_default_model,
+    provider_label,
+    provider_requires_api_key,
+)
+from openagent.core.provider.openai import OpenAILanguageModel, _parse_tool_arguments, _summarize_http_error_body
 from openagent.core.runtime_logging import RuntimeLogRecord, RuntimeLoggingConfig
 from openagent.core.runtime_warnings import (
     RuntimeWarningConfig,
@@ -90,6 +102,41 @@ class FixtureToolParams:
     include_hidden: bool = False
     labels: list[str] = field(default_factory=list)
     weights: dict[str, int] = field(default_factory=dict)
+
+
+class _FixtureOpenAIResponse:
+    def __init__(self, lines: list[bytes]) -> None:
+        self._lines = lines
+        self.status = 200
+        self.headers: dict[str, str] = {"Content-Type": "application/json"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def read(self) -> bytes:
+        return b"".join(self._lines)
+
+
+class _FixtureAnthropicMessages:
+    def __init__(self, client: "_FixtureAnthropicClient") -> None:
+        self._client = client
+
+    def create(self, **payload):
+        self._client.requests.append(payload)
+        return list(self._client.events)
+
+
+class _FixtureAnthropicClient:
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self.events = events
+        self.requests: list[dict[str, Any]] = []
+        self.messages = _FixtureAnthropicMessages(self)
 
 
 def _stable(value: Any) -> Any:
@@ -653,6 +700,277 @@ def _core_context_policy_fixture() -> dict[str, Any]:
     return _scrub_fixture_root(payload, fixture_root)
 
 
+async def _openai_chat_stream_fixture() -> dict[str, Any]:
+    chunks = [
+        {"choices": [{"index": 0, "delta": {"content": "Hello "}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {"content": "world"}, "finish_reason": None}]},
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "ls", "arguments": '{"path":'},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"."}'}}]},
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        },
+    ]
+    sse_lines = [f"data: {json.dumps(chunk, ensure_ascii=False)}\n".encode("utf-8") for chunk in chunks] + [b"data: [DONE]\n"]
+    seen_payload: dict[str, Any] = {}
+    seen_headers: dict[str, str] = {}
+
+    def _fake_urlopen(req, timeout=None):
+        nonlocal seen_payload, seen_headers
+        del timeout
+        seen_payload = json.loads((getattr(req, "data", None) or b"{}").decode("utf-8"))
+        seen_headers = {key.lower(): value for key, value in req.header_items()}
+        return _FixtureOpenAIResponse(sse_lines)
+
+    model = OpenAILanguageModel(
+        api_key="test",
+        model_id="glm47",
+        base_url="https://gateway.example.test/v1",
+        host_header="model-gateway.example.test",
+    )
+    messages = [
+        ChatMessage(role="user", content="show files"),
+        ChatMessage(
+            role="assistant",
+            content="",
+            metadata={
+                "tool_calls": [
+                    {
+                        "id": "prior_call",
+                        "type": "function",
+                        "function": {"name": "ls", "arguments": '{"path":"."}'},
+                    }
+                ]
+            },
+        ),
+        ChatMessage(role="tool", name="ls", tool_call_id="prior_call", content="[Tool result] ls"),
+    ]
+    tools = [
+        ToolSchema(
+            name="ls",
+            description="List directory",
+            schema={"type": "object", "properties": {"path": {"type": "string"}}},
+        )
+    ]
+    events: list[dict[str, Any]] = []
+    with patch("urllib.request.urlopen", new=_fake_urlopen):
+        async for event in model.stream(system="You are helpful.", messages=messages, tools=tools):
+            events.append(event)
+
+    return {
+        "chunks": chunks,
+        "messages": messages,
+        "tools": tools,
+        "payload": seen_payload,
+        "headers": seen_headers,
+        "events": events,
+    }
+
+
+async def _openai_responses_fixture() -> dict[str, Any]:
+    response_payload = {
+        "output": [
+            {
+                "type": "function_call",
+                "call_id": "call_hello",
+                "name": "bash",
+                "arguments": '{"command":"printf hello > hello.txt","timeout":10000}',
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "running"}],
+            },
+        ],
+        "usage": {"input_tokens": 7, "output_tokens": 11},
+    }
+    seen_payload: dict[str, Any] = {}
+
+    def _fake_urlopen(req, timeout=None):
+        nonlocal seen_payload
+        del timeout
+        seen_payload = json.loads((getattr(req, "data", None) or b"{}").decode("utf-8"))
+        return _FixtureOpenAIResponse([json.dumps(response_payload).encode("utf-8")])
+
+    model = OpenAILanguageModel(
+        api_key="test",
+        model_id="gpt-5.4",
+        base_url="https://example.invalid",
+        wire_api="responses",
+        reasoning_effort="xhigh",
+        disable_response_storage=True,
+    )
+    messages = [
+        ChatMessage(role="user", content="create hello"),
+        ChatMessage(
+            role="assistant",
+            content="",
+            metadata={
+                "tool_calls": [
+                    {
+                        "id": "prior_call",
+                        "type": "function",
+                        "function": {"name": "bash", "arguments": '{"command":"ls"}'},
+                    }
+                ]
+            },
+        ),
+        ChatMessage(role="tool", name="bash", tool_call_id="prior_call", content="[Tool result] bash"),
+    ]
+    tools = [
+        ToolSchema(
+            name="bash",
+            description="Run a shell command",
+            schema={"type": "object", "properties": {"command": {"type": "string"}}},
+        )
+    ]
+    events: list[dict[str, Any]] = []
+    with patch("urllib.request.urlopen", new=_fake_urlopen):
+        async for event in model.stream(system="Use tools.", messages=messages, tools=tools):
+            events.append(event)
+
+    return {
+        "response": response_payload,
+        "messages": messages,
+        "tools": tools,
+        "payload": seen_payload,
+        "events": events,
+    }
+
+
+async def _anthropic_stream_fixture() -> dict[str, Any]:
+    anthropic_events = [
+        {"type": "message_start", "message": {"usage": {"input_tokens": 12}}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello "}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "world"}},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "bash", "input": {}},
+        },
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": '{"command":"ls"'}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": ',"timeout":10}'}},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 7}},
+        {"type": "message_stop"},
+    ]
+    client = _FixtureAnthropicClient(anthropic_events)
+    model = AnthropicLanguageModel(
+        api_key="test",
+        model_id="claude-test",
+        client_factory=lambda **_: client,
+    )
+    messages = [
+        ChatMessage(role="user", content="inspect repo"),
+        ChatMessage(
+            role="assistant",
+            content="I'll list files.",
+            metadata={
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "ls", "arguments": '{"path":"."}'},
+                    }
+                ]
+            },
+        ),
+        ChatMessage(role="tool", name="ls", tool_call_id="call_1", content="[Tool result] ls"),
+    ]
+    tools = [
+        ToolSchema(
+            name="ls",
+            description="List directory",
+            schema={"type": "object", "properties": {"path": {"type": "string"}}},
+        )
+    ]
+    events: list[dict[str, Any]] = []
+    async for event in model.stream(
+        system="Use tools.",
+        messages=messages,
+        tools=tools,
+        temperature=0.2,
+        max_output_tokens=123,
+        options={"top_k": 4, "trace": {"enabled": True}},
+    ):
+        events.append(event)
+
+    return {
+        "source_events": anthropic_events,
+        "messages": messages,
+        "tools": tools,
+        "payload": client.requests[0],
+        "events": events,
+    }
+
+
+async def _provider_adapters_fixture_async() -> dict[str, Any]:
+    with patch.dict("os.environ", {"OPENROUTER_API_KEY": "test"}, clear=True):
+        auth_methods = provider_auth_methods("openrouter")
+    return {
+        "schema_version": 1,
+        "metadata": {
+            "known_provider_ids": known_provider_ids(),
+            "openrouter_env": default_env_mapping("openrouter"),
+            "custom_env": default_env_mapping("custom.gateway"),
+            "anthropic_label": provider_label("anthropic"),
+            "unknown_label": provider_label("custom.gateway"),
+            "openrouter_default_base_url": provider_default_base_url("openrouter"),
+            "anthropic_default_model": provider_default_model("anthropic"),
+            "ollama_requires_api_key": provider_requires_api_key("ollama"),
+            "openrouter_auth_methods": auth_methods,
+        },
+        "openai": {
+            "tool_arguments": {
+                "dict": _parse_tool_arguments({"path": "."}),
+                "list": _parse_tool_arguments(["one", "two"]),
+                "malformed": _parse_tool_arguments(
+                    '{"query":"climate tipping points","num_results":8,"timeout":60'
+                    '{"query":"climate tipping points","num_results":8,"timeout":60}'
+                ),
+                "raw": _parse_tool_arguments('{"path":'),
+            },
+            "http_errors": {
+                "html": _summarize_http_error_body("<html><title>Bad Gateway</title></html>", "text/html"),
+                "empty": _summarize_http_error_body("", "application/json"),
+                "json": _summarize_http_error_body('{"error": {"message": "bad request"}}', "application/json"),
+            },
+            "chat_stream": await _openai_chat_stream_fixture(),
+            "responses": await _openai_responses_fixture(),
+        },
+        "anthropic": await _anthropic_stream_fixture(),
+    }
+
+
+def _provider_adapters_fixture() -> dict[str, Any]:
+    return asyncio.run(_provider_adapters_fixture_async())
+
+
 def _session_trace_observability_fixture() -> dict[str, Any]:
     session_event = {
         "schema_version": "openagent.session_event.v1",
@@ -886,6 +1204,7 @@ def capture(output_dir: Path) -> None:
         "swarm_protocol.json": _swarm_protocol_fixture(),
         "context_state.json": _context_state_fixture(),
         "core_context_policy.json": _core_context_policy_fixture(),
+        "provider_adapters.json": _provider_adapters_fixture(),
         "session_trace_observability.json": _session_trace_observability_fixture(),
     }
     for name, payload in fixtures.items():

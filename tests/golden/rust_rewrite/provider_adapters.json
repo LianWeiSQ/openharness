@@ -1,0 +1,668 @@
+{
+  "anthropic": {
+    "events": [
+      {
+        "text": "Hello ",
+        "type": "text-delta"
+      },
+      {
+        "text": "world",
+        "type": "text-delta"
+      },
+      {
+        "call_id": "toolu_1",
+        "input": {
+          "command": "ls",
+          "timeout": 10
+        },
+        "name": "bash",
+        "type": "tool-call"
+      },
+      {
+        "finish_reason": "tool_call",
+        "type": "finish",
+        "usage": {
+          "cost": 0.0,
+          "input_tokens": 12,
+          "output_tokens": 7
+        }
+      }
+    ],
+    "messages": [
+      {
+        "content": "inspect repo",
+        "metadata": {},
+        "name": null,
+        "role": "user",
+        "tool_call_id": null
+      },
+      {
+        "content": "I'll list files.",
+        "metadata": {
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\":\".\"}",
+                "name": "ls"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        "name": null,
+        "role": "assistant",
+        "tool_call_id": null
+      },
+      {
+        "content": "[Tool result] ls",
+        "metadata": {},
+        "name": "ls",
+        "role": "tool",
+        "tool_call_id": "call_1"
+      }
+    ],
+    "payload": {
+      "max_tokens": 123,
+      "messages": [
+        {
+          "content": "inspect repo",
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "I'll list files.",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "path": "."
+              },
+              "name": "ls",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "[Tool result] ls",
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "claude-test",
+      "stream": true,
+      "system": "Use tools.",
+      "temperature": 0.2,
+      "tool_choice": {
+        "type": "auto"
+      },
+      "tools": [
+        {
+          "description": "List directory",
+          "input_schema": {
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "name": "ls"
+        }
+      ],
+      "top_k": 4
+    },
+    "source_events": [
+      {
+        "message": {
+          "usage": {
+            "input_tokens": 12
+          }
+        },
+        "type": "message_start"
+      },
+      {
+        "delta": {
+          "text": "Hello ",
+          "type": "text_delta"
+        },
+        "index": 0,
+        "type": "content_block_delta"
+      },
+      {
+        "delta": {
+          "text": "world",
+          "type": "text_delta"
+        },
+        "index": 0,
+        "type": "content_block_delta"
+      },
+      {
+        "content_block": {
+          "id": "toolu_1",
+          "input": {},
+          "name": "bash",
+          "type": "tool_use"
+        },
+        "index": 1,
+        "type": "content_block_start"
+      },
+      {
+        "delta": {
+          "partial_json": "{\"command\":\"ls\"",
+          "type": "input_json_delta"
+        },
+        "index": 1,
+        "type": "content_block_delta"
+      },
+      {
+        "delta": {
+          "partial_json": ",\"timeout\":10}",
+          "type": "input_json_delta"
+        },
+        "index": 1,
+        "type": "content_block_delta"
+      },
+      {
+        "index": 1,
+        "type": "content_block_stop"
+      },
+      {
+        "delta": {
+          "stop_reason": "tool_use"
+        },
+        "type": "message_delta",
+        "usage": {
+          "output_tokens": 7
+        }
+      },
+      {
+        "type": "message_stop"
+      }
+    ],
+    "tools": [
+      {
+        "dangerous": false,
+        "description": "List directory",
+        "group": "default",
+        "name": "ls",
+        "schema": {
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "metadata": {
+    "anthropic_default_model": "claude-sonnet-4-5",
+    "anthropic_label": "Anthropic",
+    "custom_env": {
+      "api_key": "CUSTOM_GATEWAY_API_KEY",
+      "base_url": "CUSTOM_GATEWAY_BASE_URL",
+      "model": "CUSTOM_GATEWAY_MODEL",
+      "wire_api": "CUSTOM_GATEWAY_WIRE_API"
+    },
+    "known_provider_ids": [
+      "anthropic",
+      "azure-openai",
+      "cohere",
+      "deepseek",
+      "gemini",
+      "groq",
+      "mistral",
+      "ollama",
+      "openai",
+      "openrouter",
+      "xai"
+    ],
+    "ollama_requires_api_key": false,
+    "openrouter_auth_methods": [
+      {
+        "available": true,
+        "default_base_url": "https://openrouter.ai/api/v1",
+        "default_model": "openai/gpt-4o-mini",
+        "env": {
+          "api_key": "OPENROUTER_API_KEY",
+          "base_url": "OPENROUTER_BASE_URL",
+          "model": "OPENROUTER_MODEL",
+          "wire_api": "OPENROUTER_WIRE_API"
+        },
+        "fields": [
+          {
+            "env": "OPENROUTER_API_KEY",
+            "name": "api_key",
+            "required": true,
+            "secret": true
+          },
+          {
+            "env": "OPENROUTER_BASE_URL",
+            "name": "base_url",
+            "required": false,
+            "secret": false
+          },
+          {
+            "env": "OPENROUTER_MODEL",
+            "name": "model",
+            "required": false,
+            "secret": false
+          },
+          {
+            "env": "OPENROUTER_WIRE_API",
+            "name": "wire_api",
+            "required": false,
+            "secret": false
+          }
+        ],
+        "id": "api_key",
+        "implemented": true,
+        "label": "API key",
+        "provider": "openrouter",
+        "provider_label": "OpenRouter",
+        "status": "set",
+        "type": "api_key"
+      }
+    ],
+    "openrouter_default_base_url": "https://openrouter.ai/api/v1",
+    "openrouter_env": {
+      "api_key": "OPENROUTER_API_KEY",
+      "base_url": "OPENROUTER_BASE_URL",
+      "model": "OPENROUTER_MODEL",
+      "wire_api": "OPENROUTER_WIRE_API"
+    },
+    "unknown_label": "Custom-Gateway"
+  },
+  "openai": {
+    "chat_stream": {
+      "chunks": [
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "Hello "
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ]
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "content": "world"
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ]
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "{\"path\":",
+                      "name": "ls"
+                    },
+                    "id": "call_1",
+                    "index": 0,
+                    "type": "function"
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ]
+        },
+        {
+          "choices": [
+            {
+              "delta": {
+                "tool_calls": [
+                  {
+                    "function": {
+                      "arguments": "\".\"}"
+                    },
+                    "index": 0
+                  }
+                ]
+              },
+              "finish_reason": null,
+              "index": 0
+            }
+          ]
+        },
+        {
+          "choices": [
+            {
+              "delta": {},
+              "finish_reason": "tool_calls",
+              "index": 0
+            }
+          ],
+          "usage": {
+            "completion_tokens": 2,
+            "prompt_tokens": 3,
+            "total_tokens": 5
+          }
+        }
+      ],
+      "events": [
+        {
+          "text": "Hello ",
+          "type": "text-delta"
+        },
+        {
+          "text": "world",
+          "type": "text-delta"
+        },
+        {
+          "call_id": "call_1",
+          "input": {
+            "path": "."
+          },
+          "name": "ls",
+          "type": "tool-call"
+        },
+        {
+          "finish_reason": "tool_call",
+          "type": "finish",
+          "usage": {
+            "cost": 0.0,
+            "input_tokens": 3,
+            "output_tokens": 2
+          }
+        }
+      ],
+      "headers": {
+        "accept": "text/event-stream",
+        "authorization": "Bearer test",
+        "content-type": "application/json",
+        "host": "model-gateway.example.test"
+      },
+      "messages": [
+        {
+          "content": "show files",
+          "metadata": {},
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "content": "",
+          "metadata": {
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\":\".\"}",
+                  "name": "ls"
+                },
+                "id": "prior_call",
+                "type": "function"
+              }
+            ]
+          },
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        },
+        {
+          "content": "[Tool result] ls",
+          "metadata": {},
+          "name": "ls",
+          "role": "tool",
+          "tool_call_id": "prior_call"
+        }
+      ],
+      "payload": {
+        "messages": [
+          {
+            "content": "You are helpful.",
+            "role": "system"
+          },
+          {
+            "content": "show files",
+            "role": "user"
+          },
+          {
+            "content": null,
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\":\".\"}",
+                  "name": "ls"
+                },
+                "id": "prior_call",
+                "type": "function"
+              }
+            ]
+          },
+          {
+            "content": "[Tool result] ls",
+            "role": "tool",
+            "tool_call_id": "prior_call"
+          }
+        ],
+        "model": "glm47",
+        "stream": true,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "function": {
+              "description": "List directory",
+              "name": "ls",
+              "parameters": {
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "tools": [
+        {
+          "dangerous": false,
+          "description": "List directory",
+          "group": "default",
+          "name": "ls",
+          "schema": {
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "http_errors": {
+      "empty": "empty response body",
+      "html": "upstream returned HTML error page: Bad Gateway",
+      "json": "{\"error\": {\"message\": \"bad request\"}}"
+    },
+    "responses": {
+      "events": [
+        {
+          "text": "running",
+          "type": "text-delta"
+        },
+        {
+          "call_id": "call_hello",
+          "input": {
+            "command": "printf hello > hello.txt",
+            "timeout": 10000
+          },
+          "name": "bash",
+          "type": "tool-call"
+        },
+        {
+          "finish_reason": "tool_call",
+          "type": "finish",
+          "usage": {
+            "cost": 0.0,
+            "input_tokens": 7,
+            "output_tokens": 11
+          }
+        }
+      ],
+      "messages": [
+        {
+          "content": "create hello",
+          "metadata": {},
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "content": "",
+          "metadata": {
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"command\":\"ls\"}",
+                  "name": "bash"
+                },
+                "id": "prior_call",
+                "type": "function"
+              }
+            ]
+          },
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        },
+        {
+          "content": "[Tool result] bash",
+          "metadata": {},
+          "name": "bash",
+          "role": "tool",
+          "tool_call_id": "prior_call"
+        }
+      ],
+      "payload": {
+        "input": [
+          {
+            "content": "create hello",
+            "role": "user"
+          },
+          {
+            "arguments": "{\"command\":\"ls\"}",
+            "call_id": "prior_call",
+            "name": "bash",
+            "type": "function_call"
+          },
+          {
+            "call_id": "prior_call",
+            "output": "[Tool result] bash",
+            "type": "function_call_output"
+          }
+        ],
+        "instructions": "Use tools.",
+        "model": "gpt-5.4",
+        "reasoning": {
+          "effort": "xhigh"
+        },
+        "store": false,
+        "stream": false,
+        "tool_choice": "auto",
+        "tools": [
+          {
+            "description": "Run a shell command",
+            "name": "bash",
+            "parameters": {
+              "properties": {
+                "command": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "type": "function"
+          }
+        ]
+      },
+      "response": {
+        "output": [
+          {
+            "arguments": "{\"command\":\"printf hello > hello.txt\",\"timeout\":10000}",
+            "call_id": "call_hello",
+            "name": "bash",
+            "type": "function_call"
+          },
+          {
+            "content": [
+              {
+                "text": "running",
+                "type": "output_text"
+              }
+            ],
+            "role": "assistant",
+            "type": "message"
+          }
+        ],
+        "usage": {
+          "input_tokens": 7,
+          "output_tokens": 11
+        }
+      },
+      "tools": [
+        {
+          "dangerous": false,
+          "description": "Run a shell command",
+          "group": "default",
+          "name": "bash",
+          "schema": {
+            "properties": {
+              "command": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          }
+        }
+      ]
+    },
+    "tool_arguments": {
+      "dict": {
+        "path": "."
+      },
+      "list": {
+        "_value": [
+          "one",
+          "two"
+        ]
+      },
+      "malformed": {
+        "num_results": 8,
+        "query": "climate tipping points",
+        "timeout": 60
+      },
+      "raw": {
+        "_raw": "{\"path\":"
+      }
+    }
+  },
+  "schema_version": 1
+}

@@ -1,9 +1,10 @@
 # Goal State
 
 - objective: Rewrite OpenAgent from Python to Rust across Goal 0 through Goal 14, ending with no production Python runtime files.
-- current_slice: Goal 6 complete; Rust core permission, context budget/pack, instruction loading, skill registry, and skill tool now have Python oracle parity.
-- branch: `codex/rust-rewrite-goal6`
+- current_slice: Goal 7 complete; Rust provider adapters now cover provider metadata, OpenAI-compatible chat/Responses payloads, mock stream/tool-call/usage normalization, and Anthropic payload/stream normalization with Python oracle parity.
+- branch: `codex/rust-rewrite-goal7`
 - last_receipts:
+  - 2026-06-19: Completed Goal 7. Replaced the Rust `openagent-provider` placeholder with provider metadata/env mapping, provider manager records, OpenAI-compatible model config, OpenAI chat/Responses payload builders, OpenAI SSE/Responses event normalization, HTTP error summarization, Anthropic payload builder, and Anthropic stream event normalization. Added deterministic `provider_adapters.json` Python oracle fixture plus Rust provider parity tests. Verification: openagent-provider targeted tests OK, cargo fmt/test/clippy OK, Python fixture drift OK, full Python baseline 422 tests OK.
   - 2026-06-19: Completed Goal 6. Implemented Rust `openagent-core` permission manager, context budget checks, context pack builder, instruction context loader, skill document loader/registry/search, and Rust `openagent-tools` skill built-in with explicit skill roots. Added deterministic `core_context_policy.json` Python oracle fixture and Rust parity tests for permissions, context policy, instructions, and skills. Verification: openagent-core/tools targeted tests OK, cargo fmt/test/clippy OK, Python fixture drift OK, full Python baseline 422 tests OK.
   - 2026-06-19: Completed Goal 5. Implemented Rust `openagent-tools` registry, scoped registration, local workspace runtime, path safety helpers, tool output truncation, read-before-write protection, file/search/shell/todo/memory/question built-ins, and Python oracle fixture parity for workspace tool runtime behavior. Verification: openagent-tools targeted tests OK, cargo fmt/test/clippy OK, Python fixture drift OK, full Python baseline 422 tests OK.
   - 2026-06-19: Completed Goal 4. Implemented Rust `openagent-session` file-backed session store, trace recorder/checker, observability recorder, runtime logger, runtime warning records, redaction/truncation helpers, and Python oracle fixture parity for session/trace/observability JSON. Verification: session targeted tests OK, cargo fmt/test/clippy OK, Python fixture drift OK, full Python baseline 422 tests OK.
@@ -11,6 +12,6 @@
   - 2026-06-19: Completed Goal 2. Implemented `openagent-protocol` serde models for core protocol, provider payloads, permissions, swarm, tool schema, and context state. Added golden fixture parity tests for all Goal 0 fixture groups. Verification: protocol fixture tests OK, cargo fmt/test/clippy OK, Python fixture drift OK, full Python baseline 422 tests OK.
   - 2026-06-19: Completed Goal 1. Added Cargo workspace, 13 Rust crates, placeholder binaries, GitHub Actions Rust workflow, crate smoke tests, and `target/` ignore. Verification: cargo fmt OK, cargo clippy OK, cargo test OK, fixture drift test OK, full Python baseline 422 tests OK.
   - 2026-06-19: Completed Goal 0. Added rewrite plan, parity matrix, fixture capture script, golden fixtures, fixture drift test, progress receipt, and provider lazy import fix. Verification: fixture drift test OK, py_compile OK, full Python baseline 422 tests OK.
-- next_action: Goal 7 - migrate provider interfaces, option filtering, payload conversion, and provider tests into Rust.
+- next_action: Goal 8 - migrate AgentLoop orchestration, multi-step loop parity, pause/retry, and warning flow into Rust.
 - blockers:
   - Existing local `main` has one unrelated commit ahead of `origin/main`; keep Rust rewrite work on dedicated branches unless explicitly reconciling it.
