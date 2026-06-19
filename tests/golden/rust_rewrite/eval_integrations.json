@@ -1,0 +1,477 @@
+{
+  "eval": {
+    "aggregate": {
+      "artifact_count": 1,
+      "average_duration_ms": 2700.0,
+      "average_model_calls": 2.0,
+      "average_steps": 4.0,
+      "average_tool_calls": 2.5,
+      "average_total_latency_ms": 2500.0,
+      "error_count": 1,
+      "failed": 1,
+      "local_tool_calls": 4,
+      "mcp_calls": 1,
+      "passed": 1,
+      "runtime_warning_count": 2,
+      "skill_calls": 1,
+      "success_rate": 0.5,
+      "total_cases": 2,
+      "total_cost": 0.1023,
+      "total_input_tokens": 350,
+      "total_output_tokens": 100,
+      "trace_check_failed": 1,
+      "trace_check_passed": 1
+    },
+    "ci_gate": {
+      "fail": {
+        "metrics": {
+          "budget_regressions": 2,
+          "max_runtime_warnings": 1,
+          "min_success_rate": 0.75,
+          "runtime_warning_count": 2,
+          "status_regressions": 1,
+          "success_rate": 0.5,
+          "trace_check_failed": 1
+        },
+        "ok": false,
+        "reasons": [
+          "success_rate below min_success_rate: 0.500 < 0.750",
+          "trace_check_failed must be 0: 1",
+          "runtime_warning_count exceeded max_runtime_warnings: 2 > 1",
+          "status_regressions must be 0: 1",
+          "budget_regressions must be 0: 2"
+        ],
+        "regression_path": "/tmp/openagent-rust-rewrite-fixture-goal13/regression.json",
+        "report_path": "/tmp/openagent-rust-rewrite-fixture-goal13/report.json",
+        "status": "fail"
+      },
+      "pass": {
+        "metrics": {
+          "budget_regressions": 0,
+          "max_runtime_warnings": 0,
+          "min_success_rate": 1.0,
+          "runtime_warning_count": 0,
+          "status_regressions": 0,
+          "success_rate": 1.0,
+          "trace_check_failed": 0
+        },
+        "ok": true,
+        "reasons": [],
+        "regression_path": null,
+        "report_path": "/tmp/openagent-rust-rewrite-fixture-goal13/clean-report.json",
+        "status": "pass"
+      }
+    },
+    "langfuse": {
+      "failure_result": {
+        "artifact_count": 1,
+        "case_id": "pass_case",
+        "cost": 0.0123,
+        "duration_ms": 1200,
+        "error_count": 0,
+        "error_kind": null,
+        "failure_reasons": [],
+        "input_tokens": 100,
+        "langfuse_error": "fixture score export failed",
+        "langfuse_scores_sent": false,
+        "langfuse_trace_id": "trace_fixture_123",
+        "ledger_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.ledger.jsonl",
+        "local_tool_calls": 1,
+        "mcp_calls": 0,
+        "model_calls": 1,
+        "output_tokens": 40,
+        "run_id": "run_fixture",
+        "runtime_warning_codes": [],
+        "runtime_warning_count": 0,
+        "score": 1.0,
+        "session_id": "session_pass",
+        "session_state_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.session.json",
+        "skill_calls": 1,
+        "status": "pass",
+        "steps": 2,
+        "tool_calls": 1,
+        "total_latency_ms": 900,
+        "trace_check_errors": [],
+        "trace_check_ok": true,
+        "trace_event_count": 12,
+        "trace_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.trace.jsonl",
+        "trace_summary_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.summary.json"
+      },
+      "success_flush_count": 1,
+      "success_result": {
+        "artifact_count": 0,
+        "case_id": "fail_case",
+        "cost": 0.09,
+        "duration_ms": 4200,
+        "error_count": 1,
+        "error_kind": "model_error",
+        "failure_reasons": [
+          "final answer missing required text: expected",
+          "runtime warning count exceeded max_runtime_warnings: 2 > 0"
+        ],
+        "input_tokens": 250,
+        "langfuse_error": null,
+        "langfuse_scores_sent": true,
+        "langfuse_trace_id": "trace_fixture_123",
+        "ledger_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.ledger.jsonl",
+        "local_tool_calls": 3,
+        "mcp_calls": 1,
+        "model_calls": 3,
+        "output_tokens": 60,
+        "run_id": "run_fixture",
+        "runtime_warning_codes": [
+          "step_total_tokens_exceeded",
+          "tool_call_failed"
+        ],
+        "runtime_warning_count": 2,
+        "score": 0.0,
+        "session_id": "session_fail",
+        "session_state_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.session.json",
+        "skill_calls": 0,
+        "status": "fail",
+        "steps": 6,
+        "tool_calls": 4,
+        "total_latency_ms": 4100,
+        "trace_check_errors": [
+          "missing span"
+        ],
+        "trace_check_ok": false,
+        "trace_event_count": 20,
+        "trace_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.trace.jsonl",
+        "trace_summary_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.summary.json"
+      },
+      "success_scores": [
+        {
+          "comment": "OpenAgent eval score for case langfuse_case.",
+          "data_type": "NUMERIC",
+          "name": "openagent.eval.score",
+          "score_id": "openagent:run_fixture:langfuse_case:score",
+          "trace_id": "trace_fixture_123",
+          "value": 0.0
+        },
+        {
+          "comment": "final answer missing required text: expected; runtime warning count exceeded max_runtime_warnings: 2 > 0",
+          "data_type": "CATEGORICAL",
+          "name": "openagent.eval.status",
+          "score_id": "openagent:run_fixture:langfuse_case:status",
+          "trace_id": "trace_fixture_123",
+          "value": "fail"
+        },
+        {
+          "comment": "OpenAgent trace integrity check result.",
+          "data_type": "BOOLEAN",
+          "name": "openagent.trace_check",
+          "score_id": "openagent:run_fixture:langfuse_case:trace_check",
+          "trace_id": "trace_fixture_123",
+          "value": false
+        },
+        {
+          "comment": "OpenAgent runtime warning count for this eval case.",
+          "data_type": "NUMERIC",
+          "name": "openagent.runtime_warning_count",
+          "score_id": "openagent:run_fixture:langfuse_case:runtime_warning_count",
+          "trace_id": "trace_fixture_123",
+          "value": 2
+        }
+      ]
+    },
+    "regression": {
+      "cases": [
+        {
+          "baseline": {
+            "cost": 0.05,
+            "duration_ms": 3000,
+            "input_tokens": 200,
+            "model_calls": 1,
+            "output_tokens": 50,
+            "runtime_warning_count": 0,
+            "score": 1.0,
+            "status": "pass",
+            "steps": 5,
+            "tool_calls": 2,
+            "trace_check_ok": true
+          },
+          "budget_regressions": [
+            "cost_delta exceeded max_cost_delta: 0.04 > 0.02",
+            "duration_delta_ms exceeded max_duration_delta_ms: 1200 > 500",
+            "total_tokens_delta exceeded max_total_tokens_delta: 60 > 10",
+            "model_calls_delta exceeded max_model_calls_delta: 2 > 1"
+          ],
+          "case_id": "fail_case",
+          "change": "compared",
+          "cost_delta": 0.039999999999999994,
+          "current": {
+            "cost": 0.09,
+            "duration_ms": 4200,
+            "input_tokens": 250,
+            "model_calls": 3,
+            "output_tokens": 60,
+            "runtime_warning_count": 2,
+            "score": 0.0,
+            "status": "fail",
+            "steps": 6,
+            "tool_calls": 4,
+            "trace_check_ok": false
+          },
+          "duration_delta_ms": 1200,
+          "input_tokens_delta": 50,
+          "model_calls_delta": 2,
+          "output_tokens_delta": 10,
+          "score_delta": -1.0,
+          "status_changed": true,
+          "status_improvement": false,
+          "status_regression": true,
+          "tool_calls_delta": 2,
+          "total_tokens_delta": 60
+        },
+        {
+          "baseline": {
+            "cost": 0.01,
+            "duration_ms": 1000,
+            "input_tokens": 90,
+            "model_calls": 1,
+            "output_tokens": 30,
+            "runtime_warning_count": 0,
+            "score": 1.0,
+            "status": "pass",
+            "steps": 2,
+            "tool_calls": 1,
+            "trace_check_ok": true
+          },
+          "budget_regressions": [
+            "total_tokens_delta exceeded max_total_tokens_delta: 20 > 10"
+          ],
+          "case_id": "pass_case",
+          "change": "compared",
+          "cost_delta": 0.0023,
+          "current": {
+            "cost": 0.0123,
+            "duration_ms": 1200,
+            "input_tokens": 100,
+            "model_calls": 1,
+            "output_tokens": 40,
+            "runtime_warning_count": 0,
+            "score": 1.0,
+            "status": "pass",
+            "steps": 2,
+            "tool_calls": 1,
+            "trace_check_ok": true
+          },
+          "duration_delta_ms": 200,
+          "input_tokens_delta": 10,
+          "model_calls_delta": 0,
+          "output_tokens_delta": 10,
+          "score_delta": 0.0,
+          "status_changed": false,
+          "status_improvement": false,
+          "status_regression": false,
+          "tool_calls_delta": 0,
+          "total_tokens_delta": 20
+        },
+        {
+          "baseline": {
+            "cost": 0.001,
+            "duration_ms": 500,
+            "input_tokens": 10,
+            "model_calls": 1,
+            "output_tokens": 5,
+            "runtime_warning_count": 0,
+            "score": 1.0,
+            "status": "pass",
+            "steps": 1,
+            "tool_calls": 0,
+            "trace_check_ok": true
+          },
+          "case_id": "removed_case",
+          "change": "removed_case"
+        }
+      ],
+      "summary": {
+        "baseline_report": "/tmp/openagent-rust-rewrite-fixture-goal13/baseline.json",
+        "baseline_total": 3,
+        "budget_regressions": 2,
+        "cost_increased_cases": 2,
+        "current_report": "/tmp/openagent-rust-rewrite-fixture-goal13/report.json",
+        "current_total": 2,
+        "duration_increased_cases": 2,
+        "input_tokens_increased_cases": 2,
+        "new_cases": 0,
+        "output_tokens_increased_cases": 2,
+        "regression_thresholds": {
+          "max_cost_delta": 0.02,
+          "max_duration_delta_ms": 500.0,
+          "max_model_calls_delta": 1.0,
+          "max_total_tokens_delta": 10.0
+        },
+        "removed_cases": 1,
+        "score_regressions": 1,
+        "status_improvements": 0,
+        "status_regressions": 1,
+        "total_tokens_increased_cases": 2
+      }
+    },
+    "regression_summary": "# OpenAgent Eval Regression\n\n- Baseline cases: 3\n- Current cases: 2\n- New cases: 0\n- Removed cases: 1\n- Status regressions: 1\n- Status improvements: 0\n- Score regressions: 1\n- Cost increased cases: 2\n- Token increased cases: 2\n- Duration increased cases: 2\n- Budget regressions: 2\n\n## Regression Thresholds\n- max_cost_delta: 0.02\n- max_duration_delta_ms: 500\n- max_model_calls_delta: 1\n- max_total_tokens_delta: 10\n\n## Case Changes\n- fail_case: pass -> fail, score_delta=-1.000, cost_delta=0.040000, tokens_delta=60, duration_delta_ms=1200\n  - budget: cost_delta exceeded max_cost_delta: 0.04 > 0.02\n  - budget: duration_delta_ms exceeded max_duration_delta_ms: 1200 > 500\n  - budget: total_tokens_delta exceeded max_total_tokens_delta: 60 > 10\n  - budget: model_calls_delta exceeded max_model_calls_delta: 2 > 1\n- pass_case: pass -> pass, score_delta=0.000, cost_delta=0.002300, tokens_delta=20, duration_delta_ms=200\n  - budget: total_tokens_delta exceeded max_total_tokens_delta: 20 > 10\n- removed_case: removed_case\n",
+    "results": [
+      {
+        "artifact_count": 1,
+        "case_id": "pass_case",
+        "cost": 0.0123,
+        "duration_ms": 1200,
+        "error_count": 0,
+        "error_kind": null,
+        "failure_reasons": [],
+        "input_tokens": 100,
+        "langfuse_error": null,
+        "langfuse_scores_sent": false,
+        "langfuse_trace_id": null,
+        "ledger_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.ledger.jsonl",
+        "local_tool_calls": 1,
+        "mcp_calls": 0,
+        "model_calls": 1,
+        "output_tokens": 40,
+        "run_id": "run_fixture",
+        "runtime_warning_codes": [],
+        "runtime_warning_count": 0,
+        "score": 1.0,
+        "session_id": "session_pass",
+        "session_state_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.session.json",
+        "skill_calls": 1,
+        "status": "pass",
+        "steps": 2,
+        "tool_calls": 1,
+        "total_latency_ms": 900,
+        "trace_check_errors": [],
+        "trace_check_ok": true,
+        "trace_event_count": 12,
+        "trace_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.trace.jsonl",
+        "trace_summary_path": "/tmp/openagent-rust-rewrite-fixture-goal13/pass.summary.json"
+      },
+      {
+        "artifact_count": 0,
+        "case_id": "fail_case",
+        "cost": 0.09,
+        "duration_ms": 4200,
+        "error_count": 1,
+        "error_kind": "model_error",
+        "failure_reasons": [
+          "final answer missing required text: expected",
+          "runtime warning count exceeded max_runtime_warnings: 2 > 0"
+        ],
+        "input_tokens": 250,
+        "langfuse_error": null,
+        "langfuse_scores_sent": false,
+        "langfuse_trace_id": null,
+        "ledger_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.ledger.jsonl",
+        "local_tool_calls": 3,
+        "mcp_calls": 1,
+        "model_calls": 3,
+        "output_tokens": 60,
+        "run_id": "run_fixture",
+        "runtime_warning_codes": [
+          "step_total_tokens_exceeded",
+          "tool_call_failed"
+        ],
+        "runtime_warning_count": 2,
+        "score": 0.0,
+        "session_id": "session_fail",
+        "session_state_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.session.json",
+        "skill_calls": 0,
+        "status": "fail",
+        "steps": 6,
+        "tool_calls": 4,
+        "total_latency_ms": 4100,
+        "trace_check_errors": [
+          "missing span"
+        ],
+        "trace_check_ok": false,
+        "trace_event_count": 20,
+        "trace_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.trace.jsonl",
+        "trace_summary_path": "/tmp/openagent-rust-rewrite-fixture-goal13/fail.summary.json"
+      }
+    ],
+    "summary": "# OpenAgent Eval Summary\n\n- Total cases: 2\n- Passed: 1\n- Failed: 1\n- Success rate: 50.0%\n- Average steps: 4.00\n- Average model calls: 2.00\n- Average tool calls: 2.50\n- Total input tokens: 350\n- Total output tokens: 100\n- Total cost: 0.102300\n- Average duration: 2700.00 ms\n- Trace checks passed: 1\n- Trace checks failed: 1\n- Runtime warnings: 2\n- Tool sources: local=4 skill=1 mcp=1\n- Slowest case: fail_case (4200 ms)\n- Most expensive case: fail_case (0.090000)\n\n## Failure Reasons\n- final answer missing required text: expected\n- runtime warning count exceeded max_runtime_warnings: 2 > 0\n"
+  },
+  "harbor": {
+    "defaults": {
+      "context_window": 128000,
+      "max_output": 4096,
+      "max_steps": 80,
+      "workdir": "/app"
+    },
+    "display_paths": {
+      "external": "/tmp/file.txt",
+      "nested": "project/file.txt",
+      "root": "."
+    },
+    "metadata": {
+      "execution_mode": "harbor",
+      "harness": "harbor",
+      "workspace_root": "/app"
+    },
+    "normalized_models": {
+      "empty": null,
+      "openai": "gpt-test",
+      "openai_compatible": "gpt-test",
+      "other_provider": "vendor/model",
+      "plain": "plain-model"
+    },
+    "success_command": {
+      "command": "echo hello",
+      "cwd": "/app/project",
+      "timeout_sec": 6
+    },
+    "success_result": {
+      "cwd": "/app/project",
+      "returncode": 7,
+      "stderr": "warn",
+      "stdout": "hello from harbor\n[openagent harbor] exit_code=7 duration_ms=320"
+    },
+    "system_prompt": "You are OpenAgent running inside Terminal-Bench 2.0 through Harbor. Complete the task by using only the bash tool.\nThe bash tool executes commands in the benchmark environment. The default workspace is /workspace.\nEach tool call can pass an explicit workdir; otherwise it runs in the default workspace.\nInspect the environment, modify files with shell commands when needed, run validation commands, and iterate from failures.\nDo not ask the user questions. When the task is complete, provide a concise final answer.",
+    "timeout_command": {
+      "command": "sleep 10",
+      "cwd": "/app",
+      "timeout_sec": 1
+    },
+    "timeout_result": {
+      "cwd": "/app",
+      "returncode": 124,
+      "stderr": "fixture timeout",
+      "stdout": "[openagent harbor] exit_code=124 duration_ms=1234"
+    }
+  },
+  "schema_version": 1,
+  "terminal_bench": {
+    "defaults": {
+      "context_window": 128000,
+      "max_output": 4096,
+      "max_steps": 80,
+      "workdir": "/app"
+    },
+    "display_paths": {
+      "external": "/tmp/file.txt",
+      "nested": "project/file.txt",
+      "root": "."
+    },
+    "extract_returncode": [
+      7,
+      "$ command\nhello\n\ntrailing"
+    ],
+    "failure_modes": {
+      "context": "context_length_exceeded",
+      "output": "output_length_exceeded",
+      "timeout": "agent_timeout",
+      "unknown": "unknown_agent_error"
+    },
+    "format_observation": {
+      "empty": "[openagent terminal-bench] exit_code=0 duration_ms=1",
+      "with_body": "hello\n[openagent terminal-bench] exit_code=7 duration_ms=321"
+    },
+    "metadata": {
+      "execution_mode": "terminal_bench",
+      "harness": "terminal_bench",
+      "workspace_root": "/app"
+    },
+    "system_prompt": "You are OpenAgent running inside Terminal-Bench. Complete the task by using only the bash tool.\nThe bash tool executes commands in the benchmark tmux session. The default workspace is /workspace.\nDirectory changes do not persist between tool calls, so use absolute paths or combine commands with `cd <dir> && ...`.\nInspect the environment, modify files with shell commands when needed, run validation commands, and iterate from failures.\nDo not ask the user questions. When the task is complete, provide a concise final answer.",
+    "wrapped_command": "bash -lc 'set +e\ncd /app/project\n(\nprintf '\"'\"'hello world'\"'\"'\n)\nstatus=$?\nprintf '\"'\"'\\n__OPENAGENT_TBENCH_EXIT_fixture__%s\\n'\"'\"' \"$status\"'"
+  }
+}

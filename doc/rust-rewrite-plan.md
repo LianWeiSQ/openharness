@@ -20,16 +20,13 @@ The rewrite is complete only when all of these are true:
 - `cargo fmt --check` passes.
 - CLI, HTTP runtime, App Bridge/TUI, swarm, trace/session, and eval smoke checks
   pass.
-- Production paths contain no Python runtime files:
+- The repository tracks no Python runtime files or Python package metadata:
 
 ```bash
-rg --files openagent openagent-runtime-http \
-  -g '*.py' -g 'pyproject.toml' -g 'requirements*.txt' -g 'setup.py' -g 'setup.cfg'
+git ls-files '*.py' pyproject.toml 'requirements*.txt' setup.py setup.cfg
 ```
 
-The command must return no production files. Archived Python is allowed only in
-an explicitly non-production archive path with no build, CI, Docker, or runtime
-references.
+The command must return no files.
 
 ## Goal Gates
 
@@ -70,7 +67,9 @@ Each completed goal gets:
 
 - a focused commit;
 - verification commands in the commit/PR notes or progress receipt;
-- a push to GitHub;
 - no unrelated staged files.
+
+Per the Goal 10 workflow pivot, intermediate PRs are not opened after each
+goal. Goal 14 opens one final PR after all checks and the no-Python scan pass.
 
 If the worktree contains unrelated changes, stage explicit paths only.

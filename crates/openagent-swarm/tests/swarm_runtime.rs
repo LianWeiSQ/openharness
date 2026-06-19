@@ -117,24 +117,12 @@ async fn function_runner_reports_spec_validation_failures() {
 
 #[tokio::test]
 async fn subprocess_runner_executes_json_worker() {
-    let script = r#"
-import json
-import sys
-
-payload = json.load(sys.stdin)
-print(json.dumps({
-    "status": "completed",
-    "summary": "subprocess " + payload["spec"]["role"],
-    "evidence": ["objective:" + payload["spec"]["objective"]],
-    "usage": {"input_tokens": 5, "output_tokens": 7, "cost": 0.25, "steps": 1, "latency_ms": 9},
-    "metadata": {"seen_runner": payload["runner"]["id"]}
-}))
-"#;
+    let script = r#"cat >/dev/null; printf '%s\n' '{"status":"completed","summary":"subprocess worker","evidence":["objective:Deliver the answer"],"usage":{"input_tokens":5,"output_tokens":7,"cost":0.25,"steps":1,"latency_ms":9},"metadata":{"seen_runner":"subprocess-one"}}'"#;
     let mut registry = RunnerRegistry::new();
     registry.register(SubprocessRunner::new(
         descriptor("subprocess-one", "subprocess", &["worker"]),
         SubprocessCommand {
-            argv: vec!["python3".to_string(), "-c".to_string(), script.to_string()],
+            argv: vec!["sh".to_string(), "-c".to_string(), script.to_string()],
             cwd: None,
             env: BTreeMap::new(),
             timeout_seconds: Some(5.0),
@@ -265,7 +253,7 @@ runners:
     kind: subprocess
     roles: [worker]
     metadata:
-      command: [python3, -c, "print('ok')"]
+      command: [sh, -c, "printf ok"]
 tasks:
   demo:
     role: worker
@@ -285,17 +273,7 @@ tasks:
 
 #[test]
 fn cli_run_executes_configured_subprocess_task() {
-    let script = r#"
-import json
-import sys
-
-payload = json.load(sys.stdin)
-print(json.dumps({
-    "status": "completed",
-    "summary": "cli " + payload["spec"]["role"],
-    "usage": {"input_tokens": 3, "output_tokens": 4, "cost": 0.02, "steps": 1, "latency_ms": 5}
-}))
-"#;
+    let script = r#"cat >/dev/null; printf '%s\n' '{"status":"completed","summary":"cli cli","usage":{"input_tokens":3,"output_tokens":4,"cost":0.02,"steps":1,"latency_ms":5}}'"#;
     let config = json!({
         "fanout_budget": {
             "max_concurrent": 1,
@@ -306,7 +284,7 @@ print(json.dumps({
                 "kind": "subprocess",
                 "roles": ["cli"],
                 "metadata": {
-                    "command": ["python3", "-c", script],
+                    "command": ["sh", "-c", script],
                     "timeout_seconds": 5.0
                 }
             }

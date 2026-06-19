@@ -1,0 +1,11 @@
+FROM rust:1.85-bookworm AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release -p openagent-http-runtime
+
+FROM debian:bookworm-slim
+COPY --from=builder /app/target/release/openagent-http-runtime /usr/local/bin/openagent-http-runtime
+EXPOSE 8787
+HEALTHCHECK CMD ["openagent-http-runtime", "--health-json"]
+ENTRYPOINT ["openagent-http-runtime"]
+CMD ["--host", "0.0.0.0", "--port", "8787", "--headless"]

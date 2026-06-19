@@ -1,0 +1,460 @@
+{
+  "auth": {
+    "list": {
+      "exit_code": 0,
+      "json": {
+        "auth_file": "/tmp/openagent-rust-rewrite-fixture-goal10/auth.json",
+        "providers": [
+          {
+            "api_key": "groq****cret",
+            "auth_methods": [
+              {
+                "env_api_key": "GROQ_API_KEY",
+                "id": "api_key",
+                "implemented": true,
+                "status": "missing",
+                "type": "api_key"
+              }
+            ],
+            "base_url": "https://api.groq.example/v1",
+            "env": {
+              "api_key": "GROQ_API_KEY",
+              "base_url": "GROQ_BASE_URL",
+              "model": "GROQ_MODEL",
+              "wire_api": "GROQ_WIRE_API"
+            },
+            "env_status": {
+              "api_key": {
+                "name": "GROQ_API_KEY",
+                "status": "missing"
+              },
+              "base_url": {
+                "name": "GROQ_BASE_URL",
+                "status": "missing"
+              },
+              "model": {
+                "name": "GROQ_MODEL",
+                "status": "missing"
+              },
+              "wire_api": {
+                "name": "GROQ_WIRE_API",
+                "status": "missing"
+              }
+            },
+            "has_api_key": true,
+            "methods": [
+              "api_key"
+            ],
+            "model": "llama-fixture",
+            "provider": "groq",
+            "source": "auth_file",
+            "type": "api",
+            "updated_at_ms": 1781842000123,
+            "wire_api": null
+          }
+        ]
+      },
+      "stderr": "",
+      "stdout": "{\"auth_file\": \"/tmp/openagent-rust-rewrite-fixture-goal10/auth.json\", \"providers\": [{\"api_key\": \"groq****cret\", \"auth_methods\": [{\"env_api_key\": \"GROQ_API_KEY\", \"id\": \"api_key\", \"implemented\": true, \"status\": \"missing\", \"type\": \"api_key\"}], \"base_url\": \"https://api.groq.example/v1\", \"env\": {\"api_key\": \"GROQ_API_KEY\", \"base_url\": \"GROQ_BASE_URL\", \"model\": \"GROQ_MODEL\", \"wire_api\": \"GROQ_WIRE_API\"}, \"env_status\": {\"api_key\": {\"name\": \"GROQ_API_KEY\", \"status\": \"missing\"}, \"base_url\": {\"name\": \"GROQ_BASE_URL\", \"status\": \"missing\"}, \"model\": {\"name\": \"GROQ_MODEL\", \"status\": \"missing\"}, \"wire_api\": {\"name\": \"GROQ_WIRE_API\", \"status\": \"missing\"}}, \"has_api_key\": true, \"methods\": [\"api_key\"], \"model\": \"llama-fixture\", \"provider\": \"groq\", \"source\": \"auth_file\", \"type\": \"api\", \"updated_at_ms\": 1781842000123, \"wire_api\": null}]}\n"
+    },
+    "login": {
+      "exit_code": 0,
+      "json": {
+        "auth_file": "/tmp/openagent-rust-rewrite-fixture-goal10/auth.json",
+        "provider": "groq",
+        "record": {
+          "api_key": "groq****cret",
+          "auth_methods": [
+            {
+              "env_api_key": "GROQ_API_KEY",
+              "id": "api_key",
+              "implemented": true,
+              "status": "missing",
+              "type": "api_key"
+            }
+          ],
+          "base_url": "https://api.groq.example/v1",
+          "env": {
+            "api_key": "GROQ_API_KEY",
+            "base_url": "GROQ_BASE_URL",
+            "model": "GROQ_MODEL",
+            "wire_api": "GROQ_WIRE_API"
+          },
+          "env_status": {
+            "api_key": {
+              "name": "GROQ_API_KEY",
+              "status": "missing"
+            },
+            "base_url": {
+              "name": "GROQ_BASE_URL",
+              "status": "missing"
+            },
+            "model": {
+              "name": "GROQ_MODEL",
+              "status": "missing"
+            },
+            "wire_api": {
+              "name": "GROQ_WIRE_API",
+              "status": "missing"
+            }
+          },
+          "has_api_key": true,
+          "methods": [
+            "api_key"
+          ],
+          "model": "llama-fixture",
+          "provider": "groq",
+          "source": "auth_file",
+          "type": "api",
+          "updated_at_ms": 1781842000123,
+          "wire_api": null
+        },
+        "status": "logged_in"
+      },
+      "stderr": "",
+      "stdout": "{\"auth_file\": \"/tmp/openagent-rust-rewrite-fixture-goal10/auth.json\", \"provider\": \"groq\", \"record\": {\"api_key\": \"groq****cret\", \"auth_methods\": [{\"env_api_key\": \"GROQ_API_KEY\", \"id\": \"api_key\", \"implemented\": true, \"status\": \"missing\", \"type\": \"api_key\"}], \"base_url\": \"https://api.groq.example/v1\", \"env\": {\"api_key\": \"GROQ_API_KEY\", \"base_url\": \"GROQ_BASE_URL\", \"model\": \"GROQ_MODEL\", \"wire_api\": \"GROQ_WIRE_API\"}, \"env_status\": {\"api_key\": {\"name\": \"GROQ_API_KEY\", \"status\": \"missing\"}, \"base_url\": {\"name\": \"GROQ_BASE_URL\", \"status\": \"missing\"}, \"model\": {\"name\": \"GROQ_MODEL\", \"status\": \"missing\"}, \"wire_api\": {\"name\": \"GROQ_WIRE_API\", \"status\": \"missing\"}}, \"has_api_key\": true, \"methods\": [\"api_key\"], \"model\": \"llama-fixture\", \"provider\": \"groq\", \"source\": \"auth_file\", \"type\": \"api\", \"updated_at_ms\": 1781842000123, \"wire_api\": null}, \"status\": \"logged_in\"}\n"
+    },
+    "methods": {
+      "exit_code": 0,
+      "json": {
+        "methods": [
+          {
+            "available": false,
+            "default_base_url": "https://openrouter.ai/api/v1",
+            "default_model": "openai/gpt-4o-mini",
+            "env": {
+              "api_key": "OPENROUTER_API_KEY",
+              "base_url": "OPENROUTER_BASE_URL",
+              "model": "OPENROUTER_MODEL",
+              "wire_api": "OPENROUTER_WIRE_API"
+            },
+            "fields": [
+              {
+                "env": "OPENROUTER_API_KEY",
+                "name": "api_key",
+                "required": true,
+                "secret": true
+              },
+              {
+                "env": "OPENROUTER_BASE_URL",
+                "name": "base_url",
+                "required": false,
+                "secret": false
+              },
+              {
+                "env": "OPENROUTER_MODEL",
+                "name": "model",
+                "required": false,
+                "secret": false
+              },
+              {
+                "env": "OPENROUTER_WIRE_API",
+                "name": "wire_api",
+                "required": false,
+                "secret": false
+              }
+            ],
+            "id": "api_key",
+            "implemented": true,
+            "label": "API key",
+            "provider": "openrouter",
+            "provider_label": "OpenRouter",
+            "status": "missing",
+            "type": "api_key"
+          }
+        ],
+        "provider": "openrouter"
+      },
+      "stderr": "",
+      "stdout": "{\"methods\": [{\"available\": false, \"default_base_url\": \"https://openrouter.ai/api/v1\", \"default_model\": \"openai/gpt-4o-mini\", \"env\": {\"api_key\": \"OPENROUTER_API_KEY\", \"base_url\": \"OPENROUTER_BASE_URL\", \"model\": \"OPENROUTER_MODEL\", \"wire_api\": \"OPENROUTER_WIRE_API\"}, \"fields\": [{\"env\": \"OPENROUTER_API_KEY\", \"name\": \"api_key\", \"required\": true, \"secret\": true}, {\"env\": \"OPENROUTER_BASE_URL\", \"name\": \"base_url\", \"required\": false, \"secret\": false}, {\"env\": \"OPENROUTER_MODEL\", \"name\": \"model\", \"required\": false, \"secret\": false}, {\"env\": \"OPENROUTER_WIRE_API\", \"name\": \"wire_api\", \"required\": false, \"secret\": false}], \"id\": \"api_key\", \"implemented\": true, \"label\": \"API key\", \"provider\": \"openrouter\", \"provider_label\": \"OpenRouter\", \"status\": \"missing\", \"type\": \"api_key\"}], \"provider\": \"openrouter\"}\n"
+    }
+  },
+  "config": {
+    "init": {
+      "exit_code": 0,
+      "json": {
+        "api_key_written": true,
+        "created": true,
+        "mode": "0o600",
+        "next": [
+          "openagent doctor",
+          "openagent"
+        ],
+        "path": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/openagent.env",
+        "server_token_written": false,
+        "workspace": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace"
+      },
+      "stderr": "",
+      "stdout": "{\"api_key_written\": true, \"created\": true, \"mode\": \"0o600\", \"next\": [\"openagent doctor\", \"openagent\"], \"path\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/openagent.env\", \"server_token_written\": false, \"workspace\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace\"}\n"
+    },
+    "show": {
+      "exit_code": 0,
+      "json": {
+        "app_bridge": {
+          "server_token": "set",
+          "server_token_env": "OPENAGENT_SERVER_TOKEN",
+          "server_url": "http://127.0.0.1:8787"
+        },
+        "auth_file": "/tmp/openagent-rust-rewrite-fixture-goal10/auth.json",
+        "env_file": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/openagent.env",
+        "openai": {
+          "api_key": "set",
+          "base_url": "http://config.test/v1",
+          "max_steps": "12",
+          "model": "gpt-config",
+          "wire_api": "responses"
+        },
+        "session_root": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/sessions",
+        "workspace": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace"
+      },
+      "stderr": "",
+      "stdout": "{\"app_bridge\": {\"server_token\": \"set\", \"server_token_env\": \"OPENAGENT_SERVER_TOKEN\", \"server_url\": \"http://127.0.0.1:8787\"}, \"auth_file\": \"/tmp/openagent-rust-rewrite-fixture-goal10/auth.json\", \"env_file\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/openagent.env\", \"openai\": {\"api_key\": \"set\", \"base_url\": \"http://config.test/v1\", \"max_steps\": \"12\", \"model\": \"gpt-config\", \"wire_api\": \"responses\"}, \"session_root\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/sessions\", \"workspace\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace\"}\n"
+    }
+  },
+  "custom_commands": {
+    "list": {
+      "exit_code": 0,
+      "json": {
+        "commands": [
+          {
+            "agent": "reviewer",
+            "description": "Review a target file.",
+            "model": "gpt-command",
+            "name": "review",
+            "path": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/commands/review.md",
+            "scope": "project"
+          }
+        ]
+      },
+      "stderr": "",
+      "stdout": "{\"commands\": [{\"agent\": \"reviewer\", \"description\": \"Review a target file.\", \"model\": \"gpt-command\", \"name\": \"review\", \"path\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/commands/review.md\", \"scope\": \"project\"}]}\n"
+    },
+    "render_json": {
+      "exit_code": 0,
+      "json": {
+        "command": {
+          "agent": "reviewer",
+          "description": "Review a target file.",
+          "model": "gpt-command",
+          "name": "review",
+          "path": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/commands/review.md",
+          "scope": "project"
+        },
+        "prompt": "Review notes.txt with all args: notes.txt carefully.\n\nAttached file: /tmp/openagent-rust-rewrite-fixture-goal10/workspace/notes.txt\n\n```text\nAlpha note\nBeta note\n\n```"
+      },
+      "stderr": "",
+      "stdout": "{\"command\": {\"agent\": \"reviewer\", \"description\": \"Review a target file.\", \"model\": \"gpt-command\", \"name\": \"review\", \"path\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/commands/review.md\", \"scope\": \"project\"}, \"prompt\": \"Review notes.txt with all args: notes.txt carefully.\\n\\nAttached file: /tmp/openagent-rust-rewrite-fixture-goal10/workspace/notes.txt\\n\\n```text\\nAlpha note\\nBeta note\\n\\n```\"}\n"
+    },
+    "render_text": {
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "Review notes.txt with all args: notes.txt carefully.\n\nAttached file: /tmp/openagent-rust-rewrite-fixture-goal10/workspace/notes.txt\n\n```text\nAlpha note\nBeta note\n\n```\n"
+    },
+    "show": {
+      "exit_code": 0,
+      "json": {
+        "agent": "reviewer",
+        "description": "Review a target file.",
+        "model": "gpt-command",
+        "name": "review",
+        "path": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/commands/review.md",
+        "scope": "project",
+        "template": "Review $1 with all args: $ARGUMENTS.\n\n@notes.txt"
+      },
+      "stderr": "",
+      "stdout": "{\"agent\": \"reviewer\", \"description\": \"Review a target file.\", \"model\": \"gpt-command\", \"name\": \"review\", \"path\": \"/tmp/openagent-rust-rewrite-fixture-goal10/workspace/.openagent/commands/review.md\", \"scope\": \"project\", \"template\": \"Review $1 with all args: $ARGUMENTS.\\n\\n@notes.txt\"}\n"
+    }
+  },
+  "doctor": {
+    "anthropic_json": {
+      "exit_code": 0,
+      "json": {
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "api_key_set": true,
+        "base_url": null,
+        "dependency_checked": true,
+        "dependency_message": "optional dependency 'anthropic' is installed",
+        "dependency_ok": true,
+        "healthy": true,
+        "model": "claude-test",
+        "model_endpoint_checked": false,
+        "model_endpoint_message": "skipped OpenAI-compatible /models probe for native provider",
+        "model_endpoint_ok": true,
+        "native": true,
+        "provider": "anthropic",
+        "provider_label": "Anthropic",
+        "wire_api": "messages"
+      },
+      "openai_probe_called": false,
+      "stdout": "{\"api_key_env\": \"ANTHROPIC_API_KEY\", \"api_key_set\": true, \"base_url\": null, \"dependency_checked\": true, \"dependency_message\": \"optional dependency 'anthropic' is installed\", \"dependency_ok\": true, \"healthy\": true, \"model\": \"claude-test\", \"model_endpoint_checked\": false, \"model_endpoint_message\": \"skipped OpenAI-compatible /models probe for native provider\", \"model_endpoint_ok\": true, \"native\": true, \"provider\": \"anthropic\", \"provider_label\": \"Anthropic\", \"wire_api\": \"messages\"}\n"
+    },
+    "json_failed": {
+      "exit_code": 2,
+      "json": {
+        "api_key_env": "OPENAI_API_KEY",
+        "api_key_set": true,
+        "base_url": "http://gateway.test",
+        "dependency_checked": false,
+        "dependency_message": null,
+        "dependency_ok": true,
+        "healthy": false,
+        "model": "gpt-test",
+        "model_endpoint_checked": true,
+        "model_endpoint_message": "connection refused",
+        "model_endpoint_ok": false,
+        "native": false,
+        "provider": "openai",
+        "provider_label": "OpenAI",
+        "wire_api": "responses"
+      },
+      "stdout": "{\"api_key_env\": \"OPENAI_API_KEY\", \"api_key_set\": true, \"base_url\": \"http://gateway.test\", \"dependency_checked\": false, \"dependency_message\": null, \"dependency_ok\": true, \"healthy\": false, \"model\": \"gpt-test\", \"model_endpoint_checked\": true, \"model_endpoint_message\": \"connection refused\", \"model_endpoint_ok\": false, \"native\": false, \"provider\": \"openai\", \"provider_label\": \"OpenAI\", \"wire_api\": \"responses\"}\n"
+    },
+    "text_ok": {
+      "exit_code": 0,
+      "stdout": "OpenAgent doctor\n- provider: openai (OpenAI)\n- OPENAI_BASE_URL: http://gateway.test\n- OPENAI_MODEL: gpt-test\n- OPENAI_WIRE_API: chat\n- OPENAI_API_KEY: missing\n- model endpoint: ok (http://gateway.test/v1/models)\n"
+    }
+  },
+  "mcp_cli": {
+    "add": {
+      "exit_code": 0,
+      "json": {
+        "config_path": "/tmp/openagent-rust-rewrite-fixture-goal10/mcp.json",
+        "server": {
+          "enabled": true,
+          "header_names": [
+            "Authorization",
+            "X-Team"
+          ],
+          "headers": {
+            "Authorization": "[redacted]",
+            "X-Team": "[redacted]"
+          },
+          "name": "demo",
+          "timeout_ms": 45000,
+          "transport": "http",
+          "url": "https://[redacted]@example.com/mcp?token=[redacted]&safe=1"
+        },
+        "updated": true
+      },
+      "stderr": "",
+      "stdout": "{\"config_path\": \"/tmp/openagent-rust-rewrite-fixture-goal10/mcp.json\", \"server\": {\"enabled\": true, \"header_names\": [\"Authorization\", \"X-Team\"], \"headers\": {\"Authorization\": \"[redacted]\", \"X-Team\": \"[redacted]\"}, \"name\": \"demo\", \"timeout_ms\": 45000, \"transport\": \"http\", \"url\": \"https://[redacted]@example.com/mcp?token=[redacted]&safe=1\"}, \"updated\": true}\n"
+    },
+    "doctor": {
+      "exit_code": 0,
+      "json": {
+        "config_path": "/tmp/openagent-rust-rewrite-fixture-goal10/mcp.json",
+        "configured": true,
+        "enabled": true,
+        "ok": true,
+        "refresh_error": null,
+        "server_count": 1,
+        "servers": [
+          {
+            "configured_transport": "http",
+            "enabled": true,
+            "last_error": null,
+            "last_refreshed_at": null,
+            "name": "demo",
+            "ok": true,
+            "selected_transport": null,
+            "status": "idle",
+            "tool_count": 0,
+            "tools": [],
+            "url": "https://[redacted]@example.com/mcp?token=[redacted]&safe=1"
+          }
+        ]
+      },
+      "stderr": "",
+      "stdout": "{\"config_path\": \"/tmp/openagent-rust-rewrite-fixture-goal10/mcp.json\", \"configured\": true, \"enabled\": true, \"ok\": true, \"refresh_error\": null, \"server_count\": 1, \"servers\": [{\"configured_transport\": \"http\", \"enabled\": true, \"last_error\": null, \"last_refreshed_at\": null, \"name\": \"demo\", \"ok\": true, \"selected_transport\": null, \"status\": \"idle\", \"tool_count\": 0, \"tools\": [], \"url\": \"https://[redacted]@example.com/mcp?token=[redacted]&safe=1\"}]}\n"
+    },
+    "list_table": {
+      "exit_code": 0,
+      "stderr": "",
+      "stdout": "name  enabled  transport  timeout_ms  headers               url\n----  -------  ---------  ----------  --------------------  ----------------------------------------------------------\ndemo  True     http       45000       Authorization,X-Team  https://[redacted]@example.com/mcp?token=[redacted]&safe=1\n"
+    }
+  },
+  "model_env": {
+    "default": {
+      "OPENAGENT_APP_MAX_STEPS": "30",
+      "OPENAI_BASE_URL": "http://localhost:8080",
+      "OPENAI_MODEL": "gpt-5.5",
+      "OPENAI_WIRE_API": "responses"
+    },
+    "override": {
+      "OPENAGENT_APP_MAX_STEPS": "8",
+      "OPENAI_BASE_URL": "http://127.0.0.1:9999",
+      "OPENAI_MODEL": "gpt-test",
+      "OPENAI_WIRE_API": "chat"
+    }
+  },
+  "parser": {
+    "default": {
+      "argv": [],
+      "namespace": {
+        "base_url": null,
+        "command": null,
+        "max_steps": null,
+        "model": null,
+        "skip_doctor": false,
+        "wire_api": null,
+        "workspace": null
+      }
+    },
+    "doctor_json": {
+      "argv": [
+        "doctor",
+        "--format",
+        "json"
+      ],
+      "namespace": {
+        "base_url": null,
+        "command": "doctor",
+        "format": "json",
+        "model": null
+      }
+    },
+    "mcp_add": {
+      "argv": [
+        "mcp",
+        "add",
+        "demo",
+        "--config",
+        "/tmp/openagent-rust-rewrite-fixture-goal10/mcp.json",
+        "--url",
+        "https://example.com/mcp"
+      ],
+      "namespace": {
+        "command": "mcp",
+        "format": "table",
+        "mcp_command": "add",
+        "name": "demo",
+        "timeout_ms": 30000,
+        "transport": "auto",
+        "url": "https://example.com/mcp"
+      }
+    },
+    "run_json": {
+      "argv": [
+        "run",
+        "--workspace",
+        "/tmp/openagent-rust-rewrite-fixture-goal10/workspace",
+        "--skip-doctor",
+        "--format",
+        "json",
+        "hello",
+        "world"
+      ],
+      "namespace": {
+        "command": "run",
+        "format": "json",
+        "message": [
+          "hello",
+          "world"
+        ],
+        "skip_doctor": true,
+        "workspace": "/tmp/openagent-rust-rewrite-fixture-goal10/workspace"
+      }
+    }
+  },
+  "schema_version": 1
+}

@@ -518,13 +518,18 @@ dependencies = [
  "openagent-core",
  "openagent-protocol",
  "openagent-session",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "openagent-app-server-client"
 version = "0.1.0"
 dependencies = [
+ "openagent-app-server",
  "openagent-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -537,6 +542,8 @@ dependencies = [
  "openagent-session",
  "openagent-swarm",
  "openagent-tools",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -558,6 +565,9 @@ dependencies = [
  "openagent-core",
  "openagent-protocol",
  "openagent-session",
+ "regex",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -565,9 +575,12 @@ name = "openagent-http-runtime"
 version = "0.1.0"
 dependencies = [
  "openagent-app-server",
+ "openagent-app-server-client",
  "openagent-core",
  "openagent-provider",
  "openagent-session",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -576,6 +589,9 @@ version = "0.1.0"
 dependencies = [
  "openagent-protocol",
  "openagent-tools",
+ "serde",
+ "serde_json",
+ "sha1",
 ]
 
 [[package]]
@@ -632,8 +648,11 @@ dependencies = [
 name = "openagent-tui"
 version = "0.1.0"
 dependencies = [
+ "openagent-app-server",
  "openagent-app-server-client",
  "openagent-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

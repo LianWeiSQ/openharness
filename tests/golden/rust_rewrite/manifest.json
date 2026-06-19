@@ -1,10 +1,15 @@
 {
-  "fixture_count": 10,
+  "fixture_count": 15,
   "fixtures": [
     "agent_loop.json",
+    "app_bridge_tui.json",
+    "cli_commands.json",
     "context_state.json",
     "core_context_policy.json",
     "core_protocol.json",
+    "eval_integrations.json",
+    "http_runtime.json",
+    "mcp_runtime.json",
     "permission_rulesets.json",
     "provider_adapters.json",
     "session_trace_observability.json",

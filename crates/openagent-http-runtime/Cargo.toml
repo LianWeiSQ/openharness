@@ -8,9 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 openagent-app-server.workspace = true
+openagent-app-server-client.workspace = true
 openagent-core.workspace = true
 openagent-provider.workspace = true
 openagent-session.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

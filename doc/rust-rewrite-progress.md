@@ -5,6 +5,387 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 14 - Rust-Only Finalization
+
+Status: complete.
+
+Changed:
+
+- Removed all tracked Python source/runtime files, Python tests, Python
+  examples, the Python fixture-generation script, root Python package marker,
+  Python helper scripts vendored under `.openagent/skills`, and `pyproject.toml`.
+- Replaced README content with Rust-only usage, crate ownership, verification,
+  no-Python scan, and Docker smoke guidance.
+- Updated the engineering issue template to use Cargo verification commands.
+- Rewrote the Rust rewrite parity matrix as the final Rust crate ownership map
+  backed by golden JSON fixtures rather than deleted Python source paths.
+- Updated the rewrite plan terminal acceptance command and recorded the
+  one-final-PR workflow.
+- Replaced Rust subprocess tests that invoked `python3 -c` with shell-only JSON
+  worker fixtures.
+
+Verification:
+
+```bash
+git ls-files '*.py' pyproject.toml 'requirements*.txt' setup.py setup.cfg
+rg --files -g '*.py' -g 'pyproject.toml' -g 'requirements*.txt' -g 'setup.py' -g 'setup.cfg'
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+OPENAI_API_KEY=secret OPENAI_BASE_URL=http://gateway.test OPENAI_MODEL=gpt-test OPENAI_WIRE_API=responses OPENAGENT_DOCTOR_MODEL_ENDPOINT_OK=1 OPENAGENT_DOCTOR_MODEL_ENDPOINT_MESSAGE=http://gateway.test/v1/models cargo run -p openagent-cli --bin openagent -- doctor --format json
+cargo run -p openagent-swarm --bin openagent-swarm -- --help
+cargo run -p openagent-tui --bin openagent-tui -- --help
+cargo run -p openagent-http-runtime --bin openagent-http-runtime -- --health-json
+docker --version
+docker info --format '{{.ServerVersion}}'
+```
+
+Evidence:
+
+- No-Python tracked-file scan: no files returned.
+- Broad Python/package metadata file scan: no files returned.
+- Rust fmt check: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust workspace tests: OK.
+- Rust binary smokes: `openagent doctor --format json` with healthy env OK,
+  `openagent-swarm --help` OK, `openagent-tui --help` OK, and
+  `openagent-http-runtime --health-json` OK.
+- Docker CLI is installed (`Docker version 29.4.0`), but the local Docker
+  daemon is not running, so real `docker build/run` remains blocked in this
+  environment.
+
+Residual risks:
+
+- The Dockerfile and compiled HTTP runtime binary are verified locally, but a
+  real container image build/run still needs a running Docker daemon or CI
+  runner with Docker enabled.
+- Historical docs still contain old migration receipts with Python commands as
+  evidence for completed goals; current runtime, CI template, README, and
+  tracked source files are Rust-only.
+
+Next:
+
+- Push `codex/rust-rewrite-complete` and open the single final PR.
+
+---
+
+## 2026-06-19 Goal 13 - Rust Eval And Benchmark Integrations
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `eval_integrations.json` Python oracle coverage for eval
+  result aggregation, markdown summary rendering, baseline regression
+  comparison, regression markdown rendering, CI gate pass/fail metrics and
+  reasons, Langfuse eval score payload/export success and failure fields,
+  Terminal-Bench adapter defaults/metadata/path display/command wrapping/exit
+  code extraction/output formatting/failure modes/system prompt, and Harbor
+  adapter defaults/metadata/path display/success-timeout command/result
+  formatting/model normalization/system prompt.
+- Replaced the placeholder `openagent-eval` crate with Rust eval result models,
+  aggregate and summary rendering, baseline regression comparison, regression
+  markdown rendering, CI gate options/results, Langfuse score payload helpers,
+  Terminal-Bench helper contracts, and Harbor helper contracts.
+- Added Rust integration tests comparing the full eval/integration fixture
+  against the Python oracle plus targeted adapter edge-case checks.
+
+Verification:
+
+```bash
+cargo test -p openagent-eval -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_eval_runner.py src/tests/test_eval_ci_gate.py src/tests/test_terminal_bench_adapter.py src/tests/test_harbor_adapter.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-eval` targeted tests: 4 tests OK, including full
+  `eval_integrations.json` parity and adapter edge-case checks.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus eval/CI/Terminal-Bench/Harbor tests: 21 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates deterministic eval/report/benchmark integration contracts.
+  Real external benchmark runners and Langfuse network I/O still need final
+  entry-point wiring and/or CI environment credentials before Python can be
+  removed.
+- The final no-Python requirement remains Goal 14, where remaining Python
+  production runtime files must be deleted or quarantined and Rust binaries
+  become the only supported runtime entry points.
+
+Next:
+
+- Goal 14: remove/quarantine remaining production Python runtime entry points,
+  wire final Rust binaries, run no-Python verification, then open one final PR.
+
+---
+
+## 2026-06-19 Goal 12 - Rust HTTP Runtime Contract
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `http_runtime.json` Python oracle coverage for SDK
+  HTTP-runtime exports, `serve` option wiring, command/stdin prompt extraction,
+  file attachment prompt construction, client session-selection request shapes,
+  SSE parsing, text/json event emission, HTTP error formatting, runtime health
+  and route response contracts, Dockerfile lines, and Docker smoke command
+  output.
+- Replaced the placeholder `openagent-http-runtime` crate with Rust runtime
+  config, health payloads, route response specs, SSE parsing, HTTP error
+  formatting, App Bridge event text/json emission, prompt helpers, Dockerfile
+  and smoke command contracts, Python-compatible JSON line rendering, and CLI
+  argument parsing.
+- Replaced the placeholder `openagent-http-runtime` binary with a runnable
+  entry point supporting `--health-json` and `--docker-smoke` for compiled
+  binary smoke checks.
+- Added `Dockerfile.openagent-http-runtime` and Rust integration tests that
+  compare the Dockerfile contents and binary health output against the Python
+  oracle.
+
+Verification:
+
+```bash
+cargo test -p openagent-http-runtime -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_openagent_cli.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+docker --version
+docker info --format '{{.ServerVersion}}'
+```
+
+Evidence:
+
+- `openagent-http-runtime` targeted tests: 4 tests OK, including
+  `http_runtime.json` parity, compiled `--health-json` binary smoke, and
+  Dockerfile contract parity.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus Python CLI tests: 57 tests OK.
+- Full Python baseline: 422 tests OK.
+- Docker CLI is installed (`Docker version 29.4.0`), but the local Docker
+  daemon was not running, so full `docker build/run` could not be executed in
+  this environment.
+
+Residual risks:
+
+- The Dockerfile and binary smoke contract are verified locally, but a real
+  image build/run still needs a running Docker daemon or CI runner with Docker
+  enabled.
+- The Rust HTTP runtime now owns the tested API/client/container contracts; the
+  final no-Python path still depends on Goal 14 entry point removal/wiring.
+
+Next:
+
+- Goal 13: migrate eval, benchmark, and integration report contracts into Rust.
+
+---
+
+## 2026-06-19 Goal 11 - Rust App Bridge And TUI State
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `app_bridge_tui.json` Python oracle coverage for App
+  Bridge protocol events, lifecycle events, TUI control request serialization,
+  health/auth response shapes, global SSE replay after query/header sequence,
+  approval path parsing, TUI route validation and queue shapes, interrupt and
+  approval lifecycle events, remote runtime URL/auth/path helpers, remote turn
+  event deduplication/status application, attach/control request shapes, and
+  TUI control state transitions.
+- Replaced the placeholder `openagent-app-server` crate with Rust AppEvent and
+  TuiControlRequest models, stream-event method mapping, lifecycle event
+  wrapping, auth checks, health and unauthorized payload helpers, approval path
+  parsing, publish/control route validation, control queue state, SSE replay
+  records, and interrupt/approval event state helpers.
+- Replaced the placeholder `openagent-app-server-client` crate with Rust remote
+  turn records, replay deduplication keys, event status application, URL
+  normalization/joining/path quoting, auth header rendering, request-shape
+  helpers, and Python-oracle parity tests.
+- Replaced the placeholder `openagent-tui` crate with Rust TUI control-state
+  handling for prompt append/submit/clear, publish translation, toast display,
+  command execution, session selection validation, unsupported model/theme
+  controls, and golden parity tests.
+
+Verification:
+
+```bash
+cargo test -p openagent-app-server -- --nocapture
+cargo test -p openagent-app-server-client -- --nocapture
+cargo test -p openagent-tui -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_app_server_protocol.py src/tests/test_app_server_runtime.py src/tests/test_app_server_server.py src/tests/test_tui_remote_runtime.py src/tests/test_tui_formatting.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-app-server` targeted tests: 3 tests OK, including protocol and
+  server-section parity against `app_bridge_tui.json`.
+- `openagent-app-server-client` targeted tests: 2 tests OK, including remote
+  runtime/client-section parity against the Python oracle.
+- `openagent-tui` targeted tests: 2 tests OK, including TUI control-state
+  parity against the Python oracle.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus App Bridge/TUI tests: 52 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates the deterministic App Bridge/TUI protocol and state
+  behavior. The live HTTP listener/API container smoke remains part of Goal 12.
+- The Rust TUI crate now owns the tested control-state contract, but full
+  terminal rendering and input-loop replacement still needs final wiring before
+  Python can be removed in Goal 14.
+
+Next:
+
+- Goal 12: migrate HTTP runtime/API parity and Docker smoke behavior into Rust.
+
+---
+
+## 2026-06-19 Goal 10 - Rust CLI Command Layer
+
+Status: complete.
+
+Changed:
+
+- Pivoted the branch workflow per user direction: closed PR #81 without
+  merging and continued on `codex/rust-rewrite-complete`; no more intermediate
+  PRs will be opened before the final Goal 14 PR.
+- Added deterministic `cli_commands.json` Python oracle coverage for CLI
+  parser cases, model environment defaults and overrides, doctor text/json
+  output, native Anthropic doctor behavior, auth login/list/methods JSON,
+  custom command list/show/render, config init/show, and MCP CLI JSON/table
+  output with secret redaction.
+- Replaced the placeholder `openagent-cli` crate with Rust command fixture
+  helpers, Python-compatible JSON rendering for snapshot output, provider auth
+  record rendering, config/custom-command/MCP CLI output helpers, and selected
+  parser behavior.
+- Replaced the placeholder `openagent` binary with a minimal runnable Rust CLI
+  entry point that supports the default smoke path and `doctor --format json`
+  from environment variables.
+- Added Rust integration tests comparing the Rust CLI fixture against the
+  Python oracle and smoke-testing the compiled `openagent` binary.
+
+Verification:
+
+```bash
+cargo test -p openagent-cli -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_openagent_cli.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-cli` targeted tests: 4 tests OK, including full
+  `cli_commands.json` parity and two compiled binary smoke checks.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus Python CLI tests: 57 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates deterministic command parsing/output and smoke behavior.
+  Live CLI execution paths for the full TUI/App Bridge runtime remain to be
+  wired through the Rust App/TUI and HTTP runtime goals.
+- The Rust CLI currently implements the tested command-layer contract rather
+  than every Python subcommand side effect. Goal 14 will remove or archive the
+  remaining Python only after later runtime goals expose replacement entry
+  points.
+
+Next:
+
+- Goal 11: migrate App Bridge/TUI SSE, auth, attach, interrupt, approval, and
+  control behavior into Rust.
+
+---
+
+## 2026-06-19 Goal 9 - Rust MCP Runtime
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `mcp_runtime.json` Python oracle coverage for MCP
+  config parsing, CLI/env source precedence, invalid config errors, transport
+  defaults, auth headers, tool filters, dynamic tool name sanitization,
+  duplicate-name suffixes, schema normalization, descriptor metadata, manager
+  snapshots, tool-call output normalization, bridge tool metadata, and
+  trace/observability redaction.
+- Replaced the placeholder `openagent-mcp` crate with Rust MCP config types,
+  source loaders, remote server config parsing, tool descriptor generation,
+  fnmatch-style allow/deny filtering, transport candidate selection, snapshot
+  state, tool-call result normalization, bridge `ToolDefinition` construction,
+  bridge output metadata defaults, and MCP auth/redaction helpers.
+- Added Rust integration tests comparing MCP config, discovery, snapshots,
+  redaction, bridge metadata, and text/non-text/empty/error/unavailable
+  tool-call results against the Python oracle.
+- Extended the golden fixture manifest to include `mcp_runtime.json`.
+
+Verification:
+
+```bash
+cargo test -p openagent-mcp -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_mcp_config.py src/tests/test_mcp_runtime.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-mcp` targeted tests: 2 tests OK, including Python fixture parity
+  for MCP config, discovery, auth redaction, bridge metadata, and tool-call
+  result normalization.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus MCP config/runtime tests: 9 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates deterministic MCP config/runtime behavior and bridge
+  metadata. Live remote MCP network session execution is still represented by
+  normalized runtime contracts and remains to be wired into the later CLI/App
+  runtime entry points.
+- The Rust MCP wildcard matcher covers the current fixture and production
+  allow/deny patterns with `*` and `?`; more exotic Python `fnmatch` bracket
+  patterns are not yet asserted by the oracle.
+- CLI, App Bridge/TUI, HTTP runtime, eval wiring, packaging, and final Python
+  removal remain deferred to later goals.
+
+Next:
+
+- Goal 10: migrate CLI command parsing, JSON/table output fixtures, and CLI
+  smoke behavior into Rust.
+
+---
+
 ## 2026-06-19 Goal 8 - Rust AgentLoop Kernel
 
 Status: complete.
