@@ -5,6 +5,62 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 3 - Rust Swarm Kernel
+
+Status: complete.
+
+Changed:
+
+- Implemented the Rust `openagent-swarm` runtime with a runner registry,
+  role-based dispatch, explicit runner dispatch, event emission, result
+  normalization, status aggregation, usage aggregation, budget warnings, and
+  AgentSpec validation.
+- Added Rust runner implementations for function, subprocess, HTTP, and A2A
+  transports.
+- Added config loading for YAML/JSON-shaped swarm configs and a transport
+  registry builder for CLI-safe runner kinds.
+- Replaced the placeholder `openagent-swarm` binary with
+  `openagent-swarm run <config> --task <id> [--run-id <id>] [--pretty]`.
+- Added integration tests covering function aggregation, validation failures,
+  subprocess JSON workers, local HTTP transport, A2A `/message/send`, YAML
+  config loading, and CLI execution.
+- Added the Rust async/network/config dependencies needed by the swarm crate.
+
+Verification:
+
+```bash
+cargo test -p openagent-swarm -- --nocapture
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-swarm` targeted tests: 8 tests OK including 7 integration tests
+  for function/subprocess/http/a2a/config/CLI behavior.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Goal 0 Python fixture drift test: 1 test OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates the transport-agnostic swarm kernel and CLI smoke path.
+  The Python OpenAgent runner adapter and deeper session/handoff/state merge
+  behavior still remain for later goals.
+- Subprocess/HTTP/A2A tests use deterministic local workers and loopback
+  servers; live remote agents are intentionally deferred to later smoke gates.
+
+Next:
+
+- Goal 4: migrate session, trace, and observability behavior into Rust with
+  JSONL/session compatibility tests.
+
+---
+
 ## 2026-06-19 Goal 2 - Rust Protocol/Data Models
 
 Status: complete.
