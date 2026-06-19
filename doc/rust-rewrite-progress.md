@@ -5,6 +5,61 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Rust-Only Parity Verification Follow-Up
+
+Status: complete.
+
+Changed:
+
+- Found and fixed a post-merge CLI regression where the compiled Rust
+  `openagent` binary only handled `doctor` and returned
+  `unsupported Rust CLI command` for the rest of the legacy command surface.
+- Restored the Rust CLI command boundary for `tui`, `serve`, `web`, `client`,
+  `attach`, `run`, `session`, `models`, `stats`, `command`, `config`, `auth`,
+  `providers`, `mcp`, and `doctor`.
+- Added local, machine-readable Rust flows for `run --format json`, model
+  listing, config init/show, auth/provider credential files, MCP config/auth
+  files, session list/export/delete/stats, and custom command list/show/render.
+- Exposed OpenCode backlog commands (`agent`, `plugin`, `github`, `pr`,
+  `debug`, `upgrade`, `uninstall`, `acp`, `import`, `export`) as explicit
+  parity-boundary commands instead of unknown commands.
+- Added compiled binary smoke tests for legacy command help, OpenCode-aligned
+  `run` flags, JSON event output, model defaults, and config/auth/MCP file
+  flows.
+- Updated the OpenCode CLI/TUI parity matrix to describe the Rust-only baseline
+  and remaining parity risks.
+
+Verification:
+
+```bash
+cargo fmt --all
+cargo test -p openagent-cli -- --nocapture
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+for c in tui serve web client attach run session models stats command config auth providers mcp doctor agent plugin github pr debug upgrade uninstall acp import export; do cargo run -q -p openagent-cli --bin openagent -- "$c" --help; done
+```
+
+Evidence:
+
+- `openagent-cli` targeted tests: 6 tests OK, including compiled binary smoke
+  coverage for root/subcommand help, `run --format json`, `models --format
+  json`, config init, auth/providers, and MCP file flows.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Command-surface smoke: every legacy command and explicit OpenCode backlog
+  boundary command returns help successfully.
+
+Residual risks:
+
+- The Rust `run` smoke path verifies command shape and JSON event contracts
+  without live external model streaming. A provider-backed integration
+  environment is still required to prove full model I/O parity.
+- Local terminal rendering and long-running HTTP server behavior are still
+  covered by protocol/state/binary contract tests rather than a full
+  end-to-end terminal/browser harness.
+
+---
+
 ## 2026-06-19 Goal 14 - Rust-Only Finalization
 
 Status: complete.

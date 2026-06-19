@@ -36,18 +36,57 @@ Reference source: `references/opencode` in the local harness workspace.
 
 ## Current Baseline
 
-OpenAgent already supports the baseline product CLI and curses TUI:
+OpenAgent is now Rust-only. The Python CLI/TUI/runtime tree referenced by older
+receipts has been removed from `main`; compatibility is guarded by Rust crates,
+compiled binary smoke tests, and the golden JSON fixtures under
+`tests/golden/rust_rewrite/`.
 
-- CLI entry: `src/openagent/cli/main.py` exposes `tui`, `serve`, `web`,
-  `client`, `run`, `session`, `models`, `stats`, `command`, `config`, `auth`,
-  and `doctor`.
-- TUI entry: `src/openagent/tui/app.py` and `src/openagent/tui/state.py` support
-  local sessions, text submission, slash commands, session picker/resume,
-  transcript rendering, file mentions, approval allow/deny, and cooperative
-  interrupt.
-- Baseline tests: `src/tests/test_openagent_cli.py`,
-  `src/tests/test_tui_formatting.py`, `src/tests/test_app_server_runtime.py`,
-  and `src/tests/test_app_server_server.py`.
+- CLI entry: `crates/openagent-cli` exposes the legacy OpenAgent command
+  surface: `tui`, `serve`, `web`, `client`, `attach`, `run`, `session`,
+  `models`, `stats`, `command`, `config`, `auth`, `providers`, `mcp`, and
+  `doctor`.
+- The Rust CLI now has binary smoke coverage for root/subcommand help,
+  OpenCode-aligned `run` flags, JSON `run` events, `models`, `config`,
+  `auth`/`providers`, and `mcp` file flows.
+- TUI/App Bridge protocol/state contracts are owned by
+  `crates/openagent-tui`, `crates/openagent-app-server`, and
+  `crates/openagent-app-server-client`.
+- Baseline tests: `cargo test --workspace`,
+  `cargo clippy --workspace --all-targets -- -D warnings`, and focused
+  `openagent-cli` binary smoke tests.
+
+## 2026-06-19 Rust Verification Update
+
+The Rust-only verification pass found a real regression: the compiled
+`openagent` binary only supported `doctor`; all other user-facing commands
+returned `unsupported Rust CLI command`. This has been fixed in
+`crates/openagent-cli` by restoring the legacy command surface, adding machine
+readable local command flows, and exposing OpenCode backlog commands as explicit
+parity boundaries instead of silent unknown commands.
+
+Verified Rust command surface:
+
+- `openagent --help`
+- `openagent <tui|serve|web|client|attach|run|session|models|stats|command|config|auth|providers|mcp|doctor> --help`
+- `openagent run --skip-doctor --format json ...`
+- `openagent models --format json`
+- `openagent config init --format json`
+- `openagent auth login/list`
+- `openagent providers list`
+- `openagent mcp add/doctor --format json`
+
+OpenCode backlog commands now fail explicitly with a parity message rather than
+an unknown-command error: `agent`, `plugin`, `github`, `pr`, `debug`,
+`upgrade`, `uninstall`, `acp`, `import`, and `export`.
+
+Remaining parity risk:
+
+- The current Rust `run` binary smoke path validates command/JSON event shape
+  without doing real external model inference. Full live provider streaming
+  parity still needs a network-backed provider integration test environment.
+- Long-running local TUI/server execution is still validated mostly through
+  Rust protocol/state crates and dedicated binaries, not an end-to-end terminal
+  rendering test.
 
 Recently completed related slices:
 
