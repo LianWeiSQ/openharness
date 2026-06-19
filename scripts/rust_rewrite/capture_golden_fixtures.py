@@ -34,6 +34,17 @@ from openagent.core.runtime_warnings import (
 )
 from openagent.core.session.todo import TodoItem
 from openagent.core.tool.definition import ToolDefinition, ToolExecutionSchema
+from openagent.core.tool.builtin import file as file_tools
+from openagent.core.tool.builtin import memory as memory_tools
+from openagent.core.tool.builtin import question as question_tools
+from openagent.core.tool.builtin import search as search_tools
+from openagent.core.tool.builtin import shell as shell_tools
+from openagent.core.tool.builtin import todo as todo_tools
+from openagent.core.tool.builtin.file import _format_read_output_from_text
+from openagent.core.tool.builtin.shell import _blocked_command
+from openagent.core.tool.registry import ToolRegistry
+from openagent.core.tool.truncation import Truncate
+from openagent.core.tool.utils import ensure_within_root
 from openagent.core.trace import render_trace_summary
 from openagent.core.trace.recorder import sanitize_trace_value
 from openagent.core.trace.schema import RunRecord, TraceConfig, TraceEvent
@@ -215,6 +226,98 @@ def _tool_definition_schema_fixture() -> dict[str, Any]:
         "execution_scope": definition.execution_scope,
         "execution_schema": definition.execution_schema.as_dict(),
         "parameters_schema": definition.parameters_schema(),
+    }
+
+
+def _tool_runtime_fixture() -> dict[str, Any]:
+    registry = ToolRegistry()
+    file_tools.register(registry)
+    shell_tools.register(registry)
+    search_tools.register(registry)
+    memory_tools.register(registry)
+    todo_tools.register(registry)
+    question_tools.register(registry)
+
+    selected = [
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "ls",
+        "bash",
+        "code_search",
+        "memory_read",
+        "memory_write",
+        "todowrite",
+        "todoread",
+        "question",
+    ]
+    tools: dict[str, Any] = {}
+    for tool_id in selected:
+        tool = registry.get(tool_id)
+        if tool is None:
+            raise AssertionError(f"missing fixture tool: {tool_id}")
+        parameter_schema = tool.parameters_schema()
+        tools[tool_id] = {
+            "group": tool.group,
+            "dangerous": tool.dangerous,
+            "execution_scope": tool.execution_scope,
+            "execution_schema": tool.execution_schema.as_dict(),
+            "parameter_schema": {
+                "required": parameter_schema.get("required", []),
+                "properties": sorted((parameter_schema.get("properties") or {}).keys()),
+            },
+        }
+
+    read_output, read_preview, read_truncated = _format_read_output_from_text(
+        "alpha\nbeta\ngamma\n",
+        offset=1,
+        limit=1,
+    )
+    line_truncation = Truncate.output("L1\nL2\nL3", max_lines=2, max_bytes=999)
+    byte_truncation = Truncate.output("abcdef", max_lines=999, max_bytes=4)
+    try:
+        ensure_within_root(Path("/tmp/openagent-fixture"), Path("/tmp/outside.txt"))
+    except PermissionError as error:
+        path_escape_error = str(error)
+    else:
+        raise AssertionError("path escape fixture did not fail")
+
+    return {
+        "schema_version": 1,
+        "tools": tools,
+        "registry_namespace": {"default": "fixture", "custom": "fixture_custom"},
+        "execution_schemas": {
+            "readonly": ToolExecutionSchema.readonly(batch_group="workspace-read", mutates_session=True).as_dict(),
+            "exclusive": ToolExecutionSchema.exclusive(
+                batch_group="workspace-write",
+                mutates_workspace=True,
+                mutates_session=True,
+                conflict_key_template="file:{file_path}",
+            ).as_dict(),
+        },
+        "read_format": {
+            "output": read_output,
+            "preview": read_preview,
+            "truncated": read_truncated,
+        },
+        "truncation": {
+            "line": asdict(line_truncation),
+            "byte": asdict(byte_truncation),
+        },
+        "path_escape_error": path_escape_error,
+        "blocked_shell_command": _blocked_command("printf ok; rm -rf tmp"),
+        "todo_output": json.dumps(
+            [{"content": "port tools", "status": "in_progress", "priority": "high", "id": "todo-fixture"}],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        "memory_outputs": {"missing": "null", "write": "ok"},
+        "question_output": (
+            'User has answered your questions: "Pick a mode"="Fast". '
+            "You can now continue with the user's answers in mind."
+        ),
     }
 
 
@@ -518,6 +621,7 @@ def capture(output_dir: Path) -> None:
         "core_protocol.json": _core_protocol_fixture(),
         "permission_rulesets.json": _permission_rulesets_fixture(),
         "tool_definition_schema.json": _tool_definition_schema_fixture(),
+        "tool_runtime.json": _tool_runtime_fixture(),
         "swarm_protocol.json": _swarm_protocol_fixture(),
         "context_state.json": _context_state_fixture(),
         "session_trace_observability.json": _session_trace_observability_fixture(),

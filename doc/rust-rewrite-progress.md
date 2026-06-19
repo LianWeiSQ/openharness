@@ -5,6 +5,69 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 5 - Rust Workspace Runtime And Tools
+
+Status: complete.
+
+Changed:
+
+- Replaced the placeholder `openagent-tools` crate with a Rust tool registry,
+  scoped registration helper, toolkit executor, local workspace runtime,
+  command runner, path resolution helpers, and display/output truncation.
+- Implemented Rust built-in tools for `read`, `write`, `edit`, `glob`,
+  `grep`, `ls`, `bash`, `code_search`, `memory_read`, `memory_write`,
+  `todowrite`, `todoread`, and `question`.
+- Added Rust protections for workspace path containment, binary read blocking,
+  read-before-write/edit on existing files, destructive shell command blocking,
+  output truncation metadata, and full-output persistence under
+  `.openagent/tool_output/`.
+- Extended the Python golden fixture generator with deterministic
+  `tool_runtime.json` coverage for tool metadata, execution schemas,
+  read formatting, truncation, path escape errors, shell blocking, todo output,
+  memory output, and question output.
+- Added Rust integration tests for Python fixture parity and real tool
+  workflows covering path safety, permissions, truncation, command execution,
+  metadata, todo, memory, and question behavior.
+- Added `regex` as a workspace dependency for Rust grep/glob/shell pattern
+  support.
+
+Verification:
+
+```bash
+cargo test -p openagent-tools
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-tools` targeted tests: 5 tests OK including 4 integration tests
+  for Python fixture parity and local tool workflow behavior.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Python fixture drift test: 1 test OK with the new Goal 5 fixture included.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates the local workspace runtime and core built-in tools.
+  Python AgentLoop wiring still calls Python tools until later goals replace
+  the orchestration path.
+- Web, skill, MCP, remote sandbox, app server, TUI, packaging, and final Python
+  removal remain intentionally deferred to their later goals.
+- Rust glob support covers the workspace patterns exercised by tests and the
+  fixture contract; shell-style brace expansion is not yet a parity guarantee.
+
+Next:
+
+- Goal 6: migrate instructions and skill discovery/loading into Rust with
+  discovery and instruction loading tests.
+
+---
+
 ## 2026-06-19 Goal 4 - Rust Session, Trace, And Observability
 
 Status: complete.
