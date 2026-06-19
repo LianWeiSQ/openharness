@@ -10,7 +10,7 @@ OpenAgent keeps the public docs intentionally small. Start with the README, then
 | [OpenCode CLI/TUI Parity Matrix](opencode-cli-tui-parity-matrix.md) | Auditable CLI/TUI gap ledger, row issues, priorities, and verification evidence |
 | [Roadmap](roadmap.md) | Current gaps and the next engineering milestones |
 | [Rust Rewrite Plan](rust-rewrite-plan.md) | Goal-gated Python-to-Rust rewrite plan and terminal acceptance criteria |
-| [Rust Rewrite Parity Matrix](rust-rewrite-parity-matrix.md) | Python production surface ownership map for the Rust rewrite |
+| [Rust Rewrite Parity Matrix](rust-rewrite-parity-matrix.md) | Final Rust crate ownership map and golden fixture gates |
 | [Rust Rewrite Progress](rust-rewrite-progress.md) | Goal receipts, verification evidence, and next migration action |
 | [Step Budget Optimization](step-budget-optimization.md) | Adaptive `max_steps`, closeout protection, and runtime warnings discovered from real traces |
 | [Tool Optimization](tool-optimization.md) | Tool execution schema, builtin tool classification, and batch scheduling roadmap |

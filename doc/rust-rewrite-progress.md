@@ -5,6 +5,70 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 14 - Rust-Only Finalization
+
+Status: complete.
+
+Changed:
+
+- Removed all tracked Python source/runtime files, Python tests, Python
+  examples, the Python fixture-generation script, root Python package marker,
+  Python helper scripts vendored under `.openagent/skills`, and `pyproject.toml`.
+- Replaced README content with Rust-only usage, crate ownership, verification,
+  no-Python scan, and Docker smoke guidance.
+- Updated the engineering issue template to use Cargo verification commands.
+- Rewrote the Rust rewrite parity matrix as the final Rust crate ownership map
+  backed by golden JSON fixtures rather than deleted Python source paths.
+- Updated the rewrite plan terminal acceptance command and recorded the
+  one-final-PR workflow.
+- Replaced Rust subprocess tests that invoked `python3 -c` with shell-only JSON
+  worker fixtures.
+
+Verification:
+
+```bash
+git ls-files '*.py' pyproject.toml 'requirements*.txt' setup.py setup.cfg
+rg --files -g '*.py' -g 'pyproject.toml' -g 'requirements*.txt' -g 'setup.py' -g 'setup.cfg'
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+OPENAI_API_KEY=secret OPENAI_BASE_URL=http://gateway.test OPENAI_MODEL=gpt-test OPENAI_WIRE_API=responses OPENAGENT_DOCTOR_MODEL_ENDPOINT_OK=1 OPENAGENT_DOCTOR_MODEL_ENDPOINT_MESSAGE=http://gateway.test/v1/models cargo run -p openagent-cli --bin openagent -- doctor --format json
+cargo run -p openagent-swarm --bin openagent-swarm -- --help
+cargo run -p openagent-tui --bin openagent-tui -- --help
+cargo run -p openagent-http-runtime --bin openagent-http-runtime -- --health-json
+docker --version
+docker info --format '{{.ServerVersion}}'
+```
+
+Evidence:
+
+- No-Python tracked-file scan: no files returned.
+- Broad Python/package metadata file scan: no files returned.
+- Rust fmt check: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust workspace tests: OK.
+- Rust binary smokes: `openagent doctor --format json` with healthy env OK,
+  `openagent-swarm --help` OK, `openagent-tui --help` OK, and
+  `openagent-http-runtime --health-json` OK.
+- Docker CLI is installed (`Docker version 29.4.0`), but the local Docker
+  daemon is not running, so real `docker build/run` remains blocked in this
+  environment.
+
+Residual risks:
+
+- The Dockerfile and compiled HTTP runtime binary are verified locally, but a
+  real container image build/run still needs a running Docker daemon or CI
+  runner with Docker enabled.
+- Historical docs still contain old migration receipts with Python commands as
+  evidence for completed goals; current runtime, CI template, README, and
+  tracked source files are Rust-only.
+
+Next:
+
+- Push `codex/rust-rewrite-complete` and open the single final PR.
+
+---
+
 ## 2026-06-19 Goal 13 - Rust Eval And Benchmark Integrations
 
 Status: complete.

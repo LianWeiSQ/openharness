@@ -1,44 +1,34 @@
 # Rust Rewrite Parity Matrix
 
-This matrix assigns current Python production surfaces to their Rust owners and
-verification gates. It is the Goal 0 inventory for the rewrite.
+This matrix records the final Rust ownership after the Goal 0-14 rewrite. The
+former Python production tree has been removed; deterministic golden JSON files
+under `tests/golden/rust_rewrite/` remain as compatibility artifacts.
 
-| Python Surface | Current Path | Rust Owner | First Goal | Final Removal Gate |
-| --- | --- | --- | --- | --- |
-| Shared protocol types | `src/openagent/core/types.py` | `openagent-protocol` | Goal 2 | Rust serde fixtures match golden JSON. |
-| Provider payload materialization | `src/openagent/core/message_materializer.py` | `openagent-protocol` / `openagent-provider` | Goal 2 | OpenAI-compatible payload fixtures match. |
-| Permission rules | `src/openagent/core/permission/` | `openagent-core` | Goal 6 | Ruleset fixtures and permission manager tests pass. |
-| Tool definitions/registry | `src/openagent/core/tool/definition.py`, `registry.py`, `toolkit.py` | `openagent-tools` | Goal 5 | Tool schema, middleware, and registry parity tests pass. |
-| Built-in workspace tools | `src/openagent/core/tool/builtin/` | `openagent-tools` | Goal 5 | File/shell/search/todo/memory/question fixtures and tests pass. |
-| Workspace runtime | `src/openagent/core/execution/` | `openagent-tools` | Goal 5 | Local runtime path safety and command execution tests pass. |
-| Context budget/messages/pack | `src/openagent/core/context_*.py` | `openagent-core` | Goal 6 | Context trimming, compaction, and pack traces pass parity tests. |
-| Instructions and skills | `src/openagent/core/instructions.py`, `skill/` | `openagent-core` / `openagent-tools` | Goal 6 | Skill discovery and instruction loading tests pass. |
-| Provider adapters | `src/openagent/core/provider/` | `openagent-provider` | Goal 7 | Mock OpenAI/Anthropic streaming tests pass. |
-| Agent loop | `src/openagent/core/loop/` | `openagent-core` | Goal 8 | Multi-step stream-event fixtures and loop tests pass. |
-| Session store | `src/openagent/core/session/` | `openagent-session` | Goal 4 | File-backed ledger/state fixtures pass. |
-| Trace and observability | `src/openagent/core/trace/`, `observability.py`, `runtime_logging.py`, `runtime_warnings.py` | `openagent-session` / `openagent-core` | Goal 4 | JSONL trace, redaction, warning, and exporter tests pass. |
-| MCP config/runtime | `src/openagent/core/mcp/` | `openagent-mcp` or `openagent-tools` | Goal 9 | Config/discovery/auth/tool-call tests pass. |
-| Eval runner and CI gate | `src/openagent/core/eval/` | `openagent-eval` | Goal 13 | Eval report and regression gate tests pass. |
-| CLI | `src/openagent/cli/` | `openagent-cli` | Goal 10 | CLI JSON/table snapshot and smoke tests pass. |
-| TUI | `src/openagent/tui/` | `openagent-tui` | Goal 11 | Local and remote attach smoke tests pass. |
-| App Bridge server | `src/openagent/app_server/` | `openagent-app-server` | Goal 11 | REST/SSE/control route tests pass. |
-| Swarm kernel | `src/swarm/` | `openagent-swarm` | Goal 3 | Function/subprocess/http/a2a runner parity tests pass. |
-| OpenAgent swarm adapter | `src/openagent/integrations/swarm.py` | `openagent-swarm` / `openagent-core` | Goal 3 / Goal 8 | Rust OpenAgent runner adapter tests pass. |
-| Benchmark adapters | `src/openagent/integrations/terminal_bench.py`, `harbor.py` | `openagent-eval` | Goal 13 | Adapter smoke and report schema tests pass. |
-| SDK HTTP runtime client | `src/openagent/sdk/http_runtime.py` | `openagent-app-server-client` | Goal 11 / Goal 12 | Client/server API parity tests pass. |
-| HTTP runtime service | `../openagent-runtime-http/src/openagent_runtime_http/` | `openagent-http-runtime` | Goal 12 | API parity, auth, quota, SSE, Docker smoke pass. |
+| Runtime Surface | Rust Owner | Golden Fixture / Gate |
+| --- | --- | --- |
+| Shared protocol types and stream events | `openagent-protocol` | `core_protocol.json`, protocol fixture tests |
+| Permission rulesets | `openagent-protocol`, `openagent-core` | `permission_rulesets.json`, permission tests |
+| Tool schemas and built-in workspace tools | `openagent-tools` | `tool_definition_schema.json`, `tool_runtime.json` |
+| Context budget, compaction, instructions, skills | `openagent-core`, `openagent-tools` | `core_context_policy.json` |
+| Provider metadata and stream normalization | `openagent-provider` | `provider_adapters.json` |
+| Agent loop behavior | `openagent-core` | `agent_loop.json` |
+| Session store, trace, observability, runtime logs | `openagent-session`, `openagent-core` | `session_trace_observability.json` |
+| MCP config, discovery, bridge, result normalization | `openagent-mcp` | `mcp_runtime.json` |
+| Swarm runner orchestration | `openagent-swarm` | `swarm_protocol.json`, swarm runtime tests |
+| CLI command layer | `openagent-cli` | `cli_commands.json`, compiled binary smoke tests |
+| App Bridge server protocol/state | `openagent-app-server` | `app_bridge_tui.json` |
+| App Bridge client helpers | `openagent-app-server-client` | `app_bridge_tui.json` |
+| TUI control state | `openagent-tui` | `app_bridge_tui.json` |
+| HTTP runtime binary contracts | `openagent-http-runtime` | `http_runtime.json`, Dockerfile contract |
+| Eval, CI gate, benchmark adapters | `openagent-eval` | `eval_integrations.json` |
 
-## Fixture Groups
+## Final Gates
 
-Goal 0 captures these stable groups:
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+git ls-files '*.py' pyproject.toml
+```
 
-- `core_protocol.json`: shared types, stream events, materialized provider
-  payloads, runtime option filtering.
-- `permission_rulesets.json`: `FULL`, `READONLY`, `PLAN_ONLY`, and `NONE`.
-- `tool_definition_schema.json`: JSON schema generated from tool parameter
-  dataclasses.
-- `swarm_protocol.json`: swarm spec/result/descriptor/budget protocol.
-- `context_state.json`: structured compaction parsing/rendering behavior.
-
-Later goals may add more fixtures, but they must remain deterministic and
-network-free unless explicitly marked as smoke fixtures.
+The last command must produce no tracked files.

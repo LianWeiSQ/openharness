@@ -70,7 +70,9 @@ body:
       description: Commands, tests, scans, or manual checks.
       value: |
         ```bash
-        PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p "test_*.py"
+        cargo fmt --all -- --check
+        cargo clippy --workspace --all-targets -- -D warnings
+        cargo test --workspace
         ```
     validations:
       required: true
