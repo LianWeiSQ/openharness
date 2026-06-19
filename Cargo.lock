@@ -537,6 +537,8 @@ dependencies = [
  "openagent-session",
  "openagent-swarm",
  "openagent-tools",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

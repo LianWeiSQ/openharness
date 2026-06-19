@@ -13,6 +13,8 @@ openagent-provider.workspace = true
 openagent-session.workspace = true
 openagent-swarm.workspace = true
 openagent-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -5,6 +5,68 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 10 - Rust CLI Command Layer
+
+Status: complete.
+
+Changed:
+
+- Pivoted the branch workflow per user direction: closed PR #81 without
+  merging and continued on `codex/rust-rewrite-complete`; no more intermediate
+  PRs will be opened before the final Goal 14 PR.
+- Added deterministic `cli_commands.json` Python oracle coverage for CLI
+  parser cases, model environment defaults and overrides, doctor text/json
+  output, native Anthropic doctor behavior, auth login/list/methods JSON,
+  custom command list/show/render, config init/show, and MCP CLI JSON/table
+  output with secret redaction.
+- Replaced the placeholder `openagent-cli` crate with Rust command fixture
+  helpers, Python-compatible JSON rendering for snapshot output, provider auth
+  record rendering, config/custom-command/MCP CLI output helpers, and selected
+  parser behavior.
+- Replaced the placeholder `openagent` binary with a minimal runnable Rust CLI
+  entry point that supports the default smoke path and `doctor --format json`
+  from environment variables.
+- Added Rust integration tests comparing the Rust CLI fixture against the
+  Python oracle and smoke-testing the compiled `openagent` binary.
+
+Verification:
+
+```bash
+cargo test -p openagent-cli -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_openagent_cli.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-cli` targeted tests: 4 tests OK, including full
+  `cli_commands.json` parity and two compiled binary smoke checks.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus Python CLI tests: 57 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates deterministic command parsing/output and smoke behavior.
+  Live CLI execution paths for the full TUI/App Bridge runtime remain to be
+  wired through the Rust App/TUI and HTTP runtime goals.
+- The Rust CLI currently implements the tested command-layer contract rather
+  than every Python subcommand side effect. Goal 14 will remove or archive the
+  remaining Python only after later runtime goals expose replacement entry
+  points.
+
+Next:
+
+- Goal 11: migrate App Bridge/TUI SSE, auth, attach, interrupt, approval, and
+  control behavior into Rust.
+
+---
+
 ## 2026-06-19 Goal 9 - Rust MCP Runtime
 
 Status: complete.

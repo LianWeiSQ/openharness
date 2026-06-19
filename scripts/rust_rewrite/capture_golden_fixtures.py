@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import io
 import json
+import os
 import shutil
 import sys
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
@@ -20,6 +22,15 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from openagent.core.context_state import build_compaction_record, render_work_state
+from openagent.cli.main import (
+    apply_model_env,
+    build_parser,
+    run_auth_command,
+    run_config_command,
+    run_custom_command,
+    run_doctor_command,
+    run_mcp_command,
+)
 from openagent.core.context_budget import (
     check_context_budget,
     format_context_budget_error,
@@ -586,6 +597,23 @@ def _scrub_fixture_root(value: Any, root: Path) -> Any:
     if isinstance(value, list):
         return [_scrub_fixture_root(item, root) for item in value]
     return value
+
+
+def _run_cli_fixture(fn: Any, args: Any, **kwargs: Any) -> dict[str, Any]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    code = fn(args, stdout=stdout, stderr=stderr, **kwargs)
+    return {"exit_code": code, "stdout": stdout.getvalue(), "stderr": stderr.getvalue()}
+
+
+def _run_cli_json_fixture(fn: Any, args: Any, **kwargs: Any) -> dict[str, Any]:
+    result = _run_cli_fixture(fn, args, **kwargs)
+    result["json"] = json.loads(result["stdout"]) if result["stdout"].strip() else None
+    return result
+
+
+def _namespace_subset(args: Any, keys: list[str]) -> dict[str, Any]:
+    return {key: getattr(args, key, None) for key in keys}
 
 
 def _core_context_policy_fixture() -> dict[str, Any]:
@@ -1764,6 +1792,299 @@ def _mcp_runtime_fixture() -> dict[str, Any]:
     }
 
 
+def _cli_commands_fixture() -> dict[str, Any]:
+    fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal10")
+    shutil.rmtree(fixture_root, ignore_errors=True)
+    workspace = fixture_root / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    commands_dir = workspace / ".openagent" / "commands"
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    (workspace / "notes.txt").write_text("Alpha note\nBeta note\n", encoding="utf-8")
+    (commands_dir / "review.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "description: Review a target file.",
+                "agent: reviewer",
+                "model: gpt-command",
+                "---",
+                "Review $1 with all args: $ARGUMENTS.",
+                "",
+                "@notes.txt",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    parser = build_parser()
+    parser_cases: dict[str, Any] = {}
+    for name, argv, keys in [
+        ("default", [], ["command", "base_url", "model", "wire_api", "max_steps", "workspace", "skip_doctor"]),
+        ("doctor_json", ["doctor", "--format", "json"], ["command", "format", "base_url", "model"]),
+        (
+            "run_json",
+            ["run", "--workspace", str(workspace), "--skip-doctor", "--format", "json", "hello", "world"],
+            ["command", "workspace", "skip_doctor", "format", "message"],
+        ),
+        (
+            "mcp_add",
+            ["mcp", "add", "demo", "--config", str(fixture_root / "mcp.json"), "--url", "https://example.com/mcp"],
+            ["command", "mcp_command", "name", "url", "transport", "timeout_ms", "format"],
+        ),
+    ]:
+        args = parser.parse_args(argv)
+        parser_cases[name] = {"argv": argv, "namespace": _namespace_subset(args, keys)}
+
+    with patch.dict(os.environ, {}, clear=True):
+        default_args = parser.parse_args([])
+        apply_model_env(default_args)
+        default_env = {
+            key: os.environ.get(key)
+            for key in ("OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_WIRE_API", "OPENAGENT_APP_MAX_STEPS")
+        }
+
+    with patch.dict(os.environ, {"OPENAI_MODEL": "env-model"}, clear=True):
+        override_args = parser.parse_args(
+            [
+                "tui",
+                "--base-url",
+                "http://127.0.0.1:9999",
+                "--model",
+                "gpt-test",
+                "--wire-api",
+                "chat",
+                "--max-steps",
+                "8",
+            ]
+        )
+        apply_model_env(override_args)
+        override_env = {
+            key: os.environ.get(key)
+            for key in ("OPENAI_BASE_URL", "OPENAI_MODEL", "OPENAI_WIRE_API", "OPENAGENT_APP_MAX_STEPS")
+        }
+
+    doctor_text_stdout = io.StringIO()
+    with patch.dict(
+        os.environ,
+        {
+            "OPENAI_BASE_URL": "http://gateway.test",
+            "OPENAI_MODEL": "gpt-test",
+            "OPENAI_WIRE_API": "chat",
+        },
+        clear=True,
+    ), patch("openagent.cli.main.check_models_endpoint", return_value=(True, "http://gateway.test/v1/models")):
+        doctor_text_code = run_doctor_command(parser.parse_args(["doctor"]), stdout=doctor_text_stdout)
+
+    doctor_json_stdout = io.StringIO()
+    with patch.dict(
+        os.environ,
+        {
+            "OPENAI_API_KEY": "private-key",
+            "OPENAI_BASE_URL": "http://gateway.test",
+            "OPENAI_MODEL": "gpt-test",
+            "OPENAI_WIRE_API": "responses",
+        },
+        clear=True,
+    ), patch("openagent.cli.main.check_models_endpoint", return_value=(False, "connection refused")):
+        doctor_json_code = run_doctor_command(parser.parse_args(["doctor", "--format", "json"]), stdout=doctor_json_stdout)
+
+    doctor_anthropic_stdout = io.StringIO()
+    with patch.dict(
+        os.environ,
+        {
+            "OPENAGENT_PROVIDER": "anthropic",
+            "ANTHROPIC_API_KEY": "anthropic-private-key",
+            "ANTHROPIC_MODEL": "claude-test",
+        },
+        clear=True,
+    ), patch("openagent.cli.main.check_models_endpoint") as check_endpoint:
+        with patch("openagent.cli.main._native_provider_dependency_status", return_value=(True, "optional dependency 'anthropic' is installed")):
+            anthropic_args = parser.parse_args(["doctor", "--format", "json"])
+            apply_model_env(anthropic_args)
+            doctor_anthropic_code = run_doctor_command(anthropic_args, stdout=doctor_anthropic_stdout)
+        doctor_anthropic_checked_openai = check_endpoint.called
+
+    auth_file = fixture_root / "auth.json"
+    with patch.dict(os.environ, {}, clear=True), patch("time.time", return_value=1781842000.123):
+        auth_login = _run_cli_json_fixture(
+            run_auth_command,
+            parser.parse_args(
+                [
+                    "auth",
+                    "login",
+                    "--auth-file",
+                    str(auth_file),
+                    "--provider",
+                    "Groq",
+                    "--api-key",
+                    "groq-secret",
+                    "--model",
+                    "llama-fixture",
+                    "--base-url",
+                    "https://api.groq.example/v1",
+                ]
+            ),
+        )
+    with patch.dict(os.environ, {}, clear=True):
+        auth_list = _run_cli_json_fixture(
+            run_auth_command,
+            parser.parse_args(["providers", "list", "--auth-file", str(auth_file), "--format", "json"]),
+        )
+        auth_methods = _run_cli_json_fixture(
+            run_auth_command,
+            parser.parse_args(["auth", "methods", "openrouter", "--format", "json"]),
+        )
+
+    command_list = _run_cli_json_fixture(
+        run_custom_command,
+        parser.parse_args(["command", "list", "--workspace", str(workspace), "--format", "json"]),
+    )
+    command_show = _run_cli_json_fixture(
+        run_custom_command,
+        parser.parse_args(["command", "show", "review", "--workspace", str(workspace), "--format", "json"]),
+    )
+    command_render_text = _run_cli_fixture(
+        run_custom_command,
+        parser.parse_args(["command", "render", "review", "notes.txt", "carefully", "--workspace", str(workspace), "--no-shell"]),
+    )
+    command_render_json = _run_cli_json_fixture(
+        run_custom_command,
+        parser.parse_args(["command", "render", "review", "notes.txt", "carefully", "--workspace", str(workspace), "--no-shell", "--format", "json"]),
+    )
+
+    config_args = parser.parse_args(
+        [
+            "config",
+            "init",
+            "--workspace",
+            str(workspace),
+            "--api-key",
+            "private-key",
+            "--base-url",
+            "http://config.test/v1",
+            "--model",
+            "gpt-config",
+            "--wire-api",
+            "responses",
+            "--max-steps",
+            "12",
+            "--format",
+            "json",
+        ]
+    )
+    config_init = _run_cli_json_fixture(run_config_command, config_args)
+    with patch.dict(os.environ, {}, clear=True):
+        config_show = _run_cli_json_fixture(
+            run_config_command,
+            parser.parse_args(
+                [
+                    "config",
+                    "show",
+                    "--workspace",
+                    str(workspace),
+                    "--auth-file",
+                    str(auth_file),
+                    "--server-token",
+                    "server-secret",
+                    "--format",
+                    "json",
+                ]
+            ),
+        )
+
+    mcp_path = fixture_root / "mcp.json"
+    mcp_add = _run_cli_json_fixture(
+        run_mcp_command,
+        parser.parse_args(
+            [
+                "mcp",
+                "add",
+                "demo",
+                "--config",
+                str(mcp_path),
+                "--url",
+                "https://client:basic-secret@example.com/mcp?token=url-secret&safe=1",
+                "--transport",
+                "http",
+                "--header",
+                "Authorization=Bearer secret-token",
+                "--header",
+                "X-Team=platform",
+                "--timeout-ms",
+                "45000",
+                "--format",
+                "json",
+            ]
+        ),
+    )
+    mcp_list_table = _run_cli_fixture(
+        run_mcp_command,
+        parser.parse_args(["mcp", "list", "--config", str(mcp_path)]),
+    )
+    mcp_doctor = _run_cli_json_fixture(
+        run_mcp_command,
+        parser.parse_args(["mcp", "doctor", "--config", str(mcp_path), "--format", "json"]),
+    )
+
+    payload = {
+        "schema_version": 1,
+        "parser": parser_cases,
+        "model_env": {"default": default_env, "override": override_env},
+        "doctor": {
+            "text_ok": {
+                "exit_code": doctor_text_code,
+                "stdout": doctor_text_stdout.getvalue(),
+            },
+            "json_failed": {
+                "exit_code": doctor_json_code,
+                "json": json.loads(doctor_json_stdout.getvalue()),
+                "stdout": doctor_json_stdout.getvalue(),
+            },
+            "anthropic_json": {
+                "exit_code": doctor_anthropic_code,
+                "json": json.loads(doctor_anthropic_stdout.getvalue()),
+                "stdout": doctor_anthropic_stdout.getvalue(),
+                "openai_probe_called": doctor_anthropic_checked_openai,
+            },
+        },
+        "auth": {
+            "login": auth_login,
+            "list": auth_list,
+            "methods": auth_methods,
+        },
+        "custom_commands": {
+            "list": command_list,
+            "show": command_show,
+            "render_text": command_render_text,
+            "render_json": command_render_json,
+        },
+        "config": {
+            "init": config_init,
+            "show": config_show,
+        },
+        "mcp_cli": {
+            "add": mcp_add,
+            "list_table": mcp_list_table,
+            "doctor": mcp_doctor,
+        },
+    }
+    scrubbed = _scrub_fixture_root(payload, fixture_root)
+    rendered = json.dumps(scrubbed, ensure_ascii=False)
+    for secret in (
+        "private-key",
+        "server-secret",
+        "groq-secret",
+        "secret-token",
+        "basic-secret",
+        "url-secret",
+        "anthropic-private-key",
+    ):
+        if secret in rendered:
+            raise AssertionError(f"CLI fixture leaked secret: {secret}")
+    return scrubbed
+
+
 def capture(output_dir: Path) -> None:
     fixtures = {
         "core_protocol.json": _core_protocol_fixture(),
@@ -1777,6 +2098,7 @@ def capture(output_dir: Path) -> None:
         "provider_adapters.json": _provider_adapters_fixture(),
         "session_trace_observability.json": _session_trace_observability_fixture(),
         "mcp_runtime.json": _mcp_runtime_fixture(),
+        "cli_commands.json": _cli_commands_fixture(),
     }
     for name, payload in fixtures.items():
         _write_json(output_dir, name, payload)
