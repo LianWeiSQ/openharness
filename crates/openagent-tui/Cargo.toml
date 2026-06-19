@@ -1,0 +1,18 @@
+[package]
+name = "openagent-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openagent-app-server-client.workspace = true
+openagent-core.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "openagent-tui"
+path = "src/main.rs"

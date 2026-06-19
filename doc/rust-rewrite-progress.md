@@ -5,6 +5,54 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 1 - Rust Workspace
+
+Status: complete.
+
+Changed:
+
+- Added a root Cargo workspace.
+- Added initial Rust crate boundaries for protocol, core, tools, provider,
+  session, swarm, MCP, eval, CLI, App Bridge server/client, TUI, and HTTP
+  runtime.
+- Added lightweight crate smoke tests so each crate compiles and proves its
+  intended dependency boundary.
+- Added placeholder binaries for `openagent`, `openagent-swarm`,
+  `openagent-tui`, and `openagent-http-runtime`.
+- Added a Rust GitHub Actions workflow for fmt, clippy, and tests.
+- Added `target/` to `.gitignore`.
+
+Verification:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- Rust workspace tests: 13 crate libraries plus 4 placeholder binaries compile;
+  all crate smoke tests pass.
+- Goal 0 fixture drift test: 1 test OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- Goal 1 intentionally contains only crate boundaries and smoke tests. Runtime
+  behavior migration starts in Goal 2.
+- GitHub Actions was added but remote CI status must be checked after the branch
+  is pushed.
+
+Next:
+
+- Goal 2: implement Rust protocol/data model types and compare serde JSON
+  against the Goal 0 golden fixtures.
+
+---
+
 ## 2026-06-19 Goal 0 - Python Behavior Oracle
 
 Status: complete.
