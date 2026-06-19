@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "crates/openagent-app-server",
+    "crates/openagent-app-server-client",
+    "crates/openagent-cli",
+    "crates/openagent-core",
+    "crates/openagent-eval",
+    "crates/openagent-http-runtime",
+    "crates/openagent-mcp",
+    "crates/openagent-protocol",
+    "crates/openagent-provider",
+    "crates/openagent-session",
+    "crates/openagent-swarm",
+    "crates/openagent-tools",
+    "crates/openagent-tui",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+repository = "https://github.com/LianWeiSQ/openagent-ai"
+rust-version = "1.85"
+
+[workspace.dependencies]
+openagent-app-server = { path = "crates/openagent-app-server" }
+openagent-app-server-client = { path = "crates/openagent-app-server-client" }
+openagent-core = { path = "crates/openagent-core" }
+openagent-protocol = { path = "crates/openagent-protocol" }
+openagent-provider = { path = "crates/openagent-provider" }
+openagent-session = { path = "crates/openagent-session" }
+openagent-swarm = { path = "crates/openagent-swarm" }
+openagent-tools = { path = "crates/openagent-tools" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"

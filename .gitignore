@@ -16,6 +16,7 @@ uv.lock
 htmlcov/
 dist/
 build/
+target/
 *.egg-info/
 runs/
 jobs/

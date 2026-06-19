@@ -1,0 +1,20 @@
+[package]
+name = "openagent-http-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openagent-app-server.workspace = true
+openagent-core.workspace = true
+openagent-provider.workspace = true
+openagent-session.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "openagent-http-runtime"
+path = "src/main.rs"

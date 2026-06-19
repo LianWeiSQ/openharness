@@ -1,0 +1,14 @@
+[package]
+name = "openagent-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+openagent-protocol.workspace = true
+openagent-tools.workspace = true
+
+[lints]
+workspace = true
