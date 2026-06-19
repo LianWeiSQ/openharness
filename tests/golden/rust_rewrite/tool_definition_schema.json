@@ -1,0 +1,56 @@
+{
+  "description": "Fixture tool for Rust schema parity.",
+  "execution_schema": {
+    "batch_group": "fixture",
+    "concurrency": "safe",
+    "conflict_key_template": null,
+    "external_io": false,
+    "max_parallelism": 2,
+    "mutates_external": false,
+    "mutates_session": false,
+    "mutates_workspace": false,
+    "read_only": true,
+    "requires_user_interaction": false
+  },
+  "execution_scope": "workspace",
+  "group": "fixture",
+  "parameters_schema": {
+    "properties": {
+      "include_hidden": {
+        "type": "boolean"
+      },
+      "labels": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "max_lines": {
+        "type": "integer"
+      },
+      "mode": {
+        "enum": [
+          "preview",
+          "apply"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "description": "Relative path inside the workspace.",
+        "type": "string"
+      },
+      "weights": {
+        "additionalProperties": {
+          "type": "integer"
+        },
+        "type": "object"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "schema_version": 1,
+  "tool_id": "fixture_tool"
+}

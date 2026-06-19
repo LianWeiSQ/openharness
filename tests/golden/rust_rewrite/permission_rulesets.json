@@ -1,0 +1,139 @@
+{
+  "rulesets": {
+    "FULL": {
+      "name": "FULL",
+      "rules": [
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "*"
+        }
+      ]
+    },
+    "NONE": {
+      "name": "NONE",
+      "rules": [
+        {
+          "action": "deny",
+          "condition": null,
+          "pattern": "*",
+          "tool": "*"
+        }
+      ]
+    },
+    "PLAN_ONLY": {
+      "name": "PLAN_ONLY",
+      "rules": [
+        {
+          "action": "ask",
+          "condition": null,
+          "pattern": "*",
+          "tool": "*"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "read"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "glob"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "grep"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "ls"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "skill"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "todoread"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "todowrite"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "question"
+        }
+      ]
+    },
+    "READONLY": {
+      "name": "READONLY",
+      "rules": [
+        {
+          "action": "deny",
+          "condition": null,
+          "pattern": "*",
+          "tool": "*"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "read"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "glob"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "grep"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "ls"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "skill"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "todoread"
+        },
+        {
+          "action": "allow",
+          "condition": null,
+          "pattern": "*",
+          "tool": "question"
+        }
+      ]
+    }
+  },
+  "schema_version": 1
+}

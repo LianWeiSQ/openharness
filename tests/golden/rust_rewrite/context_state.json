@@ -1,0 +1,42 @@
+{
+  "compaction_record": {
+    "compacted_until": 7,
+    "format": "structured_work_state",
+    "schema_version": 1,
+    "source": "model_json",
+    "state": {
+      "blockers": [],
+      "decisions": [
+        "Fixtures must be deterministic."
+      ],
+      "files": [
+        {
+          "note": "Goal 0 contract.",
+          "path": "doc/rust-rewrite-plan.md",
+          "status": "created"
+        }
+      ],
+      "next_steps": [
+        "Implement Rust protocol crate."
+      ],
+      "open_questions": [],
+      "progress": [
+        "Captured protocol fixtures."
+      ],
+      "risks": [
+        "Later live-provider smoke tests need credentials."
+      ],
+      "task": "Freeze Python behavior for Rust rewrite.",
+      "todos": [
+        "Compare Rust serde output against fixtures."
+      ],
+      "tool_findings": [
+        "No live network calls are required."
+      ]
+    },
+    "summary": "[Structured work state]\nTask:\nFreeze Python behavior for Rust rewrite.\n\nProgress:\n- Captured protocol fixtures.\n\nDecisions:\n- Fixtures must be deterministic.\n\nFiles:\n- doc/rust-rewrite-plan.md (created) - Goal 0 contract.\n\nTool findings:\n- No live network calls are required.\n\nTodos:\n- Compare Rust serde output against fixtures.\n\nNext steps:\n- Implement Rust protocol crate.\n\nRisks:\n- Later live-provider smoke tests need credentials.",
+    "updated_at": 1781840000000
+  },
+  "rendered": "[Structured work state]\nTask:\nFreeze Python behavior for Rust rewrite.\n\nProgress:\n- Captured protocol fixtures.\n\nDecisions:\n- Fixtures must be deterministic.\n\nFiles:\n- doc/rust-rewrite-plan.md (created) - Goal 0 contract.\n\nTool findings:\n- No live network calls are required.\n\nTodos:\n- Compare Rust serde output against fixtures.\n\nNext steps:\n- Implement Rust protocol crate.\n\nRisks:\n- Later live-provider smoke tests need credentials.",
+  "schema_version": 1
+}

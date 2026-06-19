@@ -1,0 +1,176 @@
+{
+  "model": {
+    "capabilities": {
+      "reasoning": false,
+      "streaming": true,
+      "tools": true,
+      "vision": true
+    },
+    "context_window": 128000,
+    "id": "gpt-fixture",
+    "max_output": 4096,
+    "name": "Fixture Model",
+    "pricing": {
+      "input_per_1m": 1.25,
+      "output_per_1m": 10.0
+    },
+    "provider_id": "openai"
+  },
+  "openai_payload": {
+    "messages": [
+      {
+        "content": "You are OpenAgent.",
+        "role": "system"
+      },
+      {
+        "content": "Inspect README.md.",
+        "role": "user"
+      },
+      {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\": \"README.md\"}",
+              "name": "read"
+            },
+            "id": "call_fixture_read",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "OpenAgent fixture output",
+        "role": "tool",
+        "tool_call_id": "call_fixture_read"
+      },
+      {
+        "content": "README.md was inspected.",
+        "role": "assistant"
+      }
+    ],
+    "model": "gpt-fixture",
+    "provider_options": {
+      "temperature": 0.2
+    },
+    "tools": [
+      {
+        "function": {
+          "description": "Read a workspace file.",
+          "name": "read",
+          "parameters": {
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  },
+  "runtime_option_keys": [
+    "compaction",
+    "context_budget",
+    "logging",
+    "observability",
+    "runtime_warnings",
+    "session_store",
+    "trace"
+  ],
+  "schema_version": 1,
+  "stream_events": [
+    {
+      "snapshot_id": "snapshot_fixture",
+      "type": "step-start"
+    },
+    {
+      "id": "text_fixture",
+      "metadata": {
+        "channel": "final"
+      },
+      "type": "text-start"
+    },
+    {
+      "id": "text_fixture",
+      "text": "hello",
+      "type": "text-delta"
+    },
+    {
+      "id": "text_fixture",
+      "type": "text-end"
+    },
+    {
+      "call_id": "call_fixture_read",
+      "input": {
+        "path": "README.md"
+      },
+      "name": "read",
+      "type": "tool-call"
+    },
+    {
+      "call_id": "call_fixture_read",
+      "error": null,
+      "metadata": {
+        "bytes": 24,
+        "tool": "read"
+      },
+      "output": "OpenAgent fixture output",
+      "type": "tool-result"
+    },
+    {
+      "cost": 0.00123,
+      "finish_reason": "stop",
+      "tokens": {
+        "input": 123,
+        "output": 45
+      },
+      "type": "step-finish"
+    }
+  ],
+  "tool_call": {
+    "call_id": "call_fixture_read",
+    "input": {
+      "path": "README.md"
+    },
+    "name": "read"
+  },
+  "tool_call_key": "read:{\"path\": \"README.md\"}",
+  "tool_result": {
+    "call_id": "call_fixture_read",
+    "error": null,
+    "metadata": {
+      "bytes": 24,
+      "tool": "read"
+    },
+    "output": "OpenAgent fixture output"
+  },
+  "tool_schema": {
+    "dangerous": false,
+    "description": "Read a workspace file.",
+    "group": "workspace",
+    "name": "read",
+    "schema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "usage": {
+    "cost": 0.00123,
+    "input_tokens": 123,
+    "output_tokens": 45
+  }
+}
