@@ -25,7 +25,9 @@ from openagent.core.context_budget import (
     load_context_budget_options,
 )
 from openagent.core.context_pack import ContextItem, ContextPackBuildOptions, ContextPackBuilder, estimate_text_tokens
+from openagent.core.agent.universal import UniversalAgent
 from openagent.core.instructions import InstructionContextLoader, InstructionLoadOptions
+from openagent.core.loop.processor import AgentLoop, AgentLoopConfig
 from openagent.core.message_materializer import RUNTIME_OPTION_KEYS, materialize_openai_compatible_payload
 from openagent.core.observability import (
     ObservationConfig,
@@ -55,8 +57,9 @@ from openagent.core.runtime_warnings import (
     RuntimeWarningRecord,
     format_runtime_warning_event,
 )
+from openagent.core.session.session import Session
 from openagent.core.session.todo import TodoItem
-from openagent.core.tool.definition import ToolDefinition, ToolExecutionSchema
+from openagent.core.tool.definition import ToolContext, ToolDefinition, ToolExecutionSchema, ToolOutput
 from openagent.core.tool.builtin import file as file_tools
 from openagent.core.tool.builtin import memory as memory_tools
 from openagent.core.tool.builtin import question as question_tools
@@ -66,6 +69,7 @@ from openagent.core.tool.builtin import todo as todo_tools
 from openagent.core.tool.builtin.file import _format_read_output_from_text
 from openagent.core.tool.builtin.shell import _blocked_command
 from openagent.core.tool.registry import ToolRegistry
+from openagent.core.tool.toolkit import ToolkitAdapter
 from openagent.core.tool.truncation import Truncate
 from openagent.core.tool.utils import ensure_within_root
 from openagent.core.skill import SkillRegistry
@@ -73,10 +77,12 @@ from openagent.core.trace import render_trace_summary
 from openagent.core.trace.recorder import sanitize_trace_value
 from openagent.core.trace.schema import RunRecord, TraceConfig, TraceEvent
 from openagent.core.types import (
+    AgentConfig,
     ChatMessage,
     Model,
     ModelCapabilities,
     ModelPricing,
+    SessionStatus,
     ToolCall,
     ToolResult,
     ToolSchema,
@@ -102,6 +108,42 @@ class FixtureToolParams:
     include_hidden: bool = False
     labels: list[str] = field(default_factory=list)
     weights: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class FixtureEchoParams:
+    value: str = "ok"
+
+
+@dataclass(slots=True)
+class _FixtureScriptedLanguageModel:
+    script: list[list[dict[str, Any]] | Exception]
+    call_index: int = 0
+    seen_tools_by_call: list[list[str]] = field(default_factory=list)
+    seen_messages_by_call: list[list[ChatMessage]] = field(default_factory=list)
+    seen_max_output_tokens_by_call: list[int | None] = field(default_factory=list)
+
+    async def stream(
+        self,
+        *,
+        system: str | None,
+        messages: list[ChatMessage],
+        tools: list[ToolSchema],
+        temperature: float | None = None,
+        max_output_tokens: int | None = None,
+        options: dict[str, Any] | None = None,
+    ):
+        del system, temperature, options
+        index = self.call_index
+        self.call_index += 1
+        self.seen_tools_by_call.append([getattr(tool, "name", str(tool)) for tool in tools])
+        self.seen_messages_by_call.append(list(messages))
+        self.seen_max_output_tokens_by_call.append(max_output_tokens)
+        item = self.script[index] if index < len(self.script) else [{"type": "finish", "finish_reason": "stop", "usage": {}}]
+        if isinstance(item, Exception):
+            raise item
+        for event in item:
+            yield event
 
 
 class _FixtureOpenAIResponse:
@@ -971,6 +1013,249 @@ def _provider_adapters_fixture() -> dict[str, Any]:
     return asyncio.run(_provider_adapters_fixture_async())
 
 
+def _loop_model_metadata() -> Model:
+    return Model(
+        id="loop-model",
+        provider_id="test",
+        name="Loop Test Model",
+        context_window=8192,
+        max_output=256,
+    )
+
+
+def _loop_toolkit() -> ToolkitAdapter:
+    toolkit = ToolkitAdapter()
+
+    async def _run_echo(args: FixtureEchoParams, _ctx: ToolContext) -> ToolOutput:
+        return ToolOutput(title="Echo", output=f"echo:{args.value}", metadata={"kind": "fixture_echo"})
+
+    toolkit.registry.define_tool(
+        tool_id="fixture_echo",
+        parameters=FixtureEchoParams,
+        description="Echo a deterministic fixture value.",
+        execution_scope="agnostic",
+        execution_schema=ToolExecutionSchema.readonly(batch_group="fixture"),
+    )(_run_echo)
+    return toolkit
+
+
+def _loop_tool_call_step(call_id: str, *, name: str = "fixture_echo", input: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return [
+        {"type": "tool-call", "call_id": call_id, "name": name, "input": input or {"value": "alpha"}},
+        {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 2, "output_tokens": 1, "cost": 0.0}},
+    ]
+
+
+def _loop_text_step(text: str, *, input_tokens: int = 3, output_tokens: int = 4, finish_reason: str = "stop") -> list[dict[str, Any]]:
+    return [
+        {"type": "text-delta", "id": "ignored", "text": text},
+        {
+            "type": "finish",
+            "finish_reason": finish_reason,
+            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost": 0.0},
+        },
+    ]
+
+
+def _normalize_loop_event(event: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    normalized = _stable(event)
+    event_type = normalized.get("type")
+    if event_type == "step-start":
+        state["snapshot_count"] = int(state.get("snapshot_count", 0)) + 1
+        normalized["snapshot_id"] = f"snapshot_{state['snapshot_count']}"
+    if event_type in {"text-start", "text-delta", "text-end"}:
+        text_ids = state.setdefault("text_ids", {})
+        text_id = str(normalized.get("id") or "")
+        if text_id not in text_ids:
+            text_ids[text_id] = f"text_{len(text_ids) + 1}"
+        normalized["id"] = text_ids[text_id]
+    if event_type == "question-request":
+        question_ids = state.setdefault("question_ids", {})
+        request_id = str(normalized.get("request_id") or "")
+        if request_id not in question_ids:
+            question_ids[request_id] = f"question_{len(question_ids) + 1}"
+        normalized["request_id"] = question_ids[request_id]
+        normalized["session_id"] = "session_fixture"
+    if event_type == "tool-result":
+        metadata = dict(normalized.get("metadata") or {})
+        if metadata.get("request_id"):
+            question_ids = state.setdefault("question_ids", {})
+            request_id = str(metadata["request_id"])
+            metadata["request_id"] = question_ids.get(request_id, "question_1")
+        normalized["metadata"] = metadata
+    return normalized
+
+
+def _normalize_loop_message(message: ChatMessage, state: dict[str, Any]) -> dict[str, Any]:
+    metadata = _stable(message.metadata)
+    if isinstance(metadata, dict):
+        metadata.pop("message_id", None)
+    if isinstance(metadata, dict) and metadata.get("request_id"):
+        metadata["request_id"] = state.get("question_ids", {}).get(str(metadata["request_id"]), "question_1")
+    return {
+        "role": message.role,
+        "content": message.content,
+        "name": message.name,
+        "tool_call_id": message.tool_call_id,
+        "metadata": metadata,
+    }
+
+
+async def _collect_loop_scenario(
+    *,
+    user_text: str,
+    script: list[list[dict[str, Any]] | Exception],
+    tools: list[str],
+    options: dict[str, Any] | None = None,
+    max_steps: int = 5,
+    doom_loop_threshold: int = 3,
+    reply_questions: bool = False,
+    toolkit: ToolkitAdapter | None = None,
+) -> dict[str, Any]:
+    fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal8")
+    workspace = fixture_root / f"workspace_{len(script)}_{len(user_text)}_{len(tools)}"
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "README.md").write_text("fixture workspace\n", encoding="utf-8")
+
+    model = _FixtureScriptedLanguageModel(script=script)
+    cfg = AgentConfig(
+        name="fixture-agent",
+        permission="FULL",
+        max_steps=max_steps,
+        tools=tools,
+        model=_loop_model_metadata(),
+        options=options or {},
+    )
+    agent = UniversalAgent(config=cfg, model=model, system_prompt="Fixture system prompt.")
+    session = Session(id="session_fixture", directory=workspace)
+    loop = AgentLoop(
+        agent=agent,
+        session=session,
+        permission_manager=PermissionManager(),
+        toolkit=toolkit or _loop_toolkit(),
+        config=AgentLoopConfig(
+            max_steps=max_steps,
+            doom_loop_threshold=doom_loop_threshold,
+            max_retry=1,
+            retry_base_delay_s=0.0,
+        ),
+    )
+    state: dict[str, Any] = {}
+    pause_statuses: list[str] = []
+    events: list[dict[str, Any]] = []
+    async for event in loop.run(user_text):
+        normalized = _normalize_loop_event(event, state)
+        events.append(normalized)
+        if event.get("type") == "question-request":
+            pause_statuses.append(loop.session.status.value if isinstance(loop.session.status, SessionStatus) else str(loop.session.status))
+            if reply_questions:
+                loop.question_manager.reply(str(event["request_id"]), [["Fast path"]])
+
+    return {
+        "input": {
+            "user_text": user_text,
+            "script": [
+                {"error": str(item)} if isinstance(item, Exception) else {"events": item}
+                for item in script
+            ],
+            "tools": tools,
+            "options": options or {},
+            "max_steps": max_steps,
+            "doom_loop_threshold": doom_loop_threshold,
+            "reply_questions": reply_questions,
+        },
+        "events": events,
+        "event_types": [event["type"] for event in events],
+        "model_call_count": model.call_index,
+        "seen_tools_by_call": model.seen_tools_by_call,
+        "seen_max_output_tokens_by_call": model.seen_max_output_tokens_by_call,
+        "pause_statuses": pause_statuses,
+        "final_session_status": loop.session.status.value if isinstance(loop.session.status, SessionStatus) else str(loop.session.status),
+        "session_messages": [_normalize_loop_message(message, state) for message in session.messages],
+    }
+
+
+async def _agent_loop_fixture_async() -> dict[str, Any]:
+    question_step = [
+        {
+            "type": "tool-call",
+            "call_id": "q1",
+            "name": "question",
+            "input": {
+                "questions": [
+                    {
+                        "header": "Plan",
+                        "question": "Which option should we use?",
+                        "options": [
+                            {"label": "Fast path", "description": "Move quickly"},
+                            {"label": "Safe path", "description": "Be conservative"},
+                        ],
+                        "multiple": False,
+                    }
+                ]
+            },
+        },
+        {"type": "finish", "finish_reason": "tool_call", "usage": {"input_tokens": 1, "output_tokens": 1, "cost": 0.0}},
+    ]
+    return {
+        "schema_version": 1,
+        "scenarios": {
+            "multi_step_tool": await _collect_loop_scenario(
+                user_text="run fixture tool",
+                script=[
+                    _loop_tool_call_step("echo_1", input={"value": "alpha"}),
+                    _loop_text_step("Final answer after tool.", input_tokens=5, output_tokens=6),
+                ],
+                tools=["fixture_echo"],
+                max_steps=5,
+            ),
+            "runtime_warning": await _collect_loop_scenario(
+                user_text="warn on usage",
+                script=[_loop_text_step("done", input_tokens=7, output_tokens=6)],
+                tools=[],
+                options={"runtime_warnings": {"enabled": True, "max_step_total_tokens": 10}},
+                max_steps=5,
+            ),
+            "question_pause_reply": await _collect_loop_scenario(
+                user_text="Need a choice",
+                script=[
+                    question_step,
+                    _loop_text_step("Continuing with the chosen plan.", input_tokens=1, output_tokens=1),
+                ],
+                tools=["question"],
+                max_steps=5,
+                reply_questions=True,
+            ),
+            "model_retry": await _collect_loop_scenario(
+                user_text="retry once",
+                script=[
+                    RuntimeError("temporary model outage"),
+                    _loop_text_step("Recovered after retry.", input_tokens=2, output_tokens=2),
+                ],
+                tools=[],
+                max_steps=5,
+            ),
+            "doom_loop": await _collect_loop_scenario(
+                user_text="repeat tool",
+                script=[
+                    _loop_tool_call_step("echo_1", input={"value": "same"}),
+                    _loop_tool_call_step("echo_2", input={"value": "same"}),
+                    _loop_tool_call_step("echo_3", input={"value": "same"}),
+                ],
+                tools=["fixture_echo"],
+                max_steps=6,
+                doom_loop_threshold=3,
+            ),
+        },
+    }
+
+
+def _agent_loop_fixture() -> dict[str, Any]:
+    return asyncio.run(_agent_loop_fixture_async())
+
+
 def _session_trace_observability_fixture() -> dict[str, Any]:
     session_event = {
         "schema_version": "openagent.session_event.v1",
@@ -1204,6 +1489,7 @@ def capture(output_dir: Path) -> None:
         "swarm_protocol.json": _swarm_protocol_fixture(),
         "context_state.json": _context_state_fixture(),
         "core_context_policy.json": _core_context_policy_fixture(),
+        "agent_loop.json": _agent_loop_fixture(),
         "provider_adapters.json": _provider_adapters_fixture(),
         "session_trace_observability.json": _session_trace_observability_fixture(),
     }

@@ -1,0 +1,1015 @@
+{
+  "scenarios": {
+    "doom_loop": {
+      "event_types": [
+        "step-start",
+        "tool-call",
+        "tool-result",
+        "step-finish",
+        "step-start",
+        "tool-call",
+        "tool-result",
+        "step-finish",
+        "step-start",
+        "tool-call",
+        "error"
+      ],
+      "events": [
+        {
+          "snapshot_id": "snapshot_1",
+          "type": "step-start"
+        },
+        {
+          "call_id": "echo_1",
+          "input": {
+            "value": "same"
+          },
+          "name": "fixture_echo",
+          "type": "tool-call"
+        },
+        {
+          "call_id": "echo_1",
+          "error": null,
+          "metadata": {
+            "context_preview": "echo:same",
+            "kind": "fixture_echo",
+            "original_bytes": 9,
+            "original_lines": 1,
+            "output_truncated": false,
+            "title": "Echo",
+            "tool": "fixture_echo",
+            "truncated": false
+          },
+          "output": "echo:same",
+          "type": "tool-result"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "tool_call",
+          "tokens": {
+            "input": 2,
+            "output": 1
+          },
+          "type": "step-finish"
+        },
+        {
+          "snapshot_id": "snapshot_2",
+          "type": "step-start"
+        },
+        {
+          "call_id": "echo_2",
+          "input": {
+            "value": "same"
+          },
+          "name": "fixture_echo",
+          "type": "tool-call"
+        },
+        {
+          "call_id": "echo_2",
+          "error": null,
+          "metadata": {
+            "context_preview": "echo:same",
+            "kind": "fixture_echo",
+            "original_bytes": 9,
+            "original_lines": 1,
+            "output_truncated": false,
+            "title": "Echo",
+            "tool": "fixture_echo",
+            "truncated": false
+          },
+          "output": "echo:same",
+          "type": "tool-result"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "tool_call",
+          "tokens": {
+            "input": 2,
+            "output": 1
+          },
+          "type": "step-finish"
+        },
+        {
+          "snapshot_id": "snapshot_3",
+          "type": "step-start"
+        },
+        {
+          "call_id": "echo_3",
+          "input": {
+            "value": "same"
+          },
+          "name": "fixture_echo",
+          "type": "tool-call"
+        },
+        {
+          "error": "Detected repeated tool-call loop (threshold=3): fixture_echo {\"value\": \"same\"}",
+          "type": "error"
+        }
+      ],
+      "final_session_status": "stop",
+      "input": {
+        "doom_loop_threshold": 3,
+        "max_steps": 6,
+        "options": {},
+        "reply_questions": false,
+        "script": [
+          {
+            "events": [
+              {
+                "call_id": "echo_1",
+                "input": {
+                  "value": "same"
+                },
+                "name": "fixture_echo",
+                "type": "tool-call"
+              },
+              {
+                "finish_reason": "tool_call",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 2,
+                  "output_tokens": 1
+                }
+              }
+            ]
+          },
+          {
+            "events": [
+              {
+                "call_id": "echo_2",
+                "input": {
+                  "value": "same"
+                },
+                "name": "fixture_echo",
+                "type": "tool-call"
+              },
+              {
+                "finish_reason": "tool_call",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 2,
+                  "output_tokens": 1
+                }
+              }
+            ]
+          },
+          {
+            "events": [
+              {
+                "call_id": "echo_3",
+                "input": {
+                  "value": "same"
+                },
+                "name": "fixture_echo",
+                "type": "tool-call"
+              },
+              {
+                "finish_reason": "tool_call",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 2,
+                  "output_tokens": 1
+                }
+              }
+            ]
+          }
+        ],
+        "tools": [
+          "fixture_echo"
+        ],
+        "user_text": "repeat tool"
+      },
+      "model_call_count": 3,
+      "pause_statuses": [],
+      "seen_max_output_tokens_by_call": [
+        256,
+        256,
+        256
+      ],
+      "seen_tools_by_call": [
+        [
+          "fixture_echo"
+        ],
+        [
+          "fixture_echo"
+        ],
+        [
+          "fixture_echo"
+        ]
+      ],
+      "session_messages": [
+        {
+          "content": "repeat tool",
+          "metadata": {},
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "content": "",
+          "metadata": {
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"value\": \"same\"}",
+                  "name": "fixture_echo"
+                },
+                "id": "echo_1",
+                "type": "function"
+              }
+            ]
+          },
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        },
+        {
+          "content": "[Tool result] fixture_echo\ntitle=Echo\nstatus=ok\ntruncated=False original_lines=1 original_bytes=9 count=0\npreview:\necho:same",
+          "metadata": {
+            "context_preview": "echo:same",
+            "kind": "fixture_echo",
+            "original_bytes": 9,
+            "original_lines": 1,
+            "output_truncated": false,
+            "title": "Echo",
+            "tool": "fixture_echo",
+            "truncated": false
+          },
+          "name": "fixture_echo",
+          "role": "tool",
+          "tool_call_id": "echo_1"
+        },
+        {
+          "content": "",
+          "metadata": {
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"value\": \"same\"}",
+                  "name": "fixture_echo"
+                },
+                "id": "echo_2",
+                "type": "function"
+              }
+            ]
+          },
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        },
+        {
+          "content": "[Tool result] fixture_echo\ntitle=Echo\nstatus=ok\ntruncated=False original_lines=1 original_bytes=9 count=0\npreview:\necho:same",
+          "metadata": {
+            "context_preview": "echo:same",
+            "kind": "fixture_echo",
+            "original_bytes": 9,
+            "original_lines": 1,
+            "output_truncated": false,
+            "title": "Echo",
+            "tool": "fixture_echo",
+            "truncated": false
+          },
+          "name": "fixture_echo",
+          "role": "tool",
+          "tool_call_id": "echo_2"
+        },
+        {
+          "content": "",
+          "metadata": {
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"value\": \"same\"}",
+                  "name": "fixture_echo"
+                },
+                "id": "echo_3",
+                "type": "function"
+              }
+            ]
+          },
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        }
+      ]
+    },
+    "model_retry": {
+      "event_types": [
+        "step-start",
+        "text-start",
+        "text-delta",
+        "text-end",
+        "step-finish"
+      ],
+      "events": [
+        {
+          "snapshot_id": "snapshot_1",
+          "type": "step-start"
+        },
+        {
+          "id": "text_1",
+          "metadata": null,
+          "type": "text-start"
+        },
+        {
+          "id": "text_1",
+          "text": "Recovered after retry.",
+          "type": "text-delta"
+        },
+        {
+          "id": "text_1",
+          "type": "text-end"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "stop",
+          "tokens": {
+            "input": 2,
+            "output": 2
+          },
+          "type": "step-finish"
+        }
+      ],
+      "final_session_status": "stop",
+      "input": {
+        "doom_loop_threshold": 3,
+        "max_steps": 5,
+        "options": {},
+        "reply_questions": false,
+        "script": [
+          {
+            "error": "temporary model outage"
+          },
+          {
+            "events": [
+              {
+                "id": "ignored",
+                "text": "Recovered after retry.",
+                "type": "text-delta"
+              },
+              {
+                "finish_reason": "stop",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 2,
+                  "output_tokens": 2
+                }
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "user_text": "retry once"
+      },
+      "model_call_count": 2,
+      "pause_statuses": [],
+      "seen_max_output_tokens_by_call": [
+        256,
+        256
+      ],
+      "seen_tools_by_call": [
+        [],
+        []
+      ],
+      "session_messages": [
+        {
+          "content": "retry once",
+          "metadata": {},
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "content": "Recovered after retry.",
+          "metadata": {},
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        }
+      ]
+    },
+    "multi_step_tool": {
+      "event_types": [
+        "step-start",
+        "tool-call",
+        "tool-result",
+        "step-finish",
+        "step-start",
+        "text-start",
+        "text-delta",
+        "text-end",
+        "step-finish"
+      ],
+      "events": [
+        {
+          "snapshot_id": "snapshot_1",
+          "type": "step-start"
+        },
+        {
+          "call_id": "echo_1",
+          "input": {
+            "value": "alpha"
+          },
+          "name": "fixture_echo",
+          "type": "tool-call"
+        },
+        {
+          "call_id": "echo_1",
+          "error": null,
+          "metadata": {
+            "context_preview": "echo:alpha",
+            "kind": "fixture_echo",
+            "original_bytes": 10,
+            "original_lines": 1,
+            "output_truncated": false,
+            "title": "Echo",
+            "tool": "fixture_echo",
+            "truncated": false
+          },
+          "output": "echo:alpha",
+          "type": "tool-result"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "tool_call",
+          "tokens": {
+            "input": 2,
+            "output": 1
+          },
+          "type": "step-finish"
+        },
+        {
+          "snapshot_id": "snapshot_2",
+          "type": "step-start"
+        },
+        {
+          "id": "text_1",
+          "metadata": null,
+          "type": "text-start"
+        },
+        {
+          "id": "text_1",
+          "text": "Final answer after tool.",
+          "type": "text-delta"
+        },
+        {
+          "id": "text_1",
+          "type": "text-end"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "stop",
+          "tokens": {
+            "input": 5,
+            "output": 6
+          },
+          "type": "step-finish"
+        }
+      ],
+      "final_session_status": "stop",
+      "input": {
+        "doom_loop_threshold": 3,
+        "max_steps": 5,
+        "options": {},
+        "reply_questions": false,
+        "script": [
+          {
+            "events": [
+              {
+                "call_id": "echo_1",
+                "input": {
+                  "value": "alpha"
+                },
+                "name": "fixture_echo",
+                "type": "tool-call"
+              },
+              {
+                "finish_reason": "tool_call",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 2,
+                  "output_tokens": 1
+                }
+              }
+            ]
+          },
+          {
+            "events": [
+              {
+                "id": "ignored",
+                "text": "Final answer after tool.",
+                "type": "text-delta"
+              },
+              {
+                "finish_reason": "stop",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 5,
+                  "output_tokens": 6
+                }
+              }
+            ]
+          }
+        ],
+        "tools": [
+          "fixture_echo"
+        ],
+        "user_text": "run fixture tool"
+      },
+      "model_call_count": 2,
+      "pause_statuses": [],
+      "seen_max_output_tokens_by_call": [
+        256,
+        256
+      ],
+      "seen_tools_by_call": [
+        [
+          "fixture_echo"
+        ],
+        [
+          "fixture_echo"
+        ]
+      ],
+      "session_messages": [
+        {
+          "content": "run fixture tool",
+          "metadata": {},
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "content": "",
+          "metadata": {
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"value\": \"alpha\"}",
+                  "name": "fixture_echo"
+                },
+                "id": "echo_1",
+                "type": "function"
+              }
+            ]
+          },
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        },
+        {
+          "content": "[Tool result] fixture_echo\ntitle=Echo\nstatus=ok\ntruncated=False original_lines=1 original_bytes=10 count=0\npreview:\necho:alpha",
+          "metadata": {
+            "context_preview": "echo:alpha",
+            "kind": "fixture_echo",
+            "original_bytes": 10,
+            "original_lines": 1,
+            "output_truncated": false,
+            "title": "Echo",
+            "tool": "fixture_echo",
+            "truncated": false
+          },
+          "name": "fixture_echo",
+          "role": "tool",
+          "tool_call_id": "echo_1"
+        },
+        {
+          "content": "Final answer after tool.",
+          "metadata": {},
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        }
+      ]
+    },
+    "question_pause_reply": {
+      "event_types": [
+        "step-start",
+        "tool-call",
+        "question-request",
+        "tool-result",
+        "step-finish",
+        "step-start",
+        "text-start",
+        "text-delta",
+        "text-end",
+        "step-finish"
+      ],
+      "events": [
+        {
+          "snapshot_id": "snapshot_1",
+          "type": "step-start"
+        },
+        {
+          "call_id": "q1",
+          "input": {
+            "questions": [
+              {
+                "header": "Plan",
+                "multiple": false,
+                "options": [
+                  {
+                    "description": "Move quickly",
+                    "label": "Fast path"
+                  },
+                  {
+                    "description": "Be conservative",
+                    "label": "Safe path"
+                  }
+                ],
+                "question": "Which option should we use?"
+              }
+            ]
+          },
+          "name": "question",
+          "type": "tool-call"
+        },
+        {
+          "questions": [
+            {
+              "header": "Plan",
+              "multiple": false,
+              "options": [
+                {
+                  "description": "Move quickly",
+                  "label": "Fast path"
+                },
+                {
+                  "description": "Be conservative",
+                  "label": "Safe path"
+                }
+              ],
+              "question": "Which option should we use?"
+            }
+          ],
+          "request_id": "question_1",
+          "session_id": "session_fixture",
+          "tool_call_id": "q1",
+          "type": "question-request"
+        },
+        {
+          "call_id": "q1",
+          "error": null,
+          "metadata": {
+            "answers": [
+              [
+                "Fast path"
+              ]
+            ],
+            "context_preview": "User has answered your questions: \"Which option should we use?\"=\"Fast path\". You can now continue with the user's answers in mind.",
+            "count": 1,
+            "original_bytes": 130,
+            "original_lines": 1,
+            "output_truncated": false,
+            "questions": [
+              {
+                "header": "Plan",
+                "multiple": false,
+                "options": [
+                  {
+                    "description": "Move quickly",
+                    "label": "Fast path"
+                  },
+                  {
+                    "description": "Be conservative",
+                    "label": "Safe path"
+                  }
+                ],
+                "question": "Which option should we use?"
+              }
+            ],
+            "request_id": "question_1",
+            "title": "Asked 1 question",
+            "tool": "question",
+            "truncated": false
+          },
+          "output": "User has answered your questions: \"Which option should we use?\"=\"Fast path\". You can now continue with the user's answers in mind.",
+          "type": "tool-result"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "tool_call",
+          "tokens": {
+            "input": 1,
+            "output": 1
+          },
+          "type": "step-finish"
+        },
+        {
+          "snapshot_id": "snapshot_2",
+          "type": "step-start"
+        },
+        {
+          "id": "text_1",
+          "metadata": null,
+          "type": "text-start"
+        },
+        {
+          "id": "text_1",
+          "text": "Continuing with the chosen plan.",
+          "type": "text-delta"
+        },
+        {
+          "id": "text_1",
+          "type": "text-end"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "stop",
+          "tokens": {
+            "input": 1,
+            "output": 1
+          },
+          "type": "step-finish"
+        }
+      ],
+      "final_session_status": "stop",
+      "input": {
+        "doom_loop_threshold": 3,
+        "max_steps": 5,
+        "options": {},
+        "reply_questions": true,
+        "script": [
+          {
+            "events": [
+              {
+                "call_id": "q1",
+                "input": {
+                  "questions": [
+                    {
+                      "header": "Plan",
+                      "multiple": false,
+                      "options": [
+                        {
+                          "description": "Move quickly",
+                          "label": "Fast path"
+                        },
+                        {
+                          "description": "Be conservative",
+                          "label": "Safe path"
+                        }
+                      ],
+                      "question": "Which option should we use?"
+                    }
+                  ]
+                },
+                "name": "question",
+                "type": "tool-call"
+              },
+              {
+                "finish_reason": "tool_call",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 1,
+                  "output_tokens": 1
+                }
+              }
+            ]
+          },
+          {
+            "events": [
+              {
+                "id": "ignored",
+                "text": "Continuing with the chosen plan.",
+                "type": "text-delta"
+              },
+              {
+                "finish_reason": "stop",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 1,
+                  "output_tokens": 1
+                }
+              }
+            ]
+          }
+        ],
+        "tools": [
+          "question"
+        ],
+        "user_text": "Need a choice"
+      },
+      "model_call_count": 2,
+      "pause_statuses": [
+        "paused"
+      ],
+      "seen_max_output_tokens_by_call": [
+        256,
+        256
+      ],
+      "seen_tools_by_call": [
+        [
+          "question"
+        ],
+        [
+          "question"
+        ]
+      ],
+      "session_messages": [
+        {
+          "content": "Need a choice",
+          "metadata": {},
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "content": "",
+          "metadata": {
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"questions\": [{\"header\": \"Plan\", \"question\": \"Which option should we use?\", \"options\": [{\"label\": \"Fast path\", \"description\": \"Move quickly\"}, {\"label\": \"Safe path\", \"description\": \"Be conservative\"}], \"multiple\": false}]}",
+                  "name": "question"
+                },
+                "id": "q1",
+                "type": "function"
+              }
+            ]
+          },
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        },
+        {
+          "content": "[Tool result] question\ntitle=Asked 1 question\nstatus=ok\ntruncated=False original_lines=1 original_bytes=130 count=1\npreview:\nUser has answered your questions: \"Which option should we use?\"=\"Fast path\". You can now continue with the user's answers in mind.",
+          "metadata": {
+            "answers": [
+              [
+                "Fast path"
+              ]
+            ],
+            "context_preview": "User has answered your questions: \"Which option should we use?\"=\"Fast path\". You can now continue with the user's answers in mind.",
+            "count": 1,
+            "original_bytes": 130,
+            "original_lines": 1,
+            "output_truncated": false,
+            "questions": [
+              {
+                "header": "Plan",
+                "multiple": false,
+                "options": [
+                  {
+                    "description": "Move quickly",
+                    "label": "Fast path"
+                  },
+                  {
+                    "description": "Be conservative",
+                    "label": "Safe path"
+                  }
+                ],
+                "question": "Which option should we use?"
+              }
+            ],
+            "request_id": "question_1",
+            "title": "Asked 1 question",
+            "tool": "question",
+            "truncated": false
+          },
+          "name": "question",
+          "role": "tool",
+          "tool_call_id": "q1"
+        },
+        {
+          "content": "Continuing with the chosen plan.",
+          "metadata": {},
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        }
+      ]
+    },
+    "runtime_warning": {
+      "event_types": [
+        "step-start",
+        "text-start",
+        "text-delta",
+        "text-end",
+        "runtime-warning",
+        "step-finish"
+      ],
+      "events": [
+        {
+          "snapshot_id": "snapshot_1",
+          "type": "step-start"
+        },
+        {
+          "id": "text_1",
+          "metadata": null,
+          "type": "text-start"
+        },
+        {
+          "id": "text_1",
+          "text": "done",
+          "type": "text-delta"
+        },
+        {
+          "id": "text_1",
+          "type": "text-end"
+        },
+        {
+          "code": "step_total_tokens_exceeded",
+          "display": {
+            "body": "Step total tokens exceeded budget: 13 > 10.",
+            "kind": "runtime_warning",
+            "metrics": {
+              "input_tokens": 7,
+              "output_tokens": 6,
+              "step_index": 1,
+              "threshold": 10,
+              "total_tokens": 13
+            },
+            "severity": "warning",
+            "title": "Step token budget exceeded"
+          },
+          "message": "Step total tokens exceeded budget: 13 > 10.",
+          "metrics": {
+            "cost": 0.0,
+            "input_tokens": 7,
+            "output_tokens": 6,
+            "step_index": 1,
+            "threshold": 10,
+            "total_tokens": 13
+          },
+          "severity": "warning",
+          "type": "runtime-warning"
+        },
+        {
+          "cost": 0.0,
+          "finish_reason": "stop",
+          "tokens": {
+            "input": 7,
+            "output": 6
+          },
+          "type": "step-finish"
+        }
+      ],
+      "final_session_status": "stop",
+      "input": {
+        "doom_loop_threshold": 3,
+        "max_steps": 5,
+        "options": {
+          "runtime_warnings": {
+            "enabled": true,
+            "max_step_total_tokens": 10
+          }
+        },
+        "reply_questions": false,
+        "script": [
+          {
+            "events": [
+              {
+                "id": "ignored",
+                "text": "done",
+                "type": "text-delta"
+              },
+              {
+                "finish_reason": "stop",
+                "type": "finish",
+                "usage": {
+                  "cost": 0.0,
+                  "input_tokens": 7,
+                  "output_tokens": 6
+                }
+              }
+            ]
+          }
+        ],
+        "tools": [],
+        "user_text": "warn on usage"
+      },
+      "model_call_count": 1,
+      "pause_statuses": [],
+      "seen_max_output_tokens_by_call": [
+        256
+      ],
+      "seen_tools_by_call": [
+        []
+      ],
+      "session_messages": [
+        {
+          "content": "warn on usage",
+          "metadata": {},
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        {
+          "content": "done",
+          "metadata": {},
+          "name": null,
+          "role": "assistant",
+          "tool_call_id": null
+        }
+      ]
+    }
+  },
+  "schema_version": 1
+}

@@ -1,6 +1,7 @@
 {
-  "fixture_count": 9,
+  "fixture_count": 10,
   "fixtures": [
+    "agent_loop.json",
     "context_state.json",
     "core_context_policy.json",
     "core_protocol.json",
