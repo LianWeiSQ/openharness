@@ -1,10 +1,11 @@
 {
-  "fixture_count": 8,
+  "fixture_count": 9,
   "fixtures": [
     "context_state.json",
     "core_context_policy.json",
     "core_protocol.json",
     "permission_rulesets.json",
+    "provider_adapters.json",
     "session_trace_observability.json",
     "swarm_protocol.json",
     "tool_definition_schema.json",

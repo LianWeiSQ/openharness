@@ -5,6 +5,71 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 7 - Rust Provider Adapters
+
+Status: complete.
+
+Changed:
+
+- Replaced the placeholder `openagent-provider` crate with Rust provider
+  metadata, provider id normalization, environment variable mapping,
+  auth-method records, model helpers, and a small provider manager record set.
+- Implemented Rust OpenAI-compatible chat payload construction, lower-case
+  request header construction, streaming SSE chunk normalization, cumulative
+  tool argument recovery, usage mapping, finish-reason mapping, and HTTP error
+  body summarization.
+- Implemented Rust OpenAI Responses API payload construction, input/tool
+  materialization, response text/tool-call extraction, and usage/finish event
+  normalization.
+- Implemented Rust Anthropic Messages payload construction, message/tool
+  materialization, runtime-option filtering, source event normalization, tool
+  input JSON accumulation, usage mapping, and finish-reason mapping.
+- Extended the Python golden fixture generator with deterministic
+  `provider_adapters.json` coverage for provider metadata, OpenAI chat SSE,
+  OpenAI Responses, Anthropic payloads/events, tool argument parsing, and
+  error summarization.
+- Added Rust integration tests that rebuild the provider metadata, payloads,
+  and mock stream events from fixture inputs and compare them against the
+  Python oracle.
+
+Verification:
+
+```bash
+cargo test -p openagent-provider -- --nocapture
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-provider` targeted tests: 6 tests OK including fixture parity for
+  metadata, OpenAI chat SSE, OpenAI Responses, and Anthropic event workflows.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Python fixture drift test: OK with the new Goal 7 fixture included.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates provider adapter semantics and mock streaming behavior.
+  The user-facing AgentLoop still calls Python orchestration until Goal 8 wires
+  the Rust loop/runtime path.
+- Live HTTP request execution remains represented by request/header builders
+  and mock event normalizers; credentialed live smoke remains deferred to later
+  CLI/runtime gates.
+- MCP/app/TUI/HTTP/eval wiring and final Python removal remain deferred to
+  their later goals.
+
+Next:
+
+- Goal 8: migrate AgentLoop orchestration, multi-step loop parity, pause/retry,
+  and warning flow into Rust.
+
+---
+
 ## 2026-06-19 Goal 6 - Rust Core Context And Policy
 
 Status: complete.
