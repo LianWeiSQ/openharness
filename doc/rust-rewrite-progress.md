@@ -5,6 +5,64 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 8 - Rust AgentLoop Kernel
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `agent_loop.json` Python oracle coverage that runs the
+  real Python `AgentLoop` for five network-free scenarios: multi-step tool
+  execution, runtime warning emission, question pause/reply, model retry, and
+  repeated tool-call loop detection.
+- Implemented a Rust `openagent-core` scripted AgentLoop kernel that consumes
+  the same scenario input and emits parity events for step starts, text
+  streaming, tool calls/results, runtime warnings, question requests, retry
+  recovery, doom-loop errors, step finishes, model call counts, exposed tools,
+  pause status, and final session status.
+- Added Rust integration tests comparing the Rust loop output against the
+  Python AgentLoop oracle for all Goal 8 scenarios.
+- Extended the golden fixture manifest to include `agent_loop.json`.
+
+Verification:
+
+```bash
+cargo test -p openagent-core -- --nocapture
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-core` targeted tests: 6 tests OK, including AgentLoop parity for
+  multi-step tool flow, runtime warning, question pause/reply, model retry,
+  and doom-loop detection.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Python fixture drift test: OK with the new Goal 8 fixture included.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates the deterministic AgentLoop kernel behavior needed by the
+  Goal 8 gate. Full user-facing orchestration wiring remains Python-backed
+  until later CLI/App/HTTP runtime goals switch entry points to Rust.
+- The Rust loop kernel is fixture-backed and scripted; live provider/tool
+  execution integration is represented by previously migrated Rust provider and
+  tool crates but not yet exposed as the primary runtime path.
+- MCP, CLI, App Bridge/TUI, HTTP runtime, eval wiring, packaging, and final
+  Python removal remain deferred to later goals.
+
+Next:
+
+- Goal 9: migrate MCP config, discovery, auth, redaction, and tool-call
+  runtime behavior into Rust.
+
+---
+
 ## 2026-06-19 Goal 7 - Rust Provider Adapters
 
 Status: complete.
