@@ -1,0 +1,404 @@
+{
+  "blocked_shell_command": "rm",
+  "execution_schemas": {
+    "exclusive": {
+      "batch_group": "workspace-write",
+      "concurrency": "exclusive",
+      "conflict_key_template": "file:{file_path}",
+      "external_io": false,
+      "max_parallelism": null,
+      "mutates_external": false,
+      "mutates_session": true,
+      "mutates_workspace": true,
+      "read_only": false,
+      "requires_user_interaction": false
+    },
+    "readonly": {
+      "batch_group": "workspace-read",
+      "concurrency": "safe",
+      "conflict_key_template": null,
+      "external_io": false,
+      "max_parallelism": null,
+      "mutates_external": false,
+      "mutates_session": true,
+      "mutates_workspace": false,
+      "read_only": true,
+      "requires_user_interaction": false
+    }
+  },
+  "memory_outputs": {
+    "missing": "null",
+    "write": "ok"
+  },
+  "path_escape_error": "Path escapes session root: /tmp/outside.txt",
+  "question_output": "User has answered your questions: \"Pick a mode\"=\"Fast\". You can now continue with the user's answers in mind.",
+  "read_format": {
+    "output": "<file>\n00002| beta\n\n(File has more lines. Use 'offset' parameter to read beyond line 2)\n</file>",
+    "preview": "beta",
+    "truncated": true
+  },
+  "registry_namespace": {
+    "custom": "fixture_custom",
+    "default": "fixture"
+  },
+  "schema_version": 1,
+  "todo_output": "[\n  {\n    \"content\": \"port tools\",\n    \"status\": \"in_progress\",\n    \"priority\": \"high\",\n    \"id\": \"todo-fixture\"\n  }\n]",
+  "tools": {
+    "bash": {
+      "dangerous": true,
+      "execution_schema": {
+        "batch_group": "shell",
+        "concurrency": "exclusive",
+        "conflict_key_template": null,
+        "external_io": true,
+        "max_parallelism": null,
+        "mutates_external": true,
+        "mutates_session": true,
+        "mutates_workspace": true,
+        "read_only": false,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "workspace",
+      "group": "shell",
+      "parameter_schema": {
+        "properties": [
+          "command",
+          "description",
+          "timeout",
+          "workdir"
+        ],
+        "required": [
+          "command"
+        ]
+      }
+    },
+    "code_search": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "workspace-read",
+        "concurrency": "safe",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": false,
+        "mutates_workspace": false,
+        "read_only": true,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "host_only",
+      "group": "search",
+      "parameter_schema": {
+        "properties": [
+          "glob",
+          "path",
+          "query"
+        ],
+        "required": [
+          "query"
+        ]
+      }
+    },
+    "edit": {
+      "dangerous": true,
+      "execution_schema": {
+        "batch_group": "workspace-write",
+        "concurrency": "exclusive",
+        "conflict_key_template": "file:{file_path}",
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": true,
+        "mutates_workspace": true,
+        "read_only": false,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "workspace",
+      "group": "file",
+      "parameter_schema": {
+        "properties": [
+          "file_path",
+          "new_string",
+          "old_string",
+          "replace_all"
+        ],
+        "required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ]
+      }
+    },
+    "glob": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "workspace-read",
+        "concurrency": "safe",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": false,
+        "mutates_workspace": false,
+        "read_only": true,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "workspace",
+      "group": "file",
+      "parameter_schema": {
+        "properties": [
+          "path",
+          "pattern"
+        ],
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    "grep": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "workspace-read",
+        "concurrency": "safe",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": false,
+        "mutates_workspace": false,
+        "read_only": true,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "workspace",
+      "group": "file",
+      "parameter_schema": {
+        "properties": [
+          "glob",
+          "include",
+          "path",
+          "pattern"
+        ],
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    "ls": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "workspace-read",
+        "concurrency": "safe",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": false,
+        "mutates_workspace": false,
+        "read_only": true,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "workspace",
+      "group": "file",
+      "parameter_schema": {
+        "properties": [
+          "ignore",
+          "path"
+        ],
+        "required": []
+      }
+    },
+    "memory_read": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "memory",
+        "concurrency": "safe",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": false,
+        "mutates_workspace": false,
+        "read_only": true,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "agnostic",
+      "group": "memory",
+      "parameter_schema": {
+        "properties": [
+          "key"
+        ],
+        "required": [
+          "key"
+        ]
+      }
+    },
+    "memory_write": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "memory",
+        "concurrency": "exclusive",
+        "conflict_key_template": "memory:{key}",
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": true,
+        "mutates_workspace": false,
+        "read_only": false,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "agnostic",
+      "group": "memory",
+      "parameter_schema": {
+        "properties": [
+          "key",
+          "value"
+        ],
+        "required": [
+          "key",
+          "value"
+        ]
+      }
+    },
+    "question": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "interactive",
+        "concurrency": "exclusive",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": true,
+        "mutates_workspace": false,
+        "read_only": false,
+        "requires_user_interaction": true
+      },
+      "execution_scope": "agnostic",
+      "group": "interactive",
+      "parameter_schema": {
+        "properties": [
+          "questions"
+        ],
+        "required": [
+          "questions"
+        ]
+      }
+    },
+    "read": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "workspace-read",
+        "concurrency": "safe",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": true,
+        "mutates_workspace": false,
+        "read_only": true,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "workspace",
+      "group": "file",
+      "parameter_schema": {
+        "properties": [
+          "file_path",
+          "limit",
+          "offset"
+        ],
+        "required": [
+          "file_path"
+        ]
+      }
+    },
+    "todoread": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "todo",
+        "concurrency": "safe",
+        "conflict_key_template": null,
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": false,
+        "mutates_workspace": false,
+        "read_only": true,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "agnostic",
+      "group": "todo",
+      "parameter_schema": {
+        "properties": [],
+        "required": []
+      }
+    },
+    "todowrite": {
+      "dangerous": false,
+      "execution_schema": {
+        "batch_group": "todo",
+        "concurrency": "exclusive",
+        "conflict_key_template": "session:todos",
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": true,
+        "mutates_workspace": false,
+        "read_only": false,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "agnostic",
+      "group": "todo",
+      "parameter_schema": {
+        "properties": [
+          "todos"
+        ],
+        "required": [
+          "todos"
+        ]
+      }
+    },
+    "write": {
+      "dangerous": true,
+      "execution_schema": {
+        "batch_group": "workspace-write",
+        "concurrency": "exclusive",
+        "conflict_key_template": "file:{file_path}",
+        "external_io": false,
+        "max_parallelism": null,
+        "mutates_external": false,
+        "mutates_session": true,
+        "mutates_workspace": true,
+        "read_only": false,
+        "requires_user_interaction": false
+      },
+      "execution_scope": "workspace",
+      "group": "file",
+      "parameter_schema": {
+        "properties": [
+          "content",
+          "file_path"
+        ],
+        "required": [
+          "file_path",
+          "content"
+        ]
+      }
+    }
+  },
+  "truncation": {
+    "byte": {
+      "content": "abcd\n\n... output truncated (original 6 bytes)",
+      "original_bytes": 6,
+      "original_lines": 1,
+      "output_path": null,
+      "truncated": true
+    },
+    "line": {
+      "content": "L1\nL2\n\n... output truncated (original 3 lines, showing first 2 lines)",
+      "original_bytes": 8,
+      "original_lines": 3,
+      "output_path": null,
+      "truncated": true
+    }
+  }
+}

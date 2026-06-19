@@ -1,12 +1,13 @@
 {
-  "fixture_count": 6,
+  "fixture_count": 7,
   "fixtures": [
     "context_state.json",
     "core_protocol.json",
     "permission_rulesets.json",
     "session_trace_observability.json",
     "swarm_protocol.json",
-    "tool_definition_schema.json"
+    "tool_definition_schema.json",
+    "tool_runtime.json"
   ],
   "purpose": "Goal 0 Python behavior oracle for the Rust rewrite.",
   "schema_version": 1
