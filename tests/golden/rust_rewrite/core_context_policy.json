@@ -1,0 +1,445 @@
+{
+  "context_budget": {
+    "config": {
+      "bytes_per_token": 3,
+      "compact_refresh_min_new_messages": 6,
+      "compact_summary_max_output_tokens": 512,
+      "compaction_mode": "structured_work_state",
+      "counting": "auto",
+      "enabled": true,
+      "explicit_input_safety_margin_tokens": true,
+      "guard_ratio": 0.9,
+      "input_safety_margin_tokens": 8,
+      "overflow_disable_tools_on_final_attempt": true,
+      "overflow_final_max_output_tokens": 24,
+      "overflow_keep_recent_user_turns": 2,
+      "prune_keep_recent_user_turns": 2,
+      "prune_min_input_tokens": 4000,
+      "prune_old_tool_outputs": false,
+      "prune_protect_input_tokens": 12000,
+      "reserve_output_tokens": 24,
+      "strategy": "compact",
+      "tool_context_line_max_chars": 240,
+      "tool_context_preview_bytes": 4096,
+      "tool_context_preview_lines": 40,
+      "tool_display_max_bytes": 51200,
+      "use_safety_margin_tokens": true
+    },
+    "error": "Context budget exceeded before model call: estimated_input_tokens=432, input_limit_tokens=62, context_window=96, reserved_output_tokens=24, counting_method=heuristic, counting_exact=false, payload_kind=generic, fallback_stage=goal6, tool_message_count=1, largest_tool_message_tokens=320, largest_tool_message_name=code_search",
+    "invalid_compaction": "compaction.auto must be a bool.",
+    "invalid_strategy": "context_budget.strategy must be a non-empty string.",
+    "result": {
+      "context_window": 96,
+      "counting_exact": false,
+      "counting_method": "heuristic",
+      "estimated_input_tokens": 432,
+      "fallback_stage": "goal6",
+      "input_limit_tokens": 62,
+      "largest_tool_message_name": "code_search",
+      "largest_tool_message_tokens": 320,
+      "overflowed": true,
+      "payload_kind": "generic",
+      "reserved_output_tokens": 24,
+      "tool_message_count": 1
+    }
+  },
+  "context_pack": {
+    "estimate_text_tokens": 2,
+    "estimated_input_tokens": 54,
+    "items": [
+      {
+        "content": "[Runtime]\nGoal 6 fixture",
+        "id": "runtime:current",
+        "kind": "runtime",
+        "metadata": {
+          "synthetic": true
+        },
+        "pinned": true,
+        "priority": 90,
+        "source": "runtime",
+        "stable_prefix": false,
+        "token_estimate": 6
+      },
+      {
+        "content": "[Structured work state]\nTask:\nContinue Rust rewrite\n\nNext steps:\n- Port context",
+        "id": "work_state:context_compaction",
+        "kind": "work_state",
+        "metadata": {
+          "compacted_until": 2,
+          "format": "structured_work_state",
+          "schema_version": 1,
+          "source": null
+        },
+        "pinned": true,
+        "priority": 95,
+        "source": "session.metadata.context_compaction",
+        "stable_prefix": false,
+        "token_estimate": 20
+      },
+      {
+        "content": "[Sandbox context]\n{\"mode\": \"opensandbox\", \"remote_workdir\": \"/workspace/project\", \"sandbox_id\": \"sbx_fixture\"}",
+        "id": "sandbox:execution",
+        "kind": "sandbox",
+        "metadata": {
+          "mode": "opensandbox",
+          "remote_workdir": "/workspace/project",
+          "sandbox_id": "sbx_fixture"
+        },
+        "pinned": true,
+        "priority": 85,
+        "source": "session.metadata.execution",
+        "stable_prefix": true,
+        "token_estimate": 28
+      },
+      {
+        "content": "[Todos]\n- (in_progress/high) port context",
+        "id": "todo:session",
+        "kind": "todo",
+        "metadata": {
+          "count": 1
+        },
+        "pinned": false,
+        "priority": 80,
+        "source": "session.todos",
+        "stable_prefix": false,
+        "token_estimate": 11
+      },
+      {
+        "content": "old request",
+        "id": "message:user:0",
+        "kind": "message",
+        "metadata": {
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        "pinned": false,
+        "priority": 40,
+        "source": "session.messages[0]",
+        "stable_prefix": false,
+        "token_estimate": 3
+      },
+      {
+        "content": "grep preview",
+        "id": "tool_result:call-grep",
+        "kind": "tool_result",
+        "metadata": {
+          "name": "grep",
+          "role": "tool",
+          "tool_call_id": "call-grep"
+        },
+        "pinned": false,
+        "priority": 50,
+        "source": "session.messages[1]",
+        "stable_prefix": false,
+        "token_estimate": 3
+      },
+      {
+        "content": "new request",
+        "id": "message:user:2",
+        "kind": "message",
+        "metadata": {
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        },
+        "pinned": false,
+        "priority": 40,
+        "source": "session.messages[2]",
+        "stable_prefix": false,
+        "token_estimate": 3
+      },
+      {
+        "content": "high",
+        "id": "diag",
+        "kind": "diagnostic",
+        "metadata": {},
+        "pinned": false,
+        "priority": 9,
+        "source": "fixture",
+        "stable_prefix": false,
+        "token_estimate": 1
+      }
+    ],
+    "trace": [
+      {
+        "drop_reason": null,
+        "included": true,
+        "item_id": "runtime:current",
+        "kind": "runtime",
+        "pinned": true,
+        "priority": 90,
+        "source": "runtime",
+        "stable_prefix": false,
+        "token_estimate": 6
+      },
+      {
+        "drop_reason": null,
+        "included": true,
+        "item_id": "work_state:context_compaction",
+        "kind": "work_state",
+        "pinned": true,
+        "priority": 95,
+        "source": "session.metadata.context_compaction",
+        "stable_prefix": false,
+        "token_estimate": 20
+      },
+      {
+        "drop_reason": null,
+        "included": true,
+        "item_id": "sandbox:execution",
+        "kind": "sandbox",
+        "pinned": true,
+        "priority": 85,
+        "source": "session.metadata.execution",
+        "stable_prefix": true,
+        "token_estimate": 28
+      },
+      {
+        "drop_reason": "budget",
+        "included": false,
+        "item_id": "todo:session",
+        "kind": "todo",
+        "pinned": false,
+        "priority": 80,
+        "source": "session.todos",
+        "stable_prefix": false,
+        "token_estimate": 11
+      },
+      {
+        "drop_reason": "budget",
+        "included": false,
+        "item_id": "message:user:0",
+        "kind": "message",
+        "pinned": false,
+        "priority": 40,
+        "source": "session.messages[0]",
+        "stable_prefix": false,
+        "token_estimate": 3
+      },
+      {
+        "drop_reason": "budget",
+        "included": false,
+        "item_id": "tool_result:call-grep",
+        "kind": "tool_result",
+        "pinned": false,
+        "priority": 50,
+        "source": "session.messages[1]",
+        "stable_prefix": false,
+        "token_estimate": 3
+      },
+      {
+        "drop_reason": "budget",
+        "included": false,
+        "item_id": "message:user:2",
+        "kind": "message",
+        "pinned": false,
+        "priority": 40,
+        "source": "session.messages[2]",
+        "stable_prefix": false,
+        "token_estimate": 3
+      },
+      {
+        "drop_reason": "budget",
+        "included": false,
+        "item_id": "diag",
+        "kind": "diagnostic",
+        "pinned": false,
+        "priority": 9,
+        "source": "fixture",
+        "stable_prefix": false,
+        "token_estimate": 1
+      }
+    ]
+  },
+  "instructions": {
+    "context_items": [
+      {
+        "content": "[Instruction: OPENAGENT.md]\nWorkspac",
+        "kind": "instruction",
+        "metadata": {
+          "bytes_read": 8,
+          "display_path": "OPENAGENT.md",
+          "path": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/OPENAGENT.md",
+          "scope": "workspace",
+          "truncated": true
+        },
+        "pinned": true,
+        "priority": 100,
+        "source": "instructions.workspace:OPENAGENT.md",
+        "stable_prefix": true
+      },
+      {
+        "content": "[Instruction: .openagent/rules/a.md]\nRule A",
+        "kind": "instruction",
+        "metadata": {
+          "bytes_read": 6,
+          "display_path": ".openagent/rules/a.md",
+          "path": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/rules/a.md",
+          "scope": "workspace",
+          "truncated": false
+        },
+        "pinned": true,
+        "priority": 100,
+        "source": "instructions.workspace:.openagent/rules/a.md",
+        "stable_prefix": true
+      },
+      {
+        "content": "[Instruction: .openagent/rules/b.md]\nRule B",
+        "kind": "instruction",
+        "metadata": {
+          "bytes_read": 6,
+          "display_path": ".openagent/rules/b.md",
+          "path": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/rules/b.md",
+          "scope": "workspace",
+          "truncated": false
+        },
+        "pinned": true,
+        "priority": 100,
+        "source": "instructions.workspace:.openagent/rules/b.md",
+        "stable_prefix": true
+      },
+      {
+        "content": "[Instruction: AGENTS.md]\nParent i",
+        "kind": "instruction",
+        "metadata": {
+          "bytes_read": 8,
+          "display_path": "AGENTS.md",
+          "path": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/AGENTS.md",
+          "scope": "workspace",
+          "truncated": true
+        },
+        "pinned": true,
+        "priority": 100,
+        "source": "instructions.workspace:AGENTS.md",
+        "stable_prefix": true
+      },
+      {
+        "content": "[Instruction: ~/.openagent/OPENAGENT.md]\nUser ins",
+        "kind": "instruction",
+        "metadata": {
+          "bytes_read": 8,
+          "display_path": "~/.openagent/OPENAGENT.md",
+          "path": "/tmp/openagent-rust-rewrite-fixture-goal6/user/OPENAGENT.md",
+          "scope": "user",
+          "truncated": true
+        },
+        "pinned": true,
+        "priority": 100,
+        "source": "instructions.user:OPENAGENT.md",
+        "stable_prefix": true
+      }
+    ],
+    "issues": [
+      "truncated:OPENAGENT.md",
+      "truncated:AGENTS.md",
+      "truncated:~/.openagent/OPENAGENT.md"
+    ],
+    "items": [
+      {
+        "bytes_read": 8,
+        "content": "Workspac",
+        "display_path": "OPENAGENT.md",
+        "scope": "workspace",
+        "source": "instructions.workspace:OPENAGENT.md",
+        "truncated": true
+      },
+      {
+        "bytes_read": 6,
+        "content": "Rule A",
+        "display_path": ".openagent/rules/a.md",
+        "scope": "workspace",
+        "source": "instructions.workspace:.openagent/rules/a.md",
+        "truncated": false
+      },
+      {
+        "bytes_read": 6,
+        "content": "Rule B",
+        "display_path": ".openagent/rules/b.md",
+        "scope": "workspace",
+        "source": "instructions.workspace:.openagent/rules/b.md",
+        "truncated": false
+      },
+      {
+        "bytes_read": 8,
+        "content": "Parent i",
+        "display_path": "AGENTS.md",
+        "scope": "workspace",
+        "source": "instructions.workspace:AGENTS.md",
+        "truncated": true
+      },
+      {
+        "bytes_read": 8,
+        "content": "User ins",
+        "display_path": "~/.openagent/OPENAGENT.md",
+        "scope": "user",
+        "source": "instructions.user:OPENAGENT.md",
+        "truncated": true
+      }
+    ],
+    "total_bytes": 36,
+    "truncated": true
+  },
+  "permission": {
+    "custom_skill": "allow",
+    "pattern_for_file": "src/lib.rs",
+    "pattern_for_json": "{\"a\": 1, \"b\": 2}",
+    "pattern_for_name": "code-review",
+    "plan_only_todowrite": "allow",
+    "readonly_ls": "allow",
+    "readonly_skill": "allow",
+    "readonly_todowrite": "deny",
+    "readonly_write": "deny"
+  },
+  "schema_version": 1,
+  "skills": {
+    "loaded": {
+      "content": "\nInspect diffs and tests.",
+      "description": "Review code carefully",
+      "directory": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/skills/code-review",
+      "location": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/skills/code-review/SKILL.md",
+      "metadata": {},
+      "name": "code-review",
+      "score": null
+    },
+    "report": {
+      "duplicate_count": 1,
+      "invalid_count": 1,
+      "issues": [
+        {
+          "duplicate_of": null,
+          "kind": "invalid",
+          "path": "SKILL.md"
+        },
+        {
+          "duplicate_of": "SKILL.md",
+          "kind": "duplicate",
+          "path": "SKILL.md"
+        }
+      ],
+      "loaded_count": 2,
+      "scanned_files": 4,
+      "skill_count": 1,
+      "skills": [
+        {
+          "description": "Review code carefully",
+          "directory": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/skills/code-review",
+          "location": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/skills/code-review/SKILL.md",
+          "metadata": {},
+          "name": "code-review",
+          "score": 13
+        }
+      ]
+    },
+    "search_all": [
+      {
+        "description": "Research external sources",
+        "directory": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/skills/research",
+        "location": "/tmp/openagent-rust-rewrite-fixture-goal6/repo/project/workspace/.openagent/skills/research/SKILL.md",
+        "metadata": {},
+        "name": "research",
+        "score": 6
+      }
+    ]
+  }
+}

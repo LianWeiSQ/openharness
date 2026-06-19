@@ -9,6 +9,7 @@ use std::{
     time::SystemTime,
 };
 
+use openagent_core::{SkillDiscoveryReport, SkillRegistry, render_skill_document};
 use openagent_protocol::{
     ToolConcurrency, ToolExecutionSchema, ToolExecutionScope, ToolResult, ToolSchema,
 };
@@ -211,6 +212,7 @@ pub struct ToolContext {
     pub execution_mode: String,
     pub workspace_root: Option<String>,
     pub execution_metadata: BTreeMap<String, Value>,
+    pub agent_options: BTreeMap<String, Value>,
     pub require_read_before_write: bool,
     pub read_files: BTreeSet<PathBuf>,
     pub memory: BTreeMap<String, Value>,
@@ -229,6 +231,7 @@ impl ToolContext {
             execution_mode: "local".to_string(),
             workspace_root: Some(root.to_string_lossy().to_string()),
             execution_metadata: BTreeMap::new(),
+            agent_options: BTreeMap::new(),
             require_read_before_write: true,
             read_files: BTreeSet::new(),
             memory: BTreeMap::new(),
@@ -792,6 +795,24 @@ pub fn register_builtin_tools(registry: &mut ToolRegistry) {
         execution_schema: exclusive_schema("shell", true, true, true, true, false, None),
     });
     registry.register(ToolDefinition {
+        id: "skill".to_string(),
+        description: "Load or list Markdown skills discovered from the workspace.".to_string(),
+        parameter_schema: schema(
+            &[],
+            &[
+                "name",
+                "query",
+                "limit",
+                "include_content",
+                "include_diagnostics",
+            ],
+        ),
+        dangerous: false,
+        group: "skill".to_string(),
+        execution_scope: ToolExecutionScope::Agnostic,
+        execution_schema: readonly_schema("skill", false, false, None),
+    });
+    registry.register(ToolDefinition {
         id: "code_search".to_string(),
         description: "Search files for a literal substring.".to_string(),
         parameter_schema: schema(&["query"], &["query", "glob", "path"]),
@@ -970,6 +991,7 @@ fn execute_builtin(name: &str, input: Value, ctx: &mut ToolContext) -> ToolResul
         "grep" => grep_tool(input, ctx),
         "ls" => ls_tool(input, ctx),
         "bash" => bash_tool(input, ctx),
+        "skill" => skill_tool(input, ctx),
         "code_search" => code_search_tool(input, ctx),
         "memory_read" => memory_read_tool(input, ctx),
         "memory_write" => memory_write_tool(input, ctx),
@@ -1182,6 +1204,116 @@ fn bash_tool(input: Value, ctx: &mut ToolContext) -> ToolResultValue<ToolOutput>
     Ok(output)
 }
 
+fn skill_tool(input: Value, ctx: &mut ToolContext) -> ToolResultValue<ToolOutput> {
+    let requested_name = optional_string_arg(&input, "name")?
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let requested_query = optional_string_arg(&input, "query")?
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let limit = optional_usize_arg(&input, "limit")?.filter(|value| *value > 0);
+    let include_content = bool_arg(&input, "include_content", false)?;
+    let include_diagnostics = bool_arg(&input, "include_diagnostics", false)?;
+    let registry = SkillRegistry::new(
+        Some(ctx.session_root.clone()),
+        skill_roots(ctx),
+        Option::<PathBuf>::None,
+    );
+
+    if requested_name.is_empty() {
+        let report = registry.report(
+            (!requested_query.is_empty()).then_some(requested_query.as_str()),
+            limit,
+        );
+        let mut lines = if report.skills.is_empty() {
+            if requested_query.is_empty() {
+                vec!["No skills available.".to_string()]
+            } else {
+                vec![format!("No skills matched query \"{requested_query}\".")]
+            }
+        } else {
+            let mut lines = vec![if requested_query.is_empty() {
+                "Available skills:".to_string()
+            } else {
+                format!("Matched skills for \"{requested_query}\":")
+            }];
+            for skill in &report.skills {
+                let score = skill
+                    .score
+                    .map(|score| format!(" score={score}"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "- `{}`:{} {}",
+                    skill.name, score, skill.description
+                ));
+                if include_content && let Some(document) = registry.get(&skill.name) {
+                    lines.push(render_skill_document(&document, false));
+                }
+            }
+            lines
+        };
+        if include_diagnostics {
+            lines.extend(diagnostic_lines(&report));
+        }
+        let mut output = ToolOutput::new("Available skills", lines.join("\n"));
+        output.metadata = report_metadata(
+            &report,
+            (!requested_query.is_empty()).then_some(requested_query),
+        );
+        return Ok(output);
+    }
+
+    let Some(document) = registry.get(&requested_name) else {
+        let skills = if requested_query.is_empty() {
+            registry.all()
+        } else {
+            registry.search(&requested_query, limit)
+        };
+        let available = if skills.is_empty() {
+            "none".to_string()
+        } else {
+            skills
+                .iter()
+                .map(|skill| skill.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        return Err(format!(
+            "Skill \"{requested_name}\" not found. Available skills: {available}"
+        ));
+    };
+
+    let report = registry.report(None, None);
+    let mut output = ToolOutput::new(
+        format!("Loaded skill: {}", document.name),
+        render_skill_document(&document, true),
+    );
+    output
+        .metadata
+        .insert("skill_name".to_string(), json!(document.name));
+    output
+        .metadata
+        .insert("skill_location".to_string(), json!(document.location));
+    output
+        .metadata
+        .insert("skill_dir".to_string(), json!(document.directory));
+    output
+        .metadata
+        .insert("skill_count".to_string(), json!(report.loaded_count));
+    output
+        .metadata
+        .insert("scanned_files".to_string(), json!(report.scanned_files));
+    output
+        .metadata
+        .insert("invalid_count".to_string(), json!(report.invalid_count));
+    output
+        .metadata
+        .insert("duplicate_count".to_string(), json!(report.duplicate_count));
+    Ok(output)
+}
+
 fn code_search_tool(input: Value, ctx: &mut ToolContext) -> ToolResultValue<ToolOutput> {
     let query = string_arg(&input, "query")?;
     let glob = string_arg_or(&input, "glob", "*")?;
@@ -1331,7 +1463,9 @@ fn schema(required: &[&str], properties: &[&str]) -> Value {
 fn property_schema(name: &str) -> Value {
     match name {
         "offset" | "limit" | "timeout" => json!({"type": "integer"}),
-        "replace_all" | "multiple" => json!({"type": "boolean"}),
+        "replace_all" | "multiple" | "include_content" | "include_diagnostics" => {
+            json!({"type": "boolean"})
+        }
         "ignore" | "questions" | "todos" | "options" => json!({"type": "array"}),
         "value" => json!({}),
         _ => json!({"type": "string"}),
@@ -1880,6 +2014,75 @@ fn question_metadata_value(value: &Value) -> ToolResultValue<Value> {
     }))
 }
 
+fn skill_roots(ctx: &ToolContext) -> Option<Vec<String>> {
+    let roots = ctx
+        .agent_options
+        .get("skill_roots")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    (!roots.is_empty()).then_some(roots)
+}
+
+fn report_metadata(
+    report: &SkillDiscoveryReport,
+    query: Option<String>,
+) -> BTreeMap<String, Value> {
+    let mut payload = BTreeMap::from([
+        ("skill_count".to_string(), json!(report.skills.len())),
+        ("loaded_count".to_string(), json!(report.loaded_count)),
+        ("scanned_files".to_string(), json!(report.scanned_files)),
+        ("invalid_count".to_string(), json!(report.invalid_count)),
+        ("duplicate_count".to_string(), json!(report.duplicate_count)),
+    ]);
+    if let Some(query) = query {
+        payload.insert("query".to_string(), json!(query));
+    }
+    if !report.issues.is_empty() {
+        payload.insert(
+            "issues".to_string(),
+            Value::Array(
+                report
+                    .issues
+                    .iter()
+                    .map(|issue| {
+                        json!({
+                            "kind": issue.kind,
+                            "path": issue.path,
+                            "message": issue.message,
+                            "duplicate_of": issue.duplicate_of,
+                        })
+                    })
+                    .collect(),
+            ),
+        );
+    }
+    payload
+}
+
+fn diagnostic_lines(report: &SkillDiscoveryReport) -> Vec<String> {
+    if report.issues.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![String::new(), "Diagnostics:".to_string()];
+    for issue in &report.issues {
+        let suffix = issue
+            .duplicate_of
+            .as_ref()
+            .map(|path| format!(" duplicate_of={path}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {}: {} - {}{}",
+            issue.kind, issue.path, issue.message, suffix
+        ));
+    }
+    lines
+}
+
 fn title_for_questions(count: usize) -> String {
     if count == 1 {
         "Asked 1 question".to_string()
@@ -1953,6 +2156,23 @@ fn usize_arg(input: &Value, key: &str, default: usize) -> ToolResultValue<usize>
                 .ok_or_else(|| format!("Expected non-negative integer input for {key}"))
         })
         .unwrap_or(Ok(default))
+}
+
+fn optional_usize_arg(input: &Value, key: &str) -> ToolResultValue<Option<usize>> {
+    input
+        .get(key)
+        .map(|value| {
+            if value.is_null() {
+                Ok(None)
+            } else {
+                value
+                    .as_u64()
+                    .and_then(|item| usize::try_from(item).ok())
+                    .map(Some)
+                    .ok_or_else(|| format!("Expected non-negative integer input for {key}"))
+            }
+        })
+        .unwrap_or(Ok(None))
 }
 
 fn u64_arg(input: &Value, key: &str, default: u64) -> ToolResultValue<u64> {

@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import shutil
 import sys
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from enum import Enum
@@ -16,6 +18,13 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from openagent.core.context_state import build_compaction_record, render_work_state
+from openagent.core.context_budget import (
+    check_context_budget,
+    format_context_budget_error,
+    load_context_budget_options,
+)
+from openagent.core.context_pack import ContextItem, ContextPackBuildOptions, ContextPackBuilder, estimate_text_tokens
+from openagent.core.instructions import InstructionContextLoader, InstructionLoadOptions
 from openagent.core.message_materializer import RUNTIME_OPTION_KEYS, materialize_openai_compatible_payload
 from openagent.core.observability import (
     ObservationConfig,
@@ -25,6 +34,8 @@ from openagent.core.observability import (
     output_stats,
     sanitize_observation_value,
 )
+from openagent.core.permission.manager import PermissionManager
+from openagent.core.permission.rule import PermissionAction, PermissionRule
 from openagent.core.permission.ruleset import PermissionRuleset, ruleset
 from openagent.core.runtime_logging import RuntimeLogRecord, RuntimeLoggingConfig
 from openagent.core.runtime_warnings import (
@@ -45,6 +56,7 @@ from openagent.core.tool.builtin.shell import _blocked_command
 from openagent.core.tool.registry import ToolRegistry
 from openagent.core.tool.truncation import Truncate
 from openagent.core.tool.utils import ensure_within_root
+from openagent.core.skill import SkillRegistry
 from openagent.core.trace import render_trace_summary
 from openagent.core.trace.recorder import sanitize_trace_value
 from openagent.core.trace.schema import RunRecord, TraceConfig, TraceEvent
@@ -392,6 +404,255 @@ def _context_state_fixture() -> dict[str, Any]:
     }
 
 
+async def _permission_decisions() -> dict[str, Any]:
+    readonly = PermissionManager()
+    readonly.set_ruleset(PermissionRuleset.READONLY)
+    plan_only = PermissionManager()
+    plan_only.set_ruleset(PermissionRuleset.PLAN_ONLY)
+    custom = PermissionManager()
+    custom.set_ruleset(PermissionRuleset.NONE)
+    custom.add_rule(PermissionRule(tool="skill", action=PermissionAction.ALLOW, pattern="code-review"))
+    return {
+        "readonly_write": await readonly.check({"name": "write", "input": {"file_path": "a.txt", "content": "x"}}),
+        "readonly_ls": await readonly.check({"name": "ls", "input": {}}),
+        "readonly_skill": await readonly.check({"name": "skill", "input": {"name": "code-review"}}),
+        "readonly_todowrite": await readonly.check({"name": "todowrite", "input": {"todos": []}}),
+        "plan_only_todowrite": await plan_only.check({"name": "todowrite", "input": {"todos": []}}),
+        "custom_skill": await custom.check({"name": "skill", "input": {"name": "code-review"}}),
+        "pattern_for_file": PermissionManager._pattern_for({"file_path": "src/lib.rs", "command": "ignored"}),
+        "pattern_for_name": PermissionManager._pattern_for({"name": "code-review"}),
+        "pattern_for_json": PermissionManager._pattern_for({"b": 2, "a": 1}),
+    }
+
+
+def _write_skill_fixture(base: Path, relative: str, *, name: str, description: str, body: str = "") -> Path:
+    path = base / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {name}",
+                f"description: {description}",
+                "---",
+                "",
+                body or f"# {name}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _skill_issue_summary(issue: Any) -> dict[str, Any]:
+    return {
+        "kind": issue.kind,
+        "path": Path(issue.path).name,
+        "duplicate_of": Path(issue.duplicate_of).name if issue.duplicate_of else None,
+    }
+
+
+def _scrub_fixture_root(value: Any, root: Path) -> Any:
+    stable = root.as_posix()
+    replacements = {root.as_posix(): stable, root.resolve().as_posix(): stable}
+    if stable.startswith("/tmp/"):
+        replacements["/private" + stable] = stable
+    if isinstance(value, (str, Path)):
+        result = value.as_posix() if isinstance(value, Path) else value
+        for needle, replacement in replacements.items():
+            result = result.replace(needle, replacement)
+        return result
+    if isinstance(value, dict):
+        return {key: _scrub_fixture_root(item, root) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_scrub_fixture_root(item, root) for item in value]
+    return value
+
+
+def _core_context_policy_fixture() -> dict[str, Any]:
+    fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal6")
+    shutil.rmtree(fixture_root, ignore_errors=True)
+    workspace = fixture_root / "repo" / "project" / "workspace"
+    user_dir = fixture_root / "user"
+    workspace.mkdir(parents=True, exist_ok=True)
+    user_dir.mkdir(parents=True, exist_ok=True)
+
+    (fixture_root / "repo" / "AGENTS.md").write_text("Parent instruction", encoding="utf-8")
+    (workspace / "OPENAGENT.md").write_text("Workspace rule", encoding="utf-8")
+    rules_dir = workspace / ".openagent" / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "b.md").write_text("Rule B", encoding="utf-8")
+    (rules_dir / "a.md").write_text("Rule A", encoding="utf-8")
+    (user_dir / "OPENAGENT.md").write_text("User instruction", encoding="utf-8")
+
+    _write_skill_fixture(workspace, ".openagent/skills/code-review/SKILL.md", name="code-review", description="Review code carefully", body="Inspect diffs and tests.")
+    _write_skill_fixture(workspace, ".openagent/skills/research/SKILL.md", name="research", description="Research external sources", body="Collect evidence.")
+    _write_skill_fixture(workspace, ".claude/skills/code-review/SKILL.md", name="code-review", description="duplicate", body="Duplicate should not win.")
+    broken = workspace / ".openagent" / "skills" / "broken" / "SKILL.md"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_text("# no frontmatter\n", encoding="utf-8")
+
+    model = Model(
+        id="context-fixture",
+        provider_id="fixture",
+        name="Context Fixture",
+        context_window=96,
+        max_output=24,
+    )
+    budget_messages = [
+        ChatMessage(role="user", content="find matches"),
+        ChatMessage(role="tool", name="code_search", content="x" * 1200),
+    ]
+    budget_result = check_context_budget(
+        system="You are helpful.",
+        messages=budget_messages,
+        tools=[
+            ToolSchema(
+                name="large_tool",
+                description="A" * 120,
+                schema={"type": "object", "properties": {"query": {"type": "string", "description": "B" * 80}}},
+            )
+        ],
+        model=model,
+        options={"context_budget": {"strategy": "compact", "bytes_per_token": 4}},
+        fallback_stage="goal6",
+    )
+    assert budget_result is not None
+    try:
+        load_context_budget_options({"context_budget": {"strategy": ""}}, model=model)
+    except Exception as error:  # noqa: BLE001
+        invalid_strategy = str(error)
+    else:
+        raise AssertionError("invalid strategy fixture did not fail")
+    try:
+        load_context_budget_options({"compaction": {"auto": "yes"}}, model=model)
+    except Exception as error:  # noqa: BLE001
+        invalid_compaction = str(error)
+    else:
+        raise AssertionError("invalid compaction fixture did not fail")
+
+    context_pack = ContextPackBuilder(ContextPackBuildOptions(token_budget=24, bytes_per_token=4)).build(
+        messages=[
+            ChatMessage(role="user", content="old request"),
+            ChatMessage(role="tool", name="grep", tool_call_id="call-grep", content="grep preview"),
+            ChatMessage(role="user", content="new request"),
+        ],
+        metadata={
+            "context_compaction": {
+                "schema_version": 1,
+                "format": "structured_work_state",
+                "state": {"task": "Continue Rust rewrite", "next_steps": ["Port context"]},
+                "summary": "ignored",
+                "compacted_until": 2,
+                "updated_at": 1781841000000,
+            },
+            "execution": {
+                "mode": "opensandbox",
+                "sandbox_id": "sbx_fixture",
+                "remote_workdir": "/workspace/project",
+                "connection": {"token": "secret"},
+            },
+        },
+        todos=[TodoItem(content="port context", status="in_progress", priority="high", id="todo-context")],
+        runtime_context="[Runtime]\nGoal 6 fixture",
+        extra_items=[
+            ContextItem(id="diag", kind="diagnostic", source="fixture", content="low", priority=1),
+            ContextItem(id="diag", kind="diagnostic", source="fixture", content="high", priority=9),
+        ],
+    )
+
+    instructions = InstructionContextLoader(
+        workspace,
+        InstructionLoadOptions(user_config_dir=user_dir, max_file_bytes=8, max_total_bytes=64),
+    ).load()
+    instruction_context_items = instructions.to_context_items()
+
+    registry = SkillRegistry(session_root=workspace, home_dir=fixture_root / "home")
+    report = registry.report(query="review", limit=5)
+    loaded_skill = registry.get("code-review")
+    assert loaded_skill is not None
+
+    payload = {
+        "schema_version": 1,
+        "permission": asyncio.run(_permission_decisions()),
+        "context_budget": {
+            "config": load_context_budget_options(
+                {
+                    "compaction": {"auto": False, "prune": False, "reserved": 16},
+                    "context_budget": {"strategy": "compact", "input_safety_margin_tokens": 8},
+                },
+                model=model,
+            ),
+            "result": budget_result,
+            "error": format_context_budget_error(budget_result),
+            "invalid_strategy": invalid_strategy,
+            "invalid_compaction": invalid_compaction,
+        },
+        "context_pack": {
+            "estimated_input_tokens": context_pack.estimated_input_tokens,
+            "items": [
+                {
+                    "id": item.id,
+                    "kind": item.kind,
+                    "source": item.source,
+                    "content": item.content,
+                    "priority": item.priority,
+                    "token_estimate": item.token_estimate,
+                    "pinned": item.pinned,
+                    "stable_prefix": item.stable_prefix,
+                    "metadata": item.metadata,
+                }
+                for item in context_pack.items
+            ],
+            "trace": context_pack.trace_dicts(),
+            "estimate_text_tokens": estimate_text_tokens("abcd", bytes_per_token=3),
+        },
+        "instructions": {
+            "total_bytes": instructions.total_bytes,
+            "truncated": instructions.truncated,
+            "issues": instructions.issues,
+            "items": [
+                {
+                    "display_path": item.display_path,
+                    "source": item.source,
+                    "scope": item.scope,
+                    "content": item.content,
+                    "bytes_read": item.bytes_read,
+                    "truncated": item.truncated,
+                }
+                for item in instructions.items
+            ],
+            "context_items": [
+                {
+                    "kind": item.kind,
+                    "source": item.source,
+                    "content": item.content,
+                    "priority": item.priority,
+                    "pinned": item.pinned,
+                    "stable_prefix": item.stable_prefix,
+                    "metadata": item.metadata,
+                }
+                for item in instruction_context_items
+            ],
+        },
+        "skills": {
+            "report": {
+                "skill_count": len(report.skills),
+                "loaded_count": report.loaded_count,
+                "scanned_files": report.scanned_files,
+                "invalid_count": report.invalid_count,
+                "duplicate_count": report.duplicate_count,
+                "skills": [asdict(skill) for skill in report.skills],
+                "issues": [_skill_issue_summary(issue) for issue in report.issues],
+            },
+            "loaded": asdict(loaded_skill),
+            "search_all": [asdict(skill) for skill in registry.search("external evidence")],
+        },
+    }
+    return _scrub_fixture_root(payload, fixture_root)
+
+
 def _session_trace_observability_fixture() -> dict[str, Any]:
     session_event = {
         "schema_version": "openagent.session_event.v1",
@@ -624,6 +885,7 @@ def capture(output_dir: Path) -> None:
         "tool_runtime.json": _tool_runtime_fixture(),
         "swarm_protocol.json": _swarm_protocol_fixture(),
         "context_state.json": _context_state_fixture(),
+        "core_context_policy.json": _core_context_policy_fixture(),
         "session_trace_observability.json": _session_trace_observability_fixture(),
     }
     for name, payload in fixtures.items():
