@@ -5,6 +5,74 @@ verification evidence is listed here.
 
 ---
 
+## 2026-06-19 Goal 11 - Rust App Bridge And TUI State
+
+Status: complete.
+
+Changed:
+
+- Added deterministic `app_bridge_tui.json` Python oracle coverage for App
+  Bridge protocol events, lifecycle events, TUI control request serialization,
+  health/auth response shapes, global SSE replay after query/header sequence,
+  approval path parsing, TUI route validation and queue shapes, interrupt and
+  approval lifecycle events, remote runtime URL/auth/path helpers, remote turn
+  event deduplication/status application, attach/control request shapes, and
+  TUI control state transitions.
+- Replaced the placeholder `openagent-app-server` crate with Rust AppEvent and
+  TuiControlRequest models, stream-event method mapping, lifecycle event
+  wrapping, auth checks, health and unauthorized payload helpers, approval path
+  parsing, publish/control route validation, control queue state, SSE replay
+  records, and interrupt/approval event state helpers.
+- Replaced the placeholder `openagent-app-server-client` crate with Rust remote
+  turn records, replay deduplication keys, event status application, URL
+  normalization/joining/path quoting, auth header rendering, request-shape
+  helpers, and Python-oracle parity tests.
+- Replaced the placeholder `openagent-tui` crate with Rust TUI control-state
+  handling for prompt append/submit/clear, publish translation, toast display,
+  command execution, session selection validation, unsupported model/theme
+  controls, and golden parity tests.
+
+Verification:
+
+```bash
+cargo test -p openagent-app-server -- --nocapture
+cargo test -p openagent-app-server-client -- --nocapture
+cargo test -p openagent-tui -- --nocapture
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest src/tests/test_rust_rewrite_fixtures.py src/tests/test_app_server_protocol.py src/tests/test_app_server_runtime.py src/tests/test_app_server_server.py src/tests/test_tui_remote_runtime.py src/tests/test_tui_formatting.py
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'
+```
+
+Evidence:
+
+- `openagent-app-server` targeted tests: 3 tests OK, including protocol and
+  server-section parity against `app_bridge_tui.json`.
+- `openagent-app-server-client` targeted tests: 2 tests OK, including remote
+  runtime/client-section parity against the Python oracle.
+- `openagent-tui` targeted tests: 2 tests OK, including TUI control-state
+  parity against the Python oracle.
+- Rust workspace tests: OK.
+- Rust clippy: OK with `-D warnings`.
+- Rust fmt check: OK.
+- Python fixture drift plus App Bridge/TUI tests: 52 tests OK.
+- Full Python baseline: 422 tests OK.
+
+Residual risks:
+
+- This goal migrates the deterministic App Bridge/TUI protocol and state
+  behavior. The live HTTP listener/API container smoke remains part of Goal 12.
+- The Rust TUI crate now owns the tested control-state contract, but full
+  terminal rendering and input-loop replacement still needs final wiring before
+  Python can be removed in Goal 14.
+
+Next:
+
+- Goal 12: migrate HTTP runtime/API parity and Docker smoke behavior into Rust.
+
+---
+
 ## 2026-06-19 Goal 10 - Rust CLI Command Layer
 
 Status: complete.

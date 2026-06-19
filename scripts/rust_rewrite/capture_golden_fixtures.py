@@ -22,7 +22,23 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from openagent.core.context_state import build_compaction_record, render_work_state
+from openagent.app_server.protocol import (
+    AppEvent,
+    TuiControlRequest,
+    lifecycle_event,
+    stream_event_to_app_event,
+    stream_event_to_app_method,
+)
+from openagent.app_server.server import (
+    _is_authenticated_app_path,
+    _parse_turn_approval_path,
+    _publish_to_control,
+)
+from openagent.app_server.runtime import TurnRecord
 from openagent.cli.main import (
+    join_server_url,
+    normalize_server_url,
+    quote_path,
     apply_model_env,
     build_parser,
     run_auth_command,
@@ -36,6 +52,14 @@ from openagent.core.context_budget import (
     format_context_budget_error,
     load_context_budget_options,
 )
+from openagent.tui.remote_runtime import (
+    RemoteTurnRecord,
+    _app_event_from_dict,
+    _event_session_id,
+    _event_turn_id,
+    _remote_event_key,
+)
+from openagent.tui.state import TuiState, _normalize_control_action
 from openagent.core.context_pack import ContextItem, ContextPackBuildOptions, ContextPackBuilder, estimate_text_tokens
 from openagent.core.agent.universal import UniversalAgent
 from openagent.core.instructions import InstructionContextLoader, InstructionLoadOptions
@@ -1792,6 +1816,386 @@ def _mcp_runtime_fixture() -> dict[str, Any]:
     }
 
 
+def _app_bridge_tui_fixture() -> dict[str, Any]:
+    fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal11")
+    shutil.rmtree(fixture_root, ignore_errors=True)
+    workspace = fixture_root / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    event_types = [
+        "step-start",
+        "step-finish",
+        "text-start",
+        "text-delta",
+        "text-end",
+        "tool-call",
+        "tool-result",
+        "runtime-warning",
+        "patch",
+        "question-request",
+        "error",
+        "unknown",
+    ]
+    wrapped = stream_event_to_app_event(
+        {"type": "tool-call", "name": "ls", "input": {"path": "."}, "call_id": "call_1"},
+        sequence=3,
+        thread_id="session_1",
+        turn_id="turn_1",
+    )
+    wrapped.created_at_ms = 1781842000003
+    lifecycle = lifecycle_event(
+        sequence=1,
+        method="turn/started",
+        thread_id="session_1",
+        turn_id="turn_1",
+        status="running",
+        input="hello",
+    )
+    lifecycle.created_at_ms = 1781842000001
+
+    global_events = [
+        AppEvent(
+            sequence=1,
+            method="turn/started",
+            params={"thread_id": "session_1", "turn_id": "turn_1", "status": "running"},
+            created_at_ms=1781842000101,
+            global_sequence=1,
+        ),
+        AppEvent(
+            sequence=2,
+            method="turn/completed",
+            params={"thread_id": "session_1", "turn_id": "turn_1", "status": "completed", "final_answer": "done"},
+            created_at_ms=1781842000102,
+            global_sequence=2,
+        ),
+        AppEvent(
+            sequence=1,
+            method="turn/started",
+            params={"thread_id": "session_1", "turn_id": "turn_2", "status": "running"},
+            created_at_ms=1781842000103,
+            global_sequence=3,
+        ),
+    ]
+    replay_after_query = [
+        {"id": str(event.global_sequence), "event": event.method, "data": event.to_dict()}
+        for event in global_events
+        if (event.global_sequence or 0) > 1
+    ]
+    replay_after_header = [
+        {"id": str(event.global_sequence), "event": event.method, "data": event.to_dict()}
+        for event in global_events
+        if (event.global_sequence or 0) > 2
+    ]
+
+    control_cases = [
+        ("/tui/append-prompt", {"text": "hello"}, {"text": "hello"}),
+        ("/tui/submit-prompt", {}, {}),
+        ("/tui/clear-prompt", {}, {}),
+        ("/tui/open-help", {}, {}),
+        ("/tui/open-sessions", {}, {}),
+        ("/tui/open-themes", {}, {}),
+        ("/tui/open-models", {}, {}),
+        ("/tui/execute-command", {"command": "status"}, {"command": "status"}),
+        (
+            "/tui/show-toast",
+            {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5},
+            {"title": "Hi", "message": "Saved", "variant": "success", "duration": 1.5},
+        ),
+        (
+            "/tui/publish",
+            {"type": "tui.command.execute", "properties": {"command": "help"}},
+            {"type": "tui.command.execute", "properties": {"command": "help"}},
+        ),
+        ("/tui/select-session", {"sessionID": "session_existing"}, {"sessionID": "session_existing"}),
+    ]
+    publish_samples: dict[str, Any] = {}
+    for name, payload in {
+        "append": {"type": "tui.prompt.append", "properties": {"text": "hello"}},
+        "command": {"topic": "tui.command.execute", "payload": {"command": "status"}},
+        "toast": {"event": "tui.toast.show", "payload": {"title": "Saved", "message": "Done", "variant": "success", "duration": 1.25}},
+        "session": {"method": "tui.session.select", "payload": {"sessionID": "session_existing"}},
+    }.items():
+        action, params = _publish_to_control(payload)
+        publish_samples[name] = {"action": action, "params": params}
+    try:
+        _publish_to_control({"type": "tui.unknown", "properties": {}})
+    except ValueError as error:
+        unsupported_publish = str(error)
+    else:
+        raise AssertionError("unsupported publish fixture did not fail")
+    try:
+        _parse_turn_approval_path("/api/turns//approvals/")
+    except ValueError as error:
+        invalid_approval_path = str(error)
+    else:
+        raise AssertionError("invalid approval path fixture did not fail")
+
+    turn = TurnRecord(
+        id="turn_1",
+        session_id="session_1",
+        input="hello",
+        created_at_ms=1781842000200,
+        status="running",
+    )
+    interrupt_event = turn.request_interrupt()
+    assert interrupt_event is not None
+    interrupt_event.created_at_ms = 1781842000201
+
+    requested_approval = lifecycle_event(
+        sequence=2,
+        method="turn/approval_requested",
+        thread_id="session_1",
+        turn_id="turn_1",
+        status="waiting_approval",
+        approval={
+            "request_id": "approval_1",
+            "session_id": "session_1",
+            "turn_id": "turn_1",
+            "tool_name": "write",
+            "tool_input": {"file_path": "blocked.txt"},
+            "call_id": "call_1",
+            "created_at_ms": 1781842000202,
+        },
+    )
+    requested_approval.created_at_ms = 1781842000202
+    resolved_approval = lifecycle_event(
+        sequence=3,
+        method="turn/approval_resolved",
+        thread_id="session_1",
+        turn_id="turn_1",
+        status="running",
+        approval={
+            "request_id": "approval_1",
+            "session_id": "session_1",
+            "turn_id": "turn_1",
+            "tool_name": "write",
+            "tool_input": {"file_path": "blocked.txt"},
+            "call_id": "call_1",
+            "created_at_ms": 1781842000202,
+            "action": "deny",
+        },
+    )
+    resolved_approval.created_at_ms = 1781842000203
+
+    parsed_event = _app_event_from_dict(
+        {
+            "sequence": 4,
+            "global_sequence": 12,
+            "method": "turn/completed",
+            "params": {
+                "thread_id": "session_existing",
+                "turn_id": "turn_remote",
+                "status": "completed",
+                "final_answer": "hello remote",
+                "trace": {"id": "trace_1"},
+            },
+            "created_at_ms": 1781842000304,
+        },
+        default_sequence=99,
+    )
+    remote_turn = RemoteTurnRecord(id="turn_remote", session_id="session_existing")
+    remote_events = [
+        AppEvent(
+            sequence=1,
+            global_sequence=10,
+            method="turn/started",
+            params={"thread_id": "session_existing", "turn_id": "turn_remote", "status": "running"},
+            created_at_ms=1781842000301,
+        ),
+        AppEvent(
+            sequence=2,
+            global_sequence=11,
+            method="turn/approval_requested",
+            params={
+                "thread_id": "session_existing",
+                "turn_id": "turn_remote",
+                "status": "waiting_approval",
+                "approval": {"turn_id": "turn_remote", "request_id": "approval_1", "tool_name": "write"},
+            },
+            created_at_ms=1781842000302,
+        ),
+        AppEvent(
+            sequence=3,
+            method="turn/approval_resolved",
+            params={
+                "thread_id": "session_existing",
+                "turn_id": "turn_remote",
+                "status": "running",
+                "approval": {"turn_id": "turn_remote", "request_id": "approval_1", "action": "deny"},
+            },
+            created_at_ms=1781842000303,
+        ),
+        parsed_event,
+    ]
+    append_results = [remote_turn.append_event(event) for event in remote_events]
+    duplicate_result = remote_turn.append_event(
+        AppEvent(
+            sequence=1,
+            global_sequence=10,
+            method="turn/started",
+            params={"thread_id": "session_existing", "turn_id": "turn_remote", "status": "running"},
+            created_at_ms=1781842000301,
+        )
+    )
+
+    class _FixtureTuiRuntime:
+        def __init__(self) -> None:
+            self.workspace = workspace
+            self.sessions = [
+                {"id": "session_existing", "status": "ready", "message_count": 2},
+                {"id": "session_other", "status": "ready", "message_count": 0},
+            ]
+
+        def start_session(self):
+            return {"id": "session_new", "status": "ready", "message_count": 0}
+
+        def list_sessions(self):
+            return list(self.sessions)
+
+        def resume_session(self, session_id: str):
+            return {"id": session_id, "status": "ready", "message_count": 0, "messages": []}
+
+        def get_session(self, session_id: str):
+            return {
+                "id": session_id,
+                "status": "ready",
+                "message_count": 2,
+                "messages": [
+                    {"role": "user", "content": "old question"},
+                    {"role": "assistant", "content": "old answer"},
+                ],
+            }
+
+    state = TuiState(runtime=_FixtureTuiRuntime())
+    tui_steps: list[dict[str, Any]] = []
+    for request in [
+        {"path": "/tui/append-prompt", "body": {"text": "hello"}},
+        {"path": "/tui/publish", "body": {"type": "tui.prompt.append", "properties": {"text": " next"}}},
+        {"path": "/tui/show-toast", "body": {"title": "Saved", "message": "Session selected", "variant": "success"}},
+        {"path": "/tui/execute-command", "body": {"command": "help"}},
+        {"path": "/tui/open-themes", "body": {}},
+        {"path": "/tui/clear-prompt", "body": {}},
+    ]:
+        result = state.apply_control_request(request)
+        tui_steps.append(
+            {
+                "request": request,
+                "result": result,
+                "status": state.status,
+                "input_buffer": state.input_buffer,
+                "timeline": [asdict(line) for line in state.timeline],
+            }
+        )
+    invalid_state = TuiState(runtime=_FixtureTuiRuntime())
+    invalid_select = invalid_state.apply_control_request({"path": "/tui/select-session", "body": {}})
+
+    payload = {
+        "schema_version": 1,
+        "protocol": {
+            "method_map": {event_type: stream_event_to_app_method(event_type) for event_type in event_types},
+            "wrapped_tool_call": wrapped.to_dict(),
+            "lifecycle_started": lifecycle.to_dict(),
+            "tui_control_request": TuiControlRequest(path="/tui/append-prompt", body={"text": "hello"}).to_dict(),
+        },
+        "server": {
+            "health": {"ok": True, "service": "openagent-app-server", "ui_enabled": False, "auth_required": True},
+            "auth": {
+                "authenticated_paths": {
+                    "/api/health": _is_authenticated_app_path("/api/health"),
+                    "/tui/append-prompt": _is_authenticated_app_path("/tui/append-prompt"),
+                    "/": _is_authenticated_app_path("/"),
+                },
+                "expected_header": "Bearer server-secret",
+                "unauthorized": {
+                    "status": 401,
+                    "headers": {"WWW-Authenticate": 'Bearer realm="openagent-app-bridge"'},
+                    "json": {"error": "unauthorized"},
+                },
+            },
+            "sse": {
+                "replay_after_query_sequence_1": replay_after_query,
+                "replay_after_last_event_id_2": replay_after_header,
+                "ping_comment": ": ping\n\n",
+            },
+            "approval_path": {
+                "valid": list(_parse_turn_approval_path("/api/turns/turn_123/approvals/approval_456")),
+                "invalid_error": invalid_approval_path,
+            },
+            "control_routes": {
+                "cases": [
+                    {"path": path, "payload": body, "queued": TuiControlRequest(path=path, body=expected).to_dict()}
+                    for path, body, expected in control_cases
+                ],
+                "publish_samples": publish_samples,
+                "unsupported_publish_error": unsupported_publish,
+                "empty_next": {"path": "", "body": None},
+                "record_response": {"ok": True, "response": ["ok", {"applied": True}]},
+            },
+            "runtime": {
+                "interrupt_event": interrupt_event.to_dict(),
+                "turn_after_interrupt": turn.to_dict(),
+                "approval_requested": requested_approval.to_dict(),
+                "approval_resolved": resolved_approval.to_dict(),
+            },
+        },
+        "client": {
+            "helpers": {
+                "normalize": normalize_server_url("http://127.0.0.1:8787/"),
+                "join": join_server_url("http://127.0.0.1:8787/", "/api/sessions"),
+                "quote": quote_path("turn/a b"),
+                "auth_header": "Bearer secret",
+            },
+            "parsed_event": parsed_event.to_dict(),
+            "event_ids": {
+                "turn": _event_turn_id(parsed_event),
+                "session": _event_session_id(parsed_event),
+                "key": list(_remote_event_key(parsed_event, default_turn_id="turn_remote")),
+            },
+            "remote_turn": {
+                "append_results": append_results,
+                "duplicate_result": duplicate_result,
+                "status": remote_turn.status,
+                "final_answer": remote_turn.final_answer,
+                "trace": remote_turn.trace,
+                "events": [event.to_dict() for event in remote_turn.events],
+            },
+            "request_shapes": {
+                "start_session": {"method": "POST", "path": "/api/sessions", "payload": {"cwd": workspace.as_posix()}},
+                "start_turn": {"method": "POST", "path": "/api/sessions/session_existing/turns", "payload": {"input": "hello"}},
+                "interrupt": {"method": "POST", "path": "/api/turns/turn_remote/interrupt", "payload": {}},
+                "approval": {"method": "POST", "path": "/api/turns/turn_remote/approvals/approval_1", "payload": {"action": "deny"}},
+                "control_next": {"method": "GET", "path": "/tui/control/next?timeout=0.25"},
+                "control_response": {"method": "POST", "path": "/tui/control/response", "payload": {"ok": True, "result": {"applied": True}}},
+            },
+        },
+        "tui": {
+            "action_map": {
+                name: _normalize_control_action(name)
+                for name in [
+                    "append-prompt",
+                    "submit-prompt",
+                    "clear-prompt",
+                    "open-help",
+                    "open-sessions",
+                    "open-themes",
+                    "open-models",
+                    "select-session",
+                    "show-toast",
+                    "execute-command",
+                    "custom.action",
+                ]
+            },
+            "steps": tui_steps,
+            "invalid_select": {
+                "result": invalid_select,
+                "status": invalid_state.status,
+                "timeline": [asdict(line) for line in invalid_state.timeline],
+            },
+        },
+    }
+    return _scrub_fixture_root(payload, fixture_root)
+
+
 def _cli_commands_fixture() -> dict[str, Any]:
     fixture_root = Path("/tmp/openagent-rust-rewrite-fixture-goal10")
     shutil.rmtree(fixture_root, ignore_errors=True)
@@ -2098,6 +2502,7 @@ def capture(output_dir: Path) -> None:
         "provider_adapters.json": _provider_adapters_fixture(),
         "session_trace_observability.json": _session_trace_observability_fixture(),
         "mcp_runtime.json": _mcp_runtime_fixture(),
+        "app_bridge_tui.json": _app_bridge_tui_fixture(),
         "cli_commands.json": _cli_commands_fixture(),
     }
     for name, payload in fixtures.items():

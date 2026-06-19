@@ -518,13 +518,18 @@ dependencies = [
  "openagent-core",
  "openagent-protocol",
  "openagent-session",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "openagent-app-server-client"
 version = "0.1.0"
 dependencies = [
+ "openagent-app-server",
  "openagent-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -637,8 +642,11 @@ dependencies = [
 name = "openagent-tui"
 version = "0.1.0"
 dependencies = [
+ "openagent-app-server",
  "openagent-app-server-client",
  "openagent-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
