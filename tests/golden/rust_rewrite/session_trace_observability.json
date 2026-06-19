@@ -1,0 +1,316 @@
+{
+  "observability": {
+    "config": {
+      "enabled": true,
+      "include_traceback": false,
+      "input_preview_chars": 2048,
+      "jsonl": true,
+      "jsonl_dir": "observability",
+      "keep_events": true,
+      "max_events": 3
+    },
+    "event": {
+      "attributes": {
+        "output_lines": 2,
+        "result_summary": "ok",
+        "token": "[redacted]"
+      },
+      "duration_ms": 9,
+      "event_id": "event_observation",
+      "kind": "tool",
+      "name": "tool.call.finished",
+      "parent_span_id": "span_step",
+      "run_id": "run_fixture",
+      "session_id": "session_fixture",
+      "span_id": "span_tool",
+      "status": "ok",
+      "timestamp_ms": 1781840000400,
+      "trace_id": "trace_fixture"
+    },
+    "input_preview": "{\"api_key\": \"[redacted]\", \"path\": \"README.md\"}",
+    "output_stats": {
+      "output_bytes": 8,
+      "output_lines": 2
+    },
+    "trace": {
+      "agent_name": "fixture-agent",
+      "model_id": "fixture-model",
+      "provider_id": "fixture-provider",
+      "run_id": "run_fixture",
+      "session_id": "session_fixture",
+      "started_at_ms": 1781840000000,
+      "trace_id": "trace_fixture",
+      "workspace": "/tmp/openagent-fixture"
+    }
+  },
+  "runtime_logging": {
+    "config": {
+      "enabled": true,
+      "include_context": true,
+      "input_preview_chars": 2048,
+      "jsonl": true,
+      "jsonl_dir": "logs",
+      "keep_records": true,
+      "level": "WARNING",
+      "logger_name": "openagent.runtime",
+      "max_records": 500,
+      "python_logging": false
+    },
+    "record": {
+      "attributes": {
+        "authorization": "[redacted]",
+        "output_lines": 2
+      },
+      "category": "tool",
+      "level": "WARNING",
+      "log_id": "log_fixture",
+      "message": "Tool output was truncated.",
+      "run_id": "run_fixture",
+      "session_id": "session_fixture",
+      "span_id": "span_tool",
+      "timestamp_ms": 1781840000500,
+      "trace_id": "trace_fixture"
+    }
+  },
+  "runtime_warnings": {
+    "config": {
+      "context_critical_ratio": null,
+      "context_usage_ratio": null,
+      "enabled": true,
+      "max_step_cost": null,
+      "max_step_input_tokens": null,
+      "max_step_output_tokens": null,
+      "max_step_total_tokens": 12
+    },
+    "event": {
+      "code": "step_total_tokens_exceeded",
+      "display": {
+        "body": "Step total tokens exceeded budget: 18 > 12.",
+        "kind": "runtime_warning",
+        "metrics": {
+          "input_tokens": 11,
+          "output_tokens": 7,
+          "step_index": 1,
+          "threshold": 12,
+          "total_tokens": 18
+        },
+        "severity": "warning",
+        "title": "Step token budget exceeded"
+      },
+      "message": "Step total tokens exceeded budget: 18 > 12.",
+      "metrics": {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "step_index": 1,
+        "threshold": 12,
+        "total_tokens": 18
+      },
+      "severity": "warning",
+      "type": "runtime-warning"
+    },
+    "formatted": "[WARNING] Step token budget exceeded: Step total tokens exceeded budget: 18 > 12. (input_tokens=11, output_tokens=7, step_index=1, threshold=12, total_tokens=18)",
+    "record": {
+      "code": "step_total_tokens_exceeded",
+      "message": "Step total tokens exceeded budget: 18 > 12.",
+      "metrics": {
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "step_index": 1,
+        "threshold": 12,
+        "total_tokens": 18
+      },
+      "severity": "warning"
+    }
+  },
+  "schema_version": 1,
+  "session": {
+    "event": {
+      "attributes": {
+        "authorization": "secret",
+        "cost": 0.001,
+        "input_tokens": 11,
+        "output_tokens": 7
+      },
+      "duration_ms": 12,
+      "event": "model.usage",
+      "kind": "model",
+      "run_id": "run_fixture",
+      "schema_version": "openagent.session_event.v1",
+      "seq": 1,
+      "session_id": "session_fixture",
+      "status": "ok",
+      "timestamp_ms": 1781840000100
+    },
+    "message": {
+      "content": "Remember this fixture.",
+      "metadata": {
+        "message_id": "msg_fixture"
+      },
+      "name": null,
+      "role": "user",
+      "tool_call_id": null
+    },
+    "part": {
+      "attributes": {
+        "input_tokens": 11,
+        "output_tokens": 7
+      },
+      "part_id": "part_fixture",
+      "run_id": "run_fixture",
+      "schema_version": "openagent.session_part.v1",
+      "seq": 1,
+      "session_id": "session_fixture",
+      "status": "ok",
+      "step_index": 1,
+      "timestamp_ms": 1781840000110,
+      "type": "usage"
+    },
+    "state": {
+      "messages": [
+        {
+          "content": "Remember this fixture.",
+          "index": 0,
+          "message_id": "msg_fixture",
+          "metadata": {
+            "message_id": "msg_fixture"
+          },
+          "name": null,
+          "role": "user",
+          "tool_call_id": null
+        }
+      ],
+      "metadata": {
+        "session_store": {
+          "enabled": true,
+          "root_dir": "/tmp/openagent-fixture/.openagent/sessions",
+          "run_id": "run_fixture",
+          "session_id": "session_fixture",
+          "type": "file"
+        }
+      },
+      "run_id": "run_fixture",
+      "schema_version": "openagent.session_state.v1",
+      "session_id": "session_fixture",
+      "status": "idle",
+      "todos": [
+        {
+          "content": "port session store",
+          "id": "todo-fixture",
+          "priority": "high",
+          "status": "in_progress"
+        }
+      ],
+      "updated_at_ms": 1781840000120,
+      "workspace": "/tmp/openagent-fixture"
+    },
+    "summary": {
+      "event_count": 2,
+      "message_count": 1,
+      "part_count": 1,
+      "part_type_counts": {
+        "usage": 1
+      },
+      "patch_count": 0,
+      "run_id": "run_fixture",
+      "runtime_warning_count": 0,
+      "schema_version": "openagent.run_summary.v1",
+      "session_id": "session_fixture",
+      "status": "completed",
+      "step_count": 0,
+      "tool_call_count": 0,
+      "total_cost": 0.001,
+      "total_input_tokens": 11,
+      "total_output_tokens": 7
+    },
+    "todo": {
+      "content": "port session store",
+      "id": "todo-fixture",
+      "priority": "high",
+      "status": "in_progress"
+    }
+  },
+  "trace": {
+    "config": {
+      "enabled": true,
+      "exporters": {
+        "langfuse": {
+          "enabled": false
+        }
+      },
+      "keep_events": true,
+      "max_events": 12,
+      "root_dir": "runs",
+      "write_summary": true
+    },
+    "event": {
+      "attributes": {
+        "api_key": "[redacted]",
+        "cost": 0.001,
+        "input_tokens": 11,
+        "output_tokens": 7,
+        "prompt": "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP...[truncated 28 chars]"
+      },
+      "duration_ms": 25,
+      "event": "model.call.finished",
+      "event_id": "event_fixture",
+      "kind": "model",
+      "parent_span_id": "span_step",
+      "run_id": "run_fixture",
+      "seq": 1,
+      "session_id": "session_fixture",
+      "span_id": "span_model",
+      "status": "ok",
+      "timestamp_ms": 1781840000200,
+      "trace_id": "trace_fixture"
+    },
+    "rendered_summary": "Run: run_fixture\nStatus: completed\nDuration: 300ms\nEvents: 2\nSteps: 1\nModel calls: 1\nTool calls: 0\nMCP calls: 0\nSkill calls: 0\nTokens: 11/7\nReasoning tokens: 0\nCache tokens: read=0 write=0\nCost: 0.001000\nErrors: 0\n",
+    "run": {
+      "agent_name": "fixture-agent",
+      "model_id": "fixture-model",
+      "provider_id": "fixture-provider",
+      "run_id": "run_fixture",
+      "session_id": "session_fixture",
+      "started_at_ms": 1781840000000,
+      "trace_id": "trace_fixture",
+      "workspace": "/tmp/openagent-fixture"
+    },
+    "summary": {
+      "agent_name": "fixture-agent",
+      "artifact_count": 0,
+      "duration_ms": 300,
+      "ended_at_ms": 1781840000300,
+      "error_count": 0,
+      "errors": [],
+      "event_count": 2,
+      "local_tool_call_count": 0,
+      "mcp_call_count": 0,
+      "model_call_count": 1,
+      "model_id": "fixture-model",
+      "paths": {
+        "artifacts": "/tmp/openagent-fixture/.openagent/runs/run_fixture/artifacts",
+        "process": "/tmp/openagent-fixture/.openagent/runs/run_fixture/process.md",
+        "run_dir": "/tmp/openagent-fixture/.openagent/runs/run_fixture",
+        "summary": "/tmp/openagent-fixture/.openagent/runs/run_fixture/summary.json",
+        "trace": "/tmp/openagent-fixture/.openagent/runs/run_fixture/trace.jsonl"
+      },
+      "provider_id": "fixture-provider",
+      "run_id": "run_fixture",
+      "runtime_warning_count": 1,
+      "session_id": "session_fixture",
+      "skill_call_count": 0,
+      "started_at_ms": 1781840000000,
+      "status": "completed",
+      "step_count": 1,
+      "tool_call_count": 0,
+      "total_cache_read_tokens": 0,
+      "total_cache_write_tokens": 0,
+      "total_cost": 0.001,
+      "total_input_tokens": 11,
+      "total_latency_ms": 25,
+      "total_output_tokens": 7,
+      "total_reasoning_tokens": 0,
+      "trace_id": "trace_fixture",
+      "workspace": "/tmp/openagent-fixture"
+    }
+  }
+}
