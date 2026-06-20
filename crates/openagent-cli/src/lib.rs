@@ -72,6 +72,13 @@ fn has_flag(args: &[String], names: &[&str]) -> bool {
 }
 
 fn value_for(args: &[String], names: &[&str]) -> Option<String> {
+    for arg in args {
+        if let Some((name, value)) = arg.split_once('=')
+            && names.contains(&name)
+        {
+            return Some(value.to_string());
+        }
+    }
     args.windows(2)
         .find(|items| names.contains(&items[0].as_str()))
         .and_then(|items| items.get(1))
@@ -263,7 +270,7 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
     let format = value_for(args, &["--format"]).unwrap_or_else(|| "text".to_string());
     let provider = active_provider();
     if !has_flag(args, &["--skip-doctor"])
-        && !doctor_payload_from_env(&provider)["healthy"]
+        && !doctor_payload_from_args(&provider, args)["healthy"]
             .as_bool()
             .unwrap_or(false)
     {
@@ -277,6 +284,9 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
         &[
             "--workspace",
             "--dir",
+            "--config",
+            "--auth-file",
+            "--base-url",
             "--session-root",
             "--session",
             "-s",
@@ -287,9 +297,16 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
             "--format",
             "--model",
             "-m",
+            "--wire-api",
+            "--api-key",
+            "--max-steps",
             "--agent",
             "--title",
             "--attach",
+            "--password",
+            "-p",
+            "--username",
+            "-u",
             "--variant",
             "--port",
         ],
@@ -375,16 +392,9 @@ fn models_command(args: &[String]) -> CliRunResult {
         Ok(provider) => provider,
         Err(error) => return err_text(2, error),
     };
-    let model_id = env::var("OPENAI_MODEL").ok().unwrap_or_else(|| {
-        if normalized == "openai" {
-            DEFAULT_MODEL.to_string()
-        } else {
-            provider_default_model(&normalized)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| DEFAULT_MODEL.to_string())
-        }
-    });
+    let model_id = value_for(args, &["--model", "-m"])
+        .or_else(|| provider_env_value(&normalized, "model"))
+        .unwrap_or_else(|| default_model_for_provider(&normalized));
     let model = if normalized == "anthropic" {
         serde_json::to_value(anthropic_model(&model_id, 200_000, 8192))
             .unwrap_or_else(|_| json!({}))
@@ -1122,6 +1132,23 @@ fn active_provider() -> String {
     env::var("OPENAGENT_PROVIDER")
         .or_else(|_| env::var("OPENAGENT_ACTIVE_PROVIDER"))
         .unwrap_or_else(|_| "openai".to_string())
+}
+
+fn provider_env_value(provider: &str, field: &str) -> Option<String> {
+    let env = default_env_mapping(provider).ok()?;
+    let env_name = env.get(field)?;
+    env::var(env_name).ok().filter(|value| !value.is_empty())
+}
+
+fn default_model_for_provider(provider: &str) -> String {
+    if provider == "openai" {
+        DEFAULT_MODEL.to_string()
+    } else {
+        provider_default_model(provider)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| DEFAULT_MODEL.to_string())
+    }
 }
 
 fn workspace_from_args(args: &[String]) -> PathBuf {
@@ -1896,7 +1923,7 @@ pub fn run_cli_command(argv: &[String]) -> CliRunResult {
             let provider = env::var("OPENAGENT_PROVIDER")
                 .or_else(|_| env::var("OPENAGENT_ACTIVE_PROVIDER"))
                 .unwrap_or_else(|_| "openai".to_string());
-            let payload = doctor_payload_from_env(&provider);
+            let payload = doctor_payload_from_args(&provider, &argv[1..]);
             let healthy = payload
                 .get("healthy")
                 .and_then(Value::as_bool)
@@ -2053,6 +2080,57 @@ fn custom_command_record(include_template: bool) -> Value {
         );
     }
     Value::Object(object)
+}
+
+fn doctor_payload_from_args(provider: &str, args: &[String]) -> Value {
+    let mut payload = doctor_payload_from_env(provider);
+    let Ok(normalized) = normalize_provider(Some(provider)) else {
+        return payload;
+    };
+    let Some(object) = payload.as_object_mut() else {
+        return payload;
+    };
+    if normalized == "anthropic" {
+        if let Some(api_key) = value_for(args, &["--api-key"])
+            && !api_key.is_empty()
+        {
+            object.insert("api_key_set".to_string(), json!(true));
+            object.insert(
+                "healthy".to_string(),
+                json!(bool_field(object, "dependency_ok")),
+            );
+            object.insert(
+                "model_endpoint_ok".to_string(),
+                json!(bool_field(object, "dependency_ok")),
+            );
+        }
+        if let Some(base_url) = value_for(args, &["--base-url"]) {
+            object.insert("base_url".to_string(), json!(base_url));
+        }
+        if let Some(model) = value_for(args, &["--model", "-m"]) {
+            object.insert("model".to_string(), json!(model));
+        }
+        if let Some(wire_api) = value_for(args, &["--wire-api"]) {
+            object.insert("wire_api".to_string(), json!(wire_api));
+        }
+        return payload;
+    }
+
+    if let Some(api_key) = value_for(args, &["--api-key"])
+        && !api_key.is_empty()
+    {
+        object.insert("api_key_set".to_string(), json!(true));
+    }
+    if let Some(base_url) = value_for(args, &["--base-url"]) {
+        object.insert("base_url".to_string(), json!(base_url));
+    }
+    if let Some(model) = value_for(args, &["--model", "-m"]) {
+        object.insert("model".to_string(), json!(model));
+    }
+    if let Some(wire_api) = value_for(args, &["--wire-api"]) {
+        object.insert("wire_api".to_string(), json!(wire_api));
+    }
+    payload
 }
 
 fn doctor_payload_from_env(provider: &str) -> Value {

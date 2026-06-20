@@ -51,6 +51,40 @@ fn binary_doctor_json_smoke_uses_environment() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn binary_doctor_json_respects_cli_model_overrides() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_openagent"))
+        .args([
+            "doctor",
+            "--format",
+            "json",
+            "--base-url",
+            "http://cli.test",
+            "--model",
+            "gpt-cli",
+            "--wire-api",
+            "chat",
+            "--api-key",
+            "cli-secret",
+        ])
+        .env_clear()
+        .env("OPENAI_BASE_URL", "http://env.test")
+        .env("OPENAI_MODEL", "gpt-env")
+        .env("OPENAI_WIRE_API", "responses")
+        .env("OPENAGENT_DOCTOR_MODEL_ENDPOINT_OK", "1")
+        .env("OPENAGENT_DOCTOR_MODEL_ENDPOINT_MESSAGE", "cli probe")
+        .output()?;
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout)?;
+    let payload: Value = serde_json::from_str(&stdout)?;
+    assert_eq!(payload["base_url"], "http://cli.test");
+    assert_eq!(payload["model"], "gpt-cli");
+    assert_eq!(payload["wire_api"], "chat");
+    assert_eq!(payload["api_key_set"], true);
+    assert!(!stdout.contains("cli-secret"));
+    Ok(())
+}
+
+#[test]
 fn binary_help_smoke_covers_legacy_command_surface() -> Result<(), Box<dyn Error>> {
     let root = run_openagent(["--help"], None)?;
     assert!(root.status.success());
@@ -123,6 +157,54 @@ fn binary_run_and_models_smokes_are_machine_readable() -> Result<(), Box<dyn Err
     let payload: Value = serde_json::from_slice(&models.stdout)?;
     assert_eq!(payload["provider"], "openai");
     assert_eq!(payload["models"][0]["id"], "gpt-5.5");
+    Ok(())
+}
+
+#[test]
+fn binary_run_does_not_leak_flag_values_into_prompt() -> Result<(), Box<dyn Error>> {
+    let run = run_openagent(
+        [
+            "run",
+            "--skip-doctor",
+            "--base-url",
+            "http://private-gateway.test",
+            "--model",
+            "gpt-private",
+            "--api-key",
+            "private-key",
+            "--max-steps",
+            "2",
+            "--format",
+            "json",
+            "hello",
+        ],
+        None,
+    )?;
+    assert!(run.status.success());
+    let stdout = String::from_utf8(run.stdout)?;
+    let events = stdout
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(events[0]["params"]["prompt"], "hello");
+    assert!(!stdout.contains("private-gateway"));
+    assert!(!stdout.contains("gpt-private"));
+    assert!(!stdout.contains("private-key"));
+    Ok(())
+}
+
+#[test]
+fn binary_models_uses_provider_specific_model_environment() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_openagent"))
+        .args(["models", "anthropic", "--format", "json"])
+        .env_clear()
+        .env("OPENAI_MODEL", "gpt-env")
+        .env("ANTHROPIC_MODEL", "claude-env")
+        .output()?;
+    assert!(output.status.success());
+    let payload: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(payload["provider"], "anthropic");
+    assert_eq!(payload["models"][0]["id"], "claude-env");
     Ok(())
 }
 
