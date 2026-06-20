@@ -1,14 +1,25 @@
 //! CLI crate for the Rust rewrite.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env, fs,
+    io::{self, IsTerminal, Read},
     path::{Path, PathBuf},
+    process::Command,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use openagent_protocol::{ChatMessage, Role, Usage};
 use openagent_provider::{
-    anthropic_model, default_env_mapping, normalize_provider, openai_compatible_model,
-    provider_auth_methods, provider_default_base_url, provider_default_model,
+    AnthropicLanguageModelConfig, OpenAiLanguageModelConfig, ProviderStreamEvent, anthropic_model,
+    build_anthropic_payload, build_openai_chat_payload, build_openai_responses_payload,
+    default_env_mapping, normalize_openai_responses_response, normalize_provider,
+    openai_compatible_model, provider_auth_methods, provider_default_base_url,
+    provider_default_model, provider_label, provider_requires_api_key, summarize_http_error_body,
+};
+use openagent_session::{
+    FileSessionStore, Session, SessionEventOptions, SessionPartOptions, SessionStatus,
+    StartRunOptions,
 };
 use serde_json::{Map, Value, json};
 
@@ -124,6 +135,7 @@ fn positional_args(args: &[String], value_flags: &[&str]) -> Vec<String> {
     values
 }
 
+#[allow(dead_code)]
 fn simple_command(
     name: &str,
     args: &[String],
@@ -163,7 +175,7 @@ fn root_help() -> &'static str {
        providers    provider credential alias for auth\n\
        mcp          manage remote MCP servers\n\
        doctor       check local model gateway configuration\n\n\
-     OpenCode parity backlog commands: agent, plugin, github, pr, debug, upgrade, uninstall, acp, import, export"
+     Additional OpenCode parity commands: agent, plugin, github, pr, debug, db, upgrade, uninstall, acp, import, export, generate, console"
 }
 
 fn run_help() -> &'static str {
@@ -181,6 +193,7 @@ fn run_help() -> &'static str {
        --title <title>                  session title\n\
        --attach <url>                   attach to a running server\n\
        --dir, --workspace <path>        workspace path\n\
+       --session-root <path>            session store root\n\
        --variant <name>                 provider-specific variant\n\
        --thinking                       show thinking blocks\n\
        --interactive, -i                run direct interactive mode\n\
@@ -190,7 +203,7 @@ fn run_help() -> &'static str {
 
 fn tui_help() -> &'static str {
     "Usage: openagent tui [options]\n\n\
-     Options: --workspace <path>, --session-root <path>, -s/--session <id>, -c/--continue, --skip-doctor"
+     Options: --workspace <path>, --session-root <path>, -s/--session <id>, -c/--continue, --fork, --model <provider/model>, --agent <name>, --prompt <text>, --skip-doctor"
 }
 
 fn serve_help() -> &'static str {
@@ -210,7 +223,7 @@ fn client_help() -> &'static str {
 
 fn attach_help() -> &'static str {
     "Usage: openagent attach <url> [options]\n\n\
-     Options: --workspace <path>, -s/--session <id>, -c/--continue, --skip-health-check, --server-token <token>"
+     Options: --workspace <path>, -s/--session <id>, -c/--continue, --fork, --skip-health-check, --server-token <token>, -u/--username <name>, -p/--password <password>"
 }
 
 fn doctor_help() -> &'static str {
@@ -224,9 +237,11 @@ fn models_help() -> &'static str {
 }
 
 fn session_help() -> &'static str {
-    "Usage: openagent session <list|export|delete> [options]\n\n\
+    "Usage: openagent session <list|export|import|share|delete> [options]\n\n\
      list:   --session-root <path>, --format <table|json>, --max-count <n>\n\
-     export: --session-root <path>, --sanitize <session_id>\n\
+     export: --session-root <path>, --sanitize [session_id]\n\
+     import: --session-root <path> <file-or-url>\n\
+     share:  --session-root <path> [session_id]\n\
      delete: --session-root <path> <session_id>"
 }
 
@@ -259,7 +274,7 @@ fn auth_help(command_name: &str) -> String {
 fn mcp_help() -> &'static str {
     "Usage: openagent mcp <list|show|add|remove|auth|logout|doctor|debug> [options]\n\n\
      add: name --url <url> --transport <auto|http|sse> --header KEY=VALUE --timeout-ms <n> --disabled --config <file>\n\
-     auth: list|status|set-token\n\
+     auth: list|status|login|set-token|callback\n\
      doctor/debug: --refresh --format <table|json>"
 }
 
@@ -268,7 +283,7 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
         return ok_text(run_help());
     }
     let format = value_for(args, &["--format"]).unwrap_or_else(|| "text".to_string());
-    let provider = active_provider();
+    let (provider, model_id) = provider_and_model_from_args(args);
     if !has_flag(args, &["--skip-doctor"])
         && !doctor_payload_from_args(&provider, args)["healthy"]
             .as_bool()
@@ -297,6 +312,7 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
             "--format",
             "--model",
             "-m",
+            "--provider",
             "--wire-api",
             "--api-key",
             "--max-steps",
@@ -312,6 +328,14 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
         ],
     )
     .join(" ");
+    let stdin_text = read_piped_stdin();
+    let message = if message.trim().is_empty() {
+        stdin_text.trim().to_string()
+    } else if stdin_text.trim().is_empty() {
+        message
+    } else {
+        format!("{}\n{}", message.trim(), stdin_text.trim())
+    };
     if message.trim().is_empty() {
         return err_text(2, "openagent run requires a prompt or piped stdin");
     }
@@ -321,12 +345,152 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
         Err(error) => return err_text(1, error),
     };
     let prompt = build_prompt_with_files(&message, &files);
-    let answer =
-        env::var("OPENAGENT_MOCK_ANSWER").unwrap_or_else(|_| "hello from openagent".to_string());
+    let agent_name = value_for(args, &["--agent"]).unwrap_or_else(|| "default".to_string());
+    let max_steps = value_for(args, &["--max-steps"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_else(|| DEFAULT_MAX_STEPS.parse::<u64>().unwrap_or(30));
+    let run_selection = match prepare_run_session(args, &workspace, &provider, &model_id) {
+        Ok(selection) => selection,
+        Err(error) => return err_text(1, error),
+    };
+    let forked = run_selection.forked;
+    let mut session = run_selection.session;
+    let store = run_selection.store;
+    let run_id = new_cli_id("run");
+    let trace_id = new_cli_id("trace");
+    session.status = SessionStatus::Running;
+    session
+        .metadata
+        .insert("agent".to_string(), json!(agent_name.clone()));
+    session
+        .metadata
+        .insert("provider".to_string(), json!(provider.clone()));
+    session
+        .metadata
+        .insert("model".to_string(), json!(model_id.clone()));
+    if let Some(title) = title_from_args(args, &message) {
+        session.metadata.insert("title".to_string(), json!(title));
+    }
+    if let Some(variant) = value_for(args, &["--variant"]) {
+        session
+            .metadata
+            .insert("variant".to_string(), json!(variant));
+    }
+    session.metadata.insert(
+        "thinking".to_string(),
+        json!(has_flag(args, &["--thinking"])),
+    );
+    session.metadata.insert(
+        "dangerously_skip_permissions".to_string(),
+        json!(has_flag(args, &["--dangerously-skip-permissions"])),
+    );
+    if let Err(error) = store.start_run(
+        &mut session,
+        StartRunOptions {
+            run_id: run_id.clone(),
+            trace_id,
+            agent_name,
+            model_id: Some(model_id.clone()),
+            provider_id: Some(provider.clone()),
+            permission: if has_flag(args, &["--dangerously-skip-permissions"]) {
+                "auto_allow".to_string()
+            } else {
+                "ask".to_string()
+            },
+            max_steps,
+            started_at_ms: None,
+        },
+    ) {
+        return err_text(1, format!("failed to start session run: {error}"));
+    }
+    let user_message = chat_message(Role::User, prompt.clone());
+    let user_index = session.messages.len() as u64;
+    session.add(user_message.clone());
+    if let Err(error) = store.append_message(&session, &user_message, &run_id, user_index) {
+        return err_text(1, format!("failed to record user message: {error}"));
+    }
+    let provider_result = call_provider_for_run(args, &provider, &model_id, &session.messages);
+    let provider_result = match provider_result {
+        Ok(result) => result,
+        Err(error) => {
+            session.status = SessionStatus::Stop;
+            let _ = store.finish_run(&session, &run_id, "failed", 1, Some("error"), Some(&error));
+            return err_text(1, error);
+        }
+    };
+    let answer = provider_result.answer;
+    let assistant_message = chat_message(Role::Assistant, answer.clone());
+    let assistant_index = session.messages.len() as u64;
+    session.add(assistant_message.clone());
+    session.status = SessionStatus::Idle;
+    if let Err(error) = store.append_message(&session, &assistant_message, &run_id, assistant_index)
+    {
+        return err_text(1, format!("failed to record assistant message: {error}"));
+    }
+    let _ = store.record_event(
+        &session.id,
+        &run_id,
+        "model.usage",
+        SessionEventOptions {
+            kind: "model".to_string(),
+            attributes: BTreeMap::from([
+                (
+                    "input_tokens".to_string(),
+                    json!(provider_result.usage.input_tokens),
+                ),
+                (
+                    "output_tokens".to_string(),
+                    json!(provider_result.usage.output_tokens),
+                ),
+                ("cost".to_string(), json!(provider_result.usage.cost)),
+                ("source".to_string(), json!(provider_result.source.clone())),
+            ]),
+            ..SessionEventOptions::default()
+        },
+    );
+    let _ = store.append_part(
+        &session.id,
+        &run_id,
+        "text",
+        SessionPartOptions {
+            attributes: BTreeMap::from([
+                ("role".to_string(), json!("assistant")),
+                ("chars".to_string(), json!(answer.chars().count())),
+            ]),
+            step_index: Some(1),
+            ..SessionPartOptions::default()
+        },
+    );
+    if let Err(error) = store.finish_run(&session, &run_id, "completed", 1, Some("stop"), None) {
+        return err_text(1, format!("failed to finish session run: {error}"));
+    }
+    let share = if has_flag(args, &["--share"]) {
+        match share_session(&store, &session.id, false) {
+            Ok(value) => Some(value),
+            Err(error) => return err_text(1, error),
+        }
+    } else {
+        None
+    };
     if format == "json" {
+        let mut completed = json!({
+            "method": "turn/completed",
+            "params": {
+                "status": "completed",
+                "final_answer": answer.clone(),
+                "session_id": session.id.clone(),
+                "run_id": run_id.clone(),
+                "provider": provider.clone(),
+                "source": provider_result.source,
+                "forked": forked,
+            }
+        });
+        if let Some(share) = share {
+            completed["params"]["share"] = share;
+        }
         let events = [
-            json!({"method": "item/agentMessage/delta", "params": {"delta": answer, "prompt": prompt}}),
-            json!({"method": "turn/completed", "params": {"status": "completed", "final_answer": answer}}),
+            json!({"method": "item/agentMessage/delta", "params": {"delta": answer.clone(), "prompt": prompt, "session_id": session.id.clone(), "run_id": run_id.clone()}}),
+            completed,
         ];
         return ok_text(
             events
@@ -336,7 +500,13 @@ fn run_prompt_command(args: &[String]) -> CliRunResult {
                 .join("\n"),
         );
     }
-    ok_text(answer)
+    let mut text = answer;
+    if let Some(share) = share
+        && let Some(url) = share.get("url").and_then(Value::as_str)
+    {
+        text.push_str(&format!("\n\nShared session: {url}"));
+    }
+    ok_text(text)
 }
 
 fn client_command(args: &[String]) -> CliRunResult {
@@ -346,6 +516,9 @@ fn client_command(args: &[String]) -> CliRunResult {
     let server_url = value_for(args, &["--server-url"])
         .or_else(|| env::var("OPENAGENT_SERVER_URL").ok())
         .unwrap_or_else(|| DEFAULT_SERVER_URL.to_string());
+    let server_token = value_for(args, &["--server-token"])
+        .or_else(|| env::var(DEFAULT_SERVER_TOKEN_ENV).ok())
+        .or_else(|| value_for(args, &["--server-token-env"]).and_then(|name| env::var(name).ok()));
     let message = positional_args(
         args,
         &[
@@ -364,19 +537,47 @@ fn client_command(args: &[String]) -> CliRunResult {
         ],
     )
     .join(" ");
-    let payload = json!({
-        "server_url": server_url.trim_end_matches('/'),
-        "message": message,
-        "session": value_for(args, &["--session", "-s"]),
-        "continue": has_flag(args, &["--continue", "-c"]),
-    });
+    let workspace = workspace_from_args(args);
+    let files = match attached_files(&workspace, &values_for(args, &["--file", "-f"])) {
+        Ok(files) => files,
+        Err(error) => return err_text(1, error),
+    };
+    let prompt = build_prompt_with_files(&message, &files);
+    if prompt.trim().is_empty() {
+        return err_text(2, "openagent client requires a prompt");
+    }
+    let session_id = match remote_select_session(
+        &server_url,
+        server_token.as_deref(),
+        value_for(args, &["--session", "-s"]),
+        has_flag(args, &["--continue", "-c"]),
+        &workspace,
+    ) {
+        Ok(session_id) => session_id,
+        Err(error) => return err_text(1, error),
+    };
+    let payload =
+        match remote_start_turn(&server_url, server_token.as_deref(), &session_id, &prompt) {
+            Ok(payload) => payload,
+            Err(error) => return err_text(1, error),
+        };
     if value_for(args, &["--format"]).as_deref() == Some("json") {
+        if let Some(events) = payload.get("events").and_then(Value::as_array) {
+            return ok_text(
+                events
+                    .iter()
+                    .map(python_json_dumps)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
         return CliRunResult::ok_json(&payload);
     }
-    ok_text(format!(
-        "prepared App Bridge client request for {}",
-        payload["server_url"].as_str().unwrap_or(DEFAULT_SERVER_URL)
-    ))
+    if let Some(events) = payload.get("events").and_then(Value::as_array) {
+        ok_text(text_from_app_events(events))
+    } else {
+        ok_text(python_json_dumps(&payload))
+    }
 }
 
 fn models_command(args: &[String]) -> CliRunResult {
@@ -384,6 +585,11 @@ fn models_command(args: &[String]) -> CliRunResult {
         return ok_text(models_help());
     }
     let format = value_for(args, &["--format"]).unwrap_or_else(|| "table".to_string());
+    if has_flag(args, &["--refresh"])
+        && let Err(error) = refresh_models_cache()
+    {
+        return err_text(1, error);
+    }
     let provider = positional_args(args, &["--format"])
         .first()
         .cloned()
@@ -392,24 +598,50 @@ fn models_command(args: &[String]) -> CliRunResult {
         Ok(provider) => provider,
         Err(error) => return err_text(2, error),
     };
-    let model_id = value_for(args, &["--model", "-m"])
-        .or_else(|| provider_env_value(&normalized, "model"))
-        .unwrap_or_else(|| default_model_for_provider(&normalized));
-    let model = if normalized == "anthropic" {
-        serde_json::to_value(anthropic_model(&model_id, 200_000, 8192))
-            .unwrap_or_else(|_| json!({}))
+    let verbose = has_flag(args, &["--verbose"]);
+    let cached = load_cached_provider_models(&normalized);
+    let models = if let Some(models) = cached.filter(|items| !items.is_empty()) {
+        models
     } else {
-        serde_json::to_value(openai_compatible_model(&normalized, &model_id))
-            .unwrap_or_else(|_| json!({}))
+        let model_id = value_for(args, &["--model", "-m"])
+            .or_else(|| provider_env_value(&normalized, "model"))
+            .unwrap_or_else(|| default_model_for_provider(&normalized));
+        vec![if normalized == "anthropic" {
+            serde_json::to_value(anthropic_model(&model_id, 200_000, 8192))
+                .unwrap_or_else(|_| json!({}))
+        } else {
+            serde_json::to_value(openai_compatible_model(&normalized, &model_id))
+                .unwrap_or_else(|_| json!({}))
+        }]
     };
-    let payload = json!({"provider": normalized, "models": [model]});
+    let payload = json!({
+        "provider": normalized,
+        "provider_label": provider_label(&provider).unwrap_or(provider),
+        "models": models,
+        "cache_path": models_cache_path().to_string_lossy(),
+        "refreshed": has_flag(args, &["--refresh"]),
+    });
     if format == "json" {
         CliRunResult::ok_json(&payload)
     } else {
+        let rows = payload["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|model| {
+                let id = model.get("id").and_then(Value::as_str).unwrap_or("-");
+                if verbose {
+                    format!("{id}\n{}", python_json_dumps(model))
+                } else {
+                    id.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         ok_text(format!(
-            "provider  model\n--------  -----\n{}  {}",
+            "provider: {}\n{}",
             payload["provider"].as_str().unwrap_or("openai"),
-            model_id
+            rows
         ))
     }
 }
@@ -785,10 +1017,14 @@ fn mcp_remove(args: &[String]) -> CliRunResult {
 
 fn mcp_auth(args: &[String]) -> CliRunResult {
     if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
-        return ok_text("Usage: openagent mcp auth <list|status|set-token> [options]");
+        return ok_text(
+            "Usage: openagent mcp auth <list|status|login|set-token|callback> [options]",
+        );
     }
     match args[0].as_str() {
         "list" | "ls" | "status" => mcp_doctor(&args[1..]),
+        "login" | "start" => mcp_auth_login(&args[1..]),
+        "callback" => mcp_auth_callback(&args[1..]),
         "set-token" => {
             let positionals = positional_args(
                 &args[1..],
@@ -837,6 +1073,153 @@ fn mcp_auth(args: &[String]) -> CliRunResult {
     }
 }
 
+fn mcp_auth_login(args: &[String]) -> CliRunResult {
+    let positionals = positional_args(
+        args,
+        &[
+            "--config",
+            "--workspace",
+            "--dir",
+            "--client-id",
+            "--client-secret",
+            "--authorize-url",
+            "--token-url",
+            "--redirect-uri",
+            "--scope",
+            "--format",
+        ],
+    );
+    let Some(name) = positionals.first() else {
+        return err_text(2, "mcp auth login requires a server name");
+    };
+    let config_path = mcp_config_path(args);
+    let mut config = read_json_file(&config_path);
+    let Some(server) = config
+        .get_mut("mcp")
+        .and_then(Value::as_object_mut)
+        .and_then(|servers| servers.get_mut(name))
+        .and_then(Value::as_object_mut)
+    else {
+        return err_text(1, format!("MCP server not found: {name}"));
+    };
+    let state = new_cli_id("mcp_oauth");
+    let redirect_uri = value_for(args, &["--redirect-uri"])
+        .unwrap_or_else(|| "http://127.0.0.1:8787/mcp/oauth/callback".to_string());
+    let authorize_url = value_for(args, &["--authorize-url"])
+        .or_else(|| {
+            server
+                .get("authorize_url")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            let url = server
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            format!("{}/authorize", url.trim_end_matches('/'))
+        });
+    let client_id =
+        value_for(args, &["--client-id"]).unwrap_or_else(|| "openagent-cli".to_string());
+    let scope = value_for(args, &["--scope"]).unwrap_or_else(|| "mcp".to_string());
+    let url = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}",
+        authorize_url,
+        url_encode(&client_id),
+        url_encode(&redirect_uri),
+        url_encode(&scope),
+        url_encode(&state)
+    );
+    server.insert(
+        "oauth".to_string(),
+        json!({
+            "state": state,
+            "client_id": client_id,
+            "client_secret": value_for(args, &["--client-secret"]).unwrap_or_default(),
+            "authorize_url": authorize_url,
+            "token_url": value_for(args, &["--token-url"]),
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "status": "authorization_required",
+            "updated_at_ms": now_ms_cli(),
+        }),
+    );
+    if let Err(error) = write_json_file(&config_path, &config) {
+        return err_text(1, error);
+    }
+    CliRunResult::ok_json(&json!({
+        "config_path": config_path.to_string_lossy(),
+        "name": name,
+        "status": "authorization_required",
+        "authorize_url": url,
+    }))
+}
+
+fn mcp_auth_callback(args: &[String]) -> CliRunResult {
+    let positionals = positional_args(
+        args,
+        &[
+            "--config",
+            "--workspace",
+            "--dir",
+            "--code",
+            "--state",
+            "--access-token",
+            "--format",
+        ],
+    );
+    let Some(name) = positionals.first() else {
+        return err_text(2, "mcp auth callback requires a server name");
+    };
+    let config_path = mcp_config_path(args);
+    let mut config = read_json_file(&config_path);
+    let Some(server) = config
+        .get_mut("mcp")
+        .and_then(Value::as_object_mut)
+        .and_then(|servers| servers.get_mut(name))
+        .and_then(Value::as_object_mut)
+    else {
+        return err_text(1, format!("MCP server not found: {name}"));
+    };
+    let expected_state = server
+        .get("oauth")
+        .and_then(|value| value.get("state"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let Some(state) = value_for(args, &["--state"])
+        && !expected_state.is_empty()
+        && state != expected_state
+    {
+        return err_text(1, "MCP OAuth state mismatch");
+    }
+    let access_token = value_for(args, &["--access-token"]).unwrap_or_else(|| {
+        value_for(args, &["--code"])
+            .map(|code| format!("code:{code}"))
+            .unwrap_or_default()
+    });
+    if access_token.is_empty() {
+        return err_text(2, "mcp auth callback requires --code or --access-token");
+    }
+    let headers = server.entry("headers").or_insert_with(|| json!({}));
+    if let Some(headers) = headers.as_object_mut() {
+        headers.insert(
+            "Authorization".to_string(),
+            json!(format!("Bearer {access_token}")),
+        );
+    }
+    server.insert(
+        "oauth".to_string(),
+        json!({"status": "authorized", "updated_at_ms": now_ms_cli()}),
+    );
+    if let Err(error) = write_json_file(&config_path, &config) {
+        return err_text(1, error);
+    }
+    CliRunResult::ok_json(
+        &json!({"config_path": config_path.to_string_lossy(), "name": name, "status": "authorized"}),
+    )
+}
+
 fn mcp_logout(args: &[String]) -> CliRunResult {
     let positionals = positional_args(args, &["--config", "--workspace", "--dir", "--format"]);
     let Some(name) = positionals.first() else {
@@ -864,15 +1247,48 @@ fn mcp_logout(args: &[String]) -> CliRunResult {
 fn mcp_doctor(args: &[String]) -> CliRunResult {
     let config_path = mcp_config_path(args);
     let config = read_json_file(&config_path);
+    let refresh = has_flag(args, &["--refresh"]);
     let servers = mcp_public_servers(&config)
         .into_iter()
         .map(|mut server| {
             if let Some(object) = server.as_object_mut() {
-                object.insert("status".to_string(), json!("idle"));
+                let probe = if refresh {
+                    probe_url(
+                        object
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    )
+                } else {
+                    Ok("not refreshed".to_string())
+                };
+                let ok = probe.is_ok();
+                object.insert(
+                    "status".to_string(),
+                    json!(if refresh {
+                        if ok { "reachable" } else { "failed" }
+                    } else {
+                        "idle"
+                    }),
+                );
                 object.insert("tool_count".to_string(), json!(0));
-                object.insert("last_error".to_string(), Value::Null);
+                object.insert(
+                    "last_error".to_string(),
+                    probe
+                        .as_ref()
+                        .err()
+                        .map_or(Value::Null, |error| json!(error)),
+                );
+                object.insert(
+                    "last_refreshed_at".to_string(),
+                    if refresh {
+                        json!(now_ms_cli())
+                    } else {
+                        Value::Null
+                    },
+                );
                 object.insert("tools".to_string(), json!([]));
-                object.insert("ok".to_string(), json!(true));
+                object.insert("ok".to_string(), json!(ok));
             }
             server
         })
@@ -882,8 +1298,8 @@ fn mcp_doctor(args: &[String]) -> CliRunResult {
         "configured": !servers.is_empty(),
         "enabled": servers.iter().any(|server| server["enabled"].as_bool().unwrap_or(false)),
         "server_count": servers.len(),
-        "ok": true,
-        "refresh_error": null,
+        "ok": servers.iter().all(|server| server["ok"].as_bool().unwrap_or(false)),
+        "refresh_error": servers.iter().find_map(|server| server["last_error"].as_str()).map(str::to_string),
         "servers": servers,
     });
     if value_for(args, &["--format"]).as_deref() == Some("json") {
@@ -920,6 +1336,8 @@ fn session_command(args: &[String]) -> CliRunResult {
     match args[0].as_str() {
         "list" | "ls" => session_list(&args[1..]),
         "export" => session_export(&args[1..]),
+        "import" => session_import(&args[1..]),
+        "share" => session_share(&args[1..]),
         "delete" | "rm" => session_delete(&args[1..]),
         _ => err_text(2, format!("unknown session command: {}", args[0])),
     }
@@ -971,14 +1389,19 @@ fn session_list(args: &[String]) -> CliRunResult {
 
 fn session_export(args: &[String]) -> CliRunResult {
     let positionals = positional_args(args, &["--workspace", "--dir", "--session-root"]);
-    let Some(session_id) = positionals.first() else {
-        return err_text(2, "session export requires a session id");
+    let root = session_root_from_args(args);
+    let session_id = if let Some(session_id) = positionals.first() {
+        session_id.clone()
+    } else {
+        match latest_session_id(&root) {
+            Some(session_id) => session_id,
+            None => return err_text(2, "session export requires a session id"),
+        }
     };
-    if !valid_session_id(session_id) {
+    if !valid_session_id(&session_id) {
         return err_text(2, "Invalid session id");
     }
-    let root = session_root_from_args(args);
-    let state_path = root.join(session_id).join("state.latest.json");
+    let state_path = root.join(&session_id).join("state.latest.json");
     let mut state = read_json_file(&state_path);
     if state.as_object().is_none_or(Map::is_empty) {
         return err_text(1, format!("Session state not found: {session_id}"));
@@ -989,6 +1412,41 @@ fn session_export(args: &[String]) -> CliRunResult {
     CliRunResult::ok_json(
         &json!({"schema_version": "openagent.session_export.v1", "session": state}),
     )
+}
+
+fn session_import(args: &[String]) -> CliRunResult {
+    let positionals = positional_args(
+        args,
+        &["--workspace", "--dir", "--session-root", "--format"],
+    );
+    let Some(source) = positionals.first() else {
+        return err_text(2, "session import requires a file or URL");
+    };
+    match import_session_source(&session_root_from_args(args), source) {
+        Ok(payload) => CliRunResult::ok_json(&payload),
+        Err(error) => err_text(1, error),
+    }
+}
+
+fn session_share(args: &[String]) -> CliRunResult {
+    let positionals = positional_args(
+        args,
+        &["--workspace", "--dir", "--session-root", "--format"],
+    );
+    let root = session_root_from_args(args);
+    let session_id = if let Some(session_id) = positionals.first() {
+        session_id.clone()
+    } else {
+        match latest_session_id(&root) {
+            Some(session_id) => session_id,
+            None => return err_text(2, "session share requires a session id"),
+        }
+    };
+    let store = FileSessionStore::new(root);
+    match share_session(&store, &session_id, has_flag(args, &["--sanitize"])) {
+        Ok(payload) => CliRunResult::ok_json(&payload),
+        Err(error) => err_text(1, error),
+    }
 }
 
 fn session_delete(args: &[String]) -> CliRunResult {
@@ -1024,6 +1482,10 @@ fn stats_command(args: &[String]) -> CliRunResult {
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
+                continue;
+            }
+            let state = read_json_file(&path.join("state.latest.json"));
+            if state.as_object().is_none_or(Map::is_empty) {
                 continue;
             }
             session_count += 1;
@@ -1116,6 +1578,1097 @@ fn custom_command_render(args: &[String]) -> CliRunResult {
     }
 }
 
+#[derive(Clone, Debug)]
+struct ProviderRunResult {
+    answer: String,
+    usage: Usage,
+    source: String,
+}
+
+#[derive(Debug)]
+struct RunSessionSelection {
+    store: FileSessionStore,
+    session: Session,
+    forked: bool,
+}
+
+fn read_piped_stdin() -> String {
+    if io::stdin().is_terminal() {
+        return String::new();
+    }
+    let mut input = String::new();
+    let _ = io::stdin().read_to_string(&mut input);
+    input
+}
+
+fn provider_and_model_from_args(args: &[String]) -> (String, String) {
+    if let Some(raw) = value_for(args, &["--model", "-m"])
+        && let Some((provider, model)) = raw.split_once('/')
+        && !provider.is_empty()
+        && !model.is_empty()
+    {
+        let provider = normalize_provider(Some(provider)).unwrap_or_else(|_| provider.to_string());
+        return (provider, model.to_string());
+    }
+    let provider = value_for(args, &["--provider"]).unwrap_or_else(active_provider);
+    let provider = normalize_provider(Some(&provider)).unwrap_or(provider);
+    let model = value_for(args, &["--model", "-m"])
+        .or_else(|| provider_env_value(&provider, "model"))
+        .unwrap_or_else(|| default_model_for_provider(&provider));
+    (provider, model)
+}
+
+fn title_from_args(args: &[String], message: &str) -> Option<String> {
+    let title = value_for(args, &["--title"])?;
+    if title.is_empty() {
+        let compact = message.split_whitespace().collect::<Vec<_>>().join(" ");
+        return Some(if compact.chars().count() > 50 {
+            format!("{}...", compact.chars().take(50).collect::<String>())
+        } else {
+            compact
+        });
+    }
+    Some(title)
+}
+
+fn prepare_run_session(
+    args: &[String],
+    workspace: &Path,
+    provider: &str,
+    model_id: &str,
+) -> Result<RunSessionSelection, String> {
+    let root = session_root_from_args(args);
+    let store = FileSessionStore::new(root.clone());
+    let explicit = value_for(args, &["--session", "-s"]);
+    let continue_last = has_flag(args, &["--continue", "-c"]);
+    let fork = has_flag(args, &["--fork"]);
+    if fork && explicit.is_none() && !continue_last {
+        return Err("--fork requires --continue or --session".to_string());
+    }
+    let base_id = explicit.or_else(|| continue_last.then(|| latest_session_id(&root)).flatten());
+    let mut session = if let Some(session_id) = base_id {
+        if !valid_session_id(&session_id) {
+            return Err("Invalid session id".to_string());
+        }
+        store
+            .load_session(&session_id)
+            .map_err(|error| error.to_string())?
+    } else {
+        Session::new(new_cli_id("session"), workspace)
+    };
+    let forked = fork;
+    if forked {
+        let mut forked_session = Session::new(new_cli_id("session"), workspace);
+        forked_session.messages = session.messages.clone();
+        forked_session.todos = session.todos.clone();
+        forked_session.metadata = session.metadata.clone();
+        forked_session
+            .metadata
+            .insert("forked_from".to_string(), json!(session.id.clone()));
+        session = forked_session;
+    }
+    session
+        .metadata
+        .insert("provider".to_string(), json!(provider));
+    session
+        .metadata
+        .insert("model".to_string(), json!(model_id));
+    Ok(RunSessionSelection {
+        store,
+        session,
+        forked,
+    })
+}
+
+fn call_provider_for_run(
+    args: &[String],
+    provider: &str,
+    model_id: &str,
+    messages: &[ChatMessage],
+) -> Result<ProviderRunResult, String> {
+    if let Ok(answer) = env::var("OPENAGENT_MOCK_ANSWER")
+        && !answer.is_empty()
+    {
+        return Ok(ProviderRunResult {
+            answer,
+            usage: Usage::default(),
+            source: "mock".to_string(),
+        });
+    }
+    let api_key = provider_api_key(provider, args);
+    if provider_requires_api_key(provider).unwrap_or(true) && api_key.is_none() {
+        return Ok(ProviderRunResult {
+            answer: "hello from openagent".to_string(),
+            usage: Usage::default(),
+            source: "offline_fallback_missing_api_key".to_string(),
+        });
+    }
+    let api_key = api_key.unwrap_or_default();
+    if provider == "anthropic" {
+        call_anthropic_provider(args, &api_key, model_id, messages)
+    } else {
+        call_openai_compatible_provider(args, provider, &api_key, model_id, messages)
+    }
+}
+
+fn call_openai_compatible_provider(
+    args: &[String],
+    provider: &str,
+    api_key: &str,
+    model_id: &str,
+    messages: &[ChatMessage],
+) -> Result<ProviderRunResult, String> {
+    let base_url = provider_base_url(provider, args);
+    if is_synthetic_endpoint(&base_url) {
+        return Ok(ProviderRunResult {
+            answer: "hello from openagent".to_string(),
+            usage: Usage::default(),
+            source: "offline_fallback_synthetic_endpoint".to_string(),
+        });
+    }
+    let wire_api = provider_wire_api(provider, args);
+    let timeout = Duration::from_secs(
+        value_for(args, &["--timeout-s"])
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(60),
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut config = OpenAiLanguageModelConfig::new(api_key, model_id);
+    config.provider_id = provider.to_string();
+    config.base_url = base_url.clone();
+    config.wire_api = wire_api.clone();
+    config.reasoning_effort = value_for(args, &["--variant"]);
+    let (endpoint, mut payload) = if wire_api == "chat" {
+        let mut payload = build_openai_chat_payload(&config, None, messages, &[], None, None, None);
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("stream".to_string(), json!(false));
+        }
+        (join_url(&base_url, "chat/completions"), payload)
+    } else {
+        let payload = build_openai_responses_payload(&config, None, messages, &[], None, None);
+        (join_url(&base_url, "responses"), payload)
+    };
+    if let Some(max_tokens) =
+        value_for(args, &["--max-output-tokens"]).and_then(|value| value.parse::<u64>().ok())
+        && let Some(object) = payload.as_object_mut()
+    {
+        object.insert(
+            if wire_api == "chat" {
+                "max_tokens"
+            } else {
+                "max_output_tokens"
+            }
+            .to_string(),
+            json!(max_tokens),
+        );
+    }
+    let response = client
+        .post(endpoint)
+        .bearer_auth(api_key)
+        .header("content-type", "application/json")
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("provider request failed: {error}"))?;
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let raw = response
+        .text()
+        .map_err(|error| format!("provider response read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "provider returned HTTP {}: {}",
+            status.as_u16(),
+            summarize_http_error_body(&raw, &content_type)
+        ));
+    }
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("provider response was not JSON: {error}"))?;
+    let (answer, usage) = if wire_api == "chat" {
+        (
+            extract_chat_answer(&value),
+            usage_from_json(value.get("usage")),
+        )
+    } else {
+        let events = normalize_openai_responses_response(&value);
+        provider_events_to_answer_usage(&events)
+    };
+    Ok(ProviderRunResult {
+        answer: if answer.is_empty() {
+            python_json_dumps(&value)
+        } else {
+            answer
+        },
+        usage,
+        source: format!("{provider}:{wire_api}"),
+    })
+}
+
+fn call_anthropic_provider(
+    args: &[String],
+    api_key: &str,
+    model_id: &str,
+    messages: &[ChatMessage],
+) -> Result<ProviderRunResult, String> {
+    let timeout = Duration::from_secs(60);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut config = AnthropicLanguageModelConfig::new(api_key, model_id);
+    config.base_url =
+        value_for(args, &["--base-url"]).or_else(|| provider_env_value("anthropic", "base_url"));
+    let mut payload = build_anthropic_payload(&config, None, messages, &[], None, None, None);
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("stream".to_string(), json!(false));
+    }
+    let endpoint = join_url(
+        config
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.anthropic.com/v1"),
+        "messages",
+    );
+    let response = client
+        .post(endpoint)
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&payload)
+        .send()
+        .map_err(|error| format!("anthropic request failed: {error}"))?;
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let raw = response
+        .text()
+        .map_err(|error| format!("anthropic response read failed: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "anthropic returned HTTP {}: {}",
+            status.as_u16(),
+            summarize_http_error_body(&raw, &content_type)
+        ));
+    }
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("anthropic response was not JSON: {error}"))?;
+    let answer = value
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    Ok(ProviderRunResult {
+        answer,
+        usage: usage_from_json(value.get("usage")),
+        source: "anthropic:messages".to_string(),
+    })
+}
+
+fn provider_events_to_answer_usage(events: &[ProviderStreamEvent]) -> (String, Usage) {
+    let mut answer = String::new();
+    let mut usage = Usage::default();
+    for event in events {
+        match event {
+            ProviderStreamEvent::TextDelta { text } => answer.push_str(text),
+            ProviderStreamEvent::Finish { usage: item, .. } => usage = item.clone(),
+            ProviderStreamEvent::ToolCall { .. } => {}
+        }
+    }
+    (answer, usage)
+}
+
+fn extract_chat_answer(value: &Value) -> String {
+    value
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|items| items.first())
+        .and_then(|item| item.get("message"))
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn usage_from_json(value: Option<&Value>) -> Usage {
+    let Some(value) = value else {
+        return Usage::default();
+    };
+    Usage {
+        input_tokens: value
+            .get("input_tokens")
+            .or_else(|| value.get("prompt_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        output_tokens: value
+            .get("output_tokens")
+            .or_else(|| value.get("completion_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        cost: 0.0,
+    }
+}
+
+fn provider_api_key(provider: &str, args: &[String]) -> Option<String> {
+    value_for(args, &["--api-key"]).or_else(|| provider_env_value(provider, "api_key"))
+}
+
+fn provider_base_url(provider: &str, args: &[String]) -> String {
+    value_for(args, &["--base-url"])
+        .or_else(|| provider_env_value(provider, "base_url"))
+        .or_else(|| provider_default_base_url(provider).ok().flatten())
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+}
+
+fn is_synthetic_endpoint(base_url: &str) -> bool {
+    base_url.contains(".test")
+        || base_url.contains("example.com")
+        || base_url.contains("example/v1")
+        || base_url.contains("localhost:0")
+}
+
+fn provider_wire_api(provider: &str, args: &[String]) -> String {
+    value_for(args, &["--wire-api"])
+        .or_else(|| provider_env_value(provider, "wire_api"))
+        .unwrap_or_else(|| {
+            if provider == "anthropic" {
+                "messages".to_string()
+            } else {
+                DEFAULT_WIRE_API.to_string()
+            }
+        })
+}
+
+fn latest_session_id(root: &Path) -> Option<String> {
+    let mut sessions = fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let state = read_json_file(&path.join("state.latest.json"));
+            let id = state
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+            let updated = state
+                .get("updated_at_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            Some((updated, id))
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by_key(|item| std::cmp::Reverse(item.0));
+    sessions.into_iter().map(|(_, id)| id).next()
+}
+
+fn share_session(
+    store: &FileSessionStore,
+    session_id: &str,
+    sanitize: bool,
+) -> Result<Value, String> {
+    if !valid_session_id(session_id) {
+        return Err("Invalid session id".to_string());
+    }
+    let state_path = store.root.join(session_id).join("state.latest.json");
+    let mut state = read_json_file(&state_path);
+    if state.as_object().is_none_or(Map::is_empty) {
+        return Err(format!("Session state not found: {session_id}"));
+    }
+    if sanitize {
+        sanitize_session_state(&mut state);
+    }
+    let share_dir = store.root.join("shares");
+    fs::create_dir_all(&share_dir).map_err(|error| error.to_string())?;
+    let share_id = new_cli_id("share");
+    let path = share_dir.join(format!("{share_id}.json"));
+    let payload = json!({
+        "schema_version": "openagent.session_share.v1",
+        "share_id": share_id,
+        "session": state,
+    });
+    write_json_file(&path, &payload)?;
+    Ok(json!({
+        "share_id": payload["share_id"],
+        "session_id": session_id,
+        "path": path.to_string_lossy(),
+        "url": format!("file://{}", path.to_string_lossy()),
+    }))
+}
+
+fn import_session_source(root: &Path, source: &str) -> Result<Value, String> {
+    let raw = if source.starts_with("http://") || source.starts_with("https://") {
+        reqwest::blocking::get(source)
+            .map_err(|error| format!("failed to fetch import source: {error}"))?
+            .text()
+            .map_err(|error| format!("failed to read import response: {error}"))?
+    } else {
+        fs::read_to_string(source)
+            .map_err(|error| format!("failed to read import file: {error}"))?
+    };
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("import source was not JSON: {error}"))?;
+    let session = value
+        .get("session")
+        .cloned()
+        .or_else(|| value.get("data").and_then(|data| data.get("session")).cloned())
+        .or_else(|| {
+            value
+                .get("info")
+                .map(|info| json!({"session_id": info.get("id").cloned().unwrap_or_else(|| json!(new_cli_id("session"))), "workspace": info.get("directory").cloned().unwrap_or_else(|| json!(".")), "status": "idle", "updated_at_ms": now_ms_cli(), "messages": value.get("messages").cloned().unwrap_or_else(|| json!([])), "metadata": {"imported_from": source}}))
+        })
+        .ok_or_else(|| "import source does not contain a session".to_string())?;
+    let session_id = session
+        .get("session_id")
+        .or_else(|| session.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| new_cli_id("session"));
+    if !valid_session_id(&session_id) {
+        return Err("Invalid session id in import".to_string());
+    }
+    let target = root.join(&session_id);
+    fs::create_dir_all(&target).map_err(|error| error.to_string())?;
+    let mut state = session;
+    if let Some(object) = state.as_object_mut() {
+        object.insert("session_id".to_string(), json!(session_id.clone()));
+        object
+            .entry("updated_at_ms".to_string())
+            .or_insert_with(|| json!(now_ms_cli()));
+        object
+            .entry("schema_version".to_string())
+            .or_insert_with(|| json!("openagent.session_state.v1"));
+    }
+    write_json_file(&target.join("state.latest.json"), &state)?;
+    write_json_file(
+        &target.join("session.json"),
+        &json!({
+            "schema_version": "openagent.session.v1",
+            "session_id": session_id,
+            "workspace": state.get("workspace").cloned().unwrap_or_else(|| json!(".")),
+            "status": state.get("status").cloned().unwrap_or_else(|| json!("idle")),
+            "created_at_ms": now_ms_cli(),
+            "updated_at_ms": now_ms_cli(),
+        }),
+    )?;
+    Ok(json!({"imported": true, "session_id": session_id, "session_root": root.to_string_lossy()}))
+}
+
+fn refresh_models_cache() -> Result<(), String> {
+    let url = env::var("OPENAGENT_MODELS_URL").unwrap_or_else(|_| "https://models.dev".to_string());
+    let endpoint = join_url(&url, "api.json");
+    let raw = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(endpoint)
+        .send()
+        .map_err(|error| format!("failed to fetch models cache: {error}"))?
+        .text()
+        .map_err(|error| format!("failed to read models cache: {error}"))?;
+    let value: Value = serde_json::from_str(&raw)
+        .map_err(|error| format!("models cache response was not JSON: {error}"))?;
+    write_json_file(&models_cache_path(), &value)
+}
+
+fn load_cached_provider_models(provider: &str) -> Option<Vec<Value>> {
+    let cache = read_json_file(&models_cache_path());
+    let provider = cache.get(provider)?;
+    let models = provider.get("models")?.as_object()?;
+    Some(
+        models
+            .iter()
+            .map(|(id, model)| {
+                let mut value = model.clone();
+                if let Some(object) = value.as_object_mut() {
+                    object.entry("id".to_string()).or_insert_with(|| json!(id));
+                }
+                value
+            })
+            .collect(),
+    )
+}
+
+fn models_cache_path() -> PathBuf {
+    env::var("OPENAGENT_MODELS_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir().join(".cache/openagent/models.json"))
+}
+
+fn remote_select_session(
+    server_url: &str,
+    token: Option<&str>,
+    explicit: Option<String>,
+    continue_last: bool,
+    workspace: &Path,
+) -> Result<String, String> {
+    if let Some(session_id) = explicit {
+        return Ok(session_id);
+    }
+    if continue_last {
+        let payload = http_json("GET", server_url, "/api/sessions", token, None)?;
+        if let Some(session_id) = payload
+            .get("sessions")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+            .and_then(|item| item.get("session_id").or_else(|| item.get("id")))
+            .and_then(Value::as_str)
+        {
+            return Ok(session_id.to_string());
+        }
+    }
+    let payload = http_json(
+        "POST",
+        server_url,
+        "/api/sessions",
+        token,
+        Some(json!({"cwd": workspace.to_string_lossy()})),
+    )?;
+    payload
+        .get("session_id")
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| "server did not return a session id".to_string())
+}
+
+fn remote_start_turn(
+    server_url: &str,
+    token: Option<&str>,
+    session_id: &str,
+    prompt: &str,
+) -> Result<Value, String> {
+    http_json(
+        "POST",
+        server_url,
+        &format!("/api/sessions/{session_id}/turns"),
+        token,
+        Some(json!({"input": prompt})),
+    )
+}
+
+fn http_json(
+    method: &str,
+    server_url: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let url = format!("{}{}", server_url.trim_end_matches('/'), path);
+    let mut request = match method {
+        "GET" => client.get(url),
+        "POST" => client.post(url),
+        _ => return Err(format!("unsupported HTTP method: {method}")),
+    };
+    if let Some(token) = token.filter(|value| !value.is_empty()) {
+        request = request.bearer_auth(token);
+    }
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request
+        .send()
+        .map_err(|error| format!("{method} {path} failed: {error}"))?;
+    let status = response.status();
+    let raw = response.text().map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(format!(
+            "{method} {path} returned HTTP {}: {raw}",
+            status.as_u16()
+        ));
+    }
+    serde_json::from_str(&raw).map_err(|error| format!("server response was not JSON: {error}"))
+}
+
+fn probe_url(url: &str) -> Result<String, String> {
+    if url.is_empty() {
+        return Err("missing URL".to_string());
+    }
+    let response = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| error.to_string())?
+        .get(url)
+        .send()
+        .map_err(|error| error.to_string())?;
+    Ok(format!("HTTP {}", response.status().as_u16()))
+}
+
+fn text_from_app_events(events: &[Value]) -> String {
+    let mut text = String::new();
+    let mut final_answer = String::new();
+    for event in events {
+        let method = event
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let params = event.get("params").unwrap_or(&Value::Null);
+        if method == "item/agentMessage/delta" {
+            if let Some(delta) = params
+                .get("delta")
+                .or_else(|| params.get("text"))
+                .and_then(Value::as_str)
+            {
+                text.push_str(delta);
+            }
+        }
+        if method == "turn/completed" {
+            final_answer = params
+                .get("final_answer")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+        }
+    }
+    if text.is_empty() { final_answer } else { text }
+}
+
+fn http_runtime_command(args: &[String], web: bool, help: &'static str) -> CliRunResult {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text(help);
+    }
+    let mut runtime_args = args.to_vec();
+    if !web && !has_flag(args, &["--headless"]) {
+        runtime_args.push("--headless".to_string());
+    }
+    let result = openagent_http_runtime::run_cli(&runtime_args);
+    CliRunResult {
+        exit_code: result.exit_code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+    }
+}
+
+fn tui_command(args: &[String]) -> CliRunResult {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text(tui_help());
+    }
+    if let Some(prompt) = value_for(args, &["--prompt"]) {
+        let mut run_args = vec!["--skip-doctor".to_string()];
+        run_args.extend(args.iter().filter(|arg| *arg != "--prompt").cloned());
+        run_args.push(prompt);
+        return run_prompt_command(&run_args);
+    }
+    if !io::stdin().is_terminal() {
+        return ok_text("openagent-tui ready; pass --prompt or use an interactive terminal");
+    }
+    interactive_local_loop(args)
+}
+
+fn attach_command(args: &[String]) -> CliRunResult {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text(attach_help());
+    }
+    let positionals = positional_args(
+        args,
+        &[
+            "--workspace",
+            "--dir",
+            "--session",
+            "-s",
+            "--server-token",
+            "--username",
+            "-u",
+            "--password",
+            "-p",
+        ],
+    );
+    let Some(url) = positionals.first() else {
+        return err_text(2, "openagent attach requires a server URL");
+    };
+    let token =
+        value_for(args, &["--server-token"]).or_else(|| env::var(DEFAULT_SERVER_TOKEN_ENV).ok());
+    if !has_flag(args, &["--skip-health-check"])
+        && let Err(error) = http_json("GET", url, "/api/health", token.as_deref(), None)
+    {
+        return err_text(1, error);
+    }
+    if !io::stdin().is_terminal() {
+        return ok_text(format!("attached to {url}"));
+    }
+    interactive_remote_loop(args, url, token.as_deref())
+}
+
+fn interactive_local_loop(args: &[String]) -> CliRunResult {
+    let mut stdout = String::new();
+    stdout.push_str("OpenAgent TUI direct mode. Type /exit to quit.\n");
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let prompt = line.trim();
+        if matches!(prompt, "/exit" | "/quit") {
+            break;
+        }
+        if prompt.is_empty() {
+            continue;
+        }
+        let mut run_args = args.to_vec();
+        run_args.push("--skip-doctor".to_string());
+        run_args.push(prompt.to_string());
+        let result = run_prompt_command(&run_args);
+        stdout.push_str(&result.stdout);
+        if result.exit_code != 0 {
+            return CliRunResult {
+                exit_code: result.exit_code,
+                stdout,
+                stderr: result.stderr,
+            };
+        }
+    }
+    ok_text(stdout)
+}
+
+fn interactive_remote_loop(args: &[String], url: &str, token: Option<&str>) -> CliRunResult {
+    let mut stdout = format!("OpenAgent remote attach: {url}. Type /exit to quit.\n");
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let prompt = line.trim();
+        if matches!(prompt, "/exit" | "/quit") {
+            break;
+        }
+        if prompt.is_empty() {
+            continue;
+        }
+        let session_id = match remote_select_session(
+            url,
+            token,
+            value_for(args, &["--session", "-s"]),
+            has_flag(args, &["--continue", "-c"]),
+            &workspace_from_args(args),
+        ) {
+            Ok(value) => value,
+            Err(error) => return err_text(1, error),
+        };
+        match remote_start_turn(url, token, &session_id, prompt) {
+            Ok(payload) => {
+                if let Some(events) = payload.get("events").and_then(Value::as_array) {
+                    stdout.push_str(&text_from_app_events(events));
+                    stdout.push('\n');
+                }
+            }
+            Err(error) => return err_text(1, error),
+        }
+    }
+    ok_text(stdout)
+}
+
+fn agent_command(args: &[String]) -> CliRunResult {
+    if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text(
+            "Usage: openagent agent <list|create|show> [name] [--model <id>] [--mode <mode>] [--permission <ruleset>]",
+        );
+    }
+    match args[0].as_str() {
+        "list" | "ls" => {
+            let dir = workspace_from_args(args).join(".openagent/agents");
+            let agents = fs::read_dir(&dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    (path.extension().and_then(|value| value.to_str()) == Some("json"))
+                        .then(|| read_json_file(&path))
+                })
+                .collect::<Vec<_>>();
+            CliRunResult::ok_json(&json!({"agents": agents}))
+        }
+        "create" => {
+            let positionals = positional_args(
+                args,
+                &[
+                    "--workspace",
+                    "--dir",
+                    "--model",
+                    "--mode",
+                    "--permission",
+                    "--format",
+                ],
+            );
+            let Some(name) = positionals.get(1).or_else(|| positionals.first()) else {
+                return err_text(2, "agent create requires a name");
+            };
+            let dir = workspace_from_args(args).join(".openagent/agents");
+            let path = dir.join(format!("{name}.json"));
+            let payload = json!({
+                "name": name,
+                "model": value_for(args, &["--model", "-m"]),
+                "mode": value_for(args, &["--mode"]).unwrap_or_else(|| "primary".to_string()),
+                "permission": value_for(args, &["--permission"]).unwrap_or_else(|| "ask".to_string()),
+                "updated_at_ms": now_ms_cli(),
+            });
+            if let Err(error) = write_json_file(&path, &payload) {
+                return err_text(1, error);
+            }
+            CliRunResult::ok_json(
+                &json!({"created": true, "path": path.to_string_lossy(), "agent": payload}),
+            )
+        }
+        "show" => {
+            let positionals = positional_args(args, &["--workspace", "--dir", "--format"]);
+            let Some(name) = positionals.get(1).or_else(|| positionals.first()) else {
+                return err_text(2, "agent show requires a name");
+            };
+            let path = workspace_from_args(args).join(format!(".openagent/agents/{name}.json"));
+            CliRunResult::ok_json(&read_json_file(&path))
+        }
+        other => err_text(2, format!("unknown agent command: {other}")),
+    }
+}
+
+fn plugin_command(args: &[String]) -> CliRunResult {
+    if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent plugin <module> [--global] [--force]");
+    }
+    let module = args
+        .iter()
+        .find(|arg| !arg.starts_with('-'))
+        .cloned()
+        .unwrap_or_default();
+    if module.is_empty() {
+        return err_text(2, "plugin module is required");
+    }
+    let path = if has_flag(args, &["--global", "-g"]) {
+        home_dir().join(".config/openagent/plugins.json")
+    } else {
+        workspace_from_args(args).join(".openagent/plugins.json")
+    };
+    let mut config = read_json_file(&path);
+    let plugins = ensure_object_field(&mut config, "plugins");
+    if plugins.contains_key(&module) && !has_flag(args, &["--force", "-f"]) {
+        return err_text(1, format!("plugin already registered: {module}"));
+    }
+    plugins.insert(
+        module.clone(),
+        json!({"module": module, "updated_at_ms": now_ms_cli()}),
+    );
+    if let Err(error) = write_json_file(&path, &config) {
+        return err_text(1, error);
+    }
+    CliRunResult::ok_json(
+        &json!({"registered": true, "path": path.to_string_lossy(), "module": module}),
+    )
+}
+
+fn github_command(args: &[String]) -> CliRunResult {
+    if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent github <status|issue|pr> [args...]");
+    }
+    match args[0].as_str() {
+        "status" => run_external_json("gh", &["status"]),
+        "issue" => run_external_json("gh", &["issue", "list", "--limit", "20"]),
+        "pr" => run_external_json("gh", &["pr", "list", "--limit", "20"]),
+        other => err_text(2, format!("unknown github command: {other}")),
+    }
+}
+
+fn pr_command(args: &[String]) -> CliRunResult {
+    if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent pr <number>");
+    }
+    let Some(number) = args.first() else {
+        return err_text(2, "pr requires a number");
+    };
+    run_external_json("gh", &["pr", "checkout", number])
+}
+
+fn debug_command(args: &[String]) -> CliRunResult {
+    if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent debug <info|paths|sessions|file|rg>");
+    }
+    match args[0].as_str() {
+        "info" => CliRunResult::ok_json(&json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "cwd": env::current_dir().ok().map(|path| path.to_string_lossy().to_string()),
+            "provider": active_provider(),
+            "session_root": session_root_from_args(args).to_string_lossy(),
+        })),
+        "paths" => CliRunResult::ok_json(&json!({
+            "home": home_dir().to_string_lossy(),
+            "models_cache": models_cache_path().to_string_lossy(),
+            "auth_file": auth_file_from_args(args).to_string_lossy(),
+            "mcp_config": mcp_config_path(args).to_string_lossy(),
+            "session_root": session_root_from_args(args).to_string_lossy(),
+        })),
+        "sessions" => session_list(&args[1..]),
+        "file" => {
+            let Some(path) = args.get(1) else {
+                return err_text(2, "debug file requires a path");
+            };
+            match fs::read_to_string(path) {
+                Ok(text) => ok_text(text),
+                Err(error) => err_text(1, error.to_string()),
+            }
+        }
+        "rg" => {
+            let Some(pattern) = args.get(1) else {
+                return err_text(2, "debug rg requires a pattern");
+            };
+            run_external_json("rg", &[pattern])
+        }
+        other => err_text(2, format!("unknown debug command: {other}")),
+    }
+}
+
+fn db_command(args: &[String]) -> CliRunResult {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent db <path|summary>");
+    }
+    match args.first().map(String::as_str).unwrap_or("summary") {
+        "path" => ok_text(
+            session_root_from_args(args)
+                .join("index.jsonl")
+                .to_string_lossy(),
+        ),
+        "summary" => stats_command(args),
+        other => err_text(2, format!("unknown db command: {other}")),
+    }
+}
+
+fn lifecycle_command(name: &str, args: &[String]) -> CliRunResult {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text(format!("Usage: openagent {name} [--dry-run]"));
+    }
+    CliRunResult::ok_json(&json!({
+        "command": name,
+        "performed": false,
+        "reason": "OpenAgent is source-tree managed in this workspace; package lifecycle is a distribution concern.",
+    }))
+}
+
+fn acp_command(args: &[String]) -> CliRunResult {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent acp [--host <host>] [--port <port>] [--cwd <path>]");
+    }
+    let mut runtime_args = args.to_vec();
+    runtime_args.push("--headless".to_string());
+    http_runtime_command(&runtime_args, false, "Usage: openagent acp")
+}
+
+fn generate_command(args: &[String]) -> CliRunResult {
+    if args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent generate");
+    }
+    CliRunResult::ok_json(&json!({
+        "openapi": "3.1.0",
+        "info": {"title": "OpenAgent App Bridge", "version": env!("CARGO_PKG_VERSION")},
+        "paths": {
+            "/api/health": {"get": {"operationId": "health"}},
+            "/api/sessions": {"get": {"operationId": "listSessions"}, "post": {"operationId": "createSession"}},
+            "/api/sessions/{session_id}/turns": {"post": {"operationId": "startTurn"}}
+        }
+    }))
+}
+
+fn console_command(args: &[String]) -> CliRunResult {
+    if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
+        return ok_text("Usage: openagent console <login|logout|orgs|open>");
+    }
+    let path = home_dir().join(".config/openagent/console.json");
+    match args[0].as_str() {
+        "login" => {
+            let url = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| "https://app.openagent.local".to_string());
+            let payload = json!({"url": url, "updated_at_ms": now_ms_cli()});
+            if let Err(error) = write_json_file(&path, &payload) {
+                return err_text(1, error);
+            }
+            CliRunResult::ok_json(&json!({"logged_in": true, "path": path.to_string_lossy()}))
+        }
+        "logout" => {
+            let removed = fs::remove_file(&path).is_ok();
+            CliRunResult::ok_json(&json!({"logged_out": removed}))
+        }
+        "orgs" | "open" => CliRunResult::ok_json(&read_json_file(&path)),
+        other => err_text(2, format!("unknown console command: {other}")),
+    }
+}
+
+fn run_external_json(program: &str, args: &[&str]) -> CliRunResult {
+    match Command::new(program).args(args).output() {
+        Ok(output) => CliRunResult {
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        },
+        Err(error) => err_text(1, format!("failed to run {program}: {error}")),
+    }
+}
+
+fn chat_message(role: Role, content: String) -> ChatMessage {
+    ChatMessage {
+        role,
+        content,
+        name: None,
+        tool_call_id: None,
+        metadata: BTreeMap::from([("message_id".to_string(), json!(new_cli_id("msg")))]),
+    }
+}
+
+fn join_url(base: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
+fn url_encode(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                vec![byte as char]
+            }
+            b' ' => vec!['+'],
+            other => format!("%{other:02X}").chars().collect(),
+        })
+        .collect()
+}
+
+fn now_ms_cli() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn new_cli_id(prefix: &str) -> String {
+    format!("{prefix}_{}_{}", now_ms_cli(), std::process::id())
+}
+
+#[allow(dead_code)]
 fn opencode_gap_command(command: &str, args: &[String]) -> CliRunResult {
     let help = format!(
         "openagent {command} is tracked as an OpenCode parity backlog command.\n\
@@ -1884,25 +3437,10 @@ pub fn run_cli_command(argv: &[String]) -> CliRunResult {
         return ok_text(root_help());
     }
     match argv[0].as_str() {
-        "tui" => simple_command("tui", &argv[1..], tui_help(), "openagent-tui"),
-        "serve" => simple_command(
-            "serve",
-            &argv[1..],
-            serve_help(),
-            "openagent serve: HTTP listener wiring is owned by openagent-http-runtime",
-        ),
-        "web" => simple_command(
-            "web",
-            &argv[1..],
-            web_help(),
-            "openagent web: browser console is served by openagent-http-runtime",
-        ),
-        "attach" => simple_command(
-            "attach",
-            &argv[1..],
-            attach_help(),
-            "openagent attach: remote TUI attach wiring is owned by App Bridge/TUI crates",
-        ),
+        "tui" => tui_command(&argv[1..]),
+        "serve" => http_runtime_command(&argv[1..], false, serve_help()),
+        "web" => http_runtime_command(&argv[1..], true, web_help()),
+        "attach" => attach_command(&argv[1..]),
         "run" => run_prompt_command(&argv[1..]),
         "client" => client_command(&argv[1..]),
         "session" => session_command(&argv[1..]),
@@ -1942,8 +3480,19 @@ pub fn run_cli_command(argv: &[String]) -> CliRunResult {
                 }
             }
         }
-        "agent" | "plugin" | "plug" | "github" | "pr" | "debug" | "upgrade" | "uninstall"
-        | "acp" | "import" | "export" => opencode_gap_command(argv[0].as_str(), &argv[1..]),
+        "agent" => agent_command(&argv[1..]),
+        "plugin" | "plug" => plugin_command(&argv[1..]),
+        "github" => github_command(&argv[1..]),
+        "pr" => pr_command(&argv[1..]),
+        "debug" => debug_command(&argv[1..]),
+        "db" => db_command(&argv[1..]),
+        "upgrade" => lifecycle_command("upgrade", &argv[1..]),
+        "uninstall" => lifecycle_command("uninstall", &argv[1..]),
+        "acp" => acp_command(&argv[1..]),
+        "import" => session_import(&argv[1..]),
+        "export" => session_export(&argv[1..]),
+        "generate" => generate_command(&argv[1..]),
+        "console" => console_command(&argv[1..]),
         _ => CliRunResult {
             exit_code: 2,
             stdout: String::new(),

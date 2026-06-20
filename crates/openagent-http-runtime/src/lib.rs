@@ -1,5 +1,16 @@
 //! HTTP runtime service contracts for the Rust rewrite.
 
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use openagent_protocol::{ChatMessage, Role};
+use openagent_session::{FileSessionStore, Session, SessionStatus, StartRunOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -363,6 +374,16 @@ pub fn parse_cli_args(args: &[String]) -> (HttpRuntimeConfig, bool, bool) {
 #[must_use]
 pub fn run_cli(args: &[String]) -> CliRunResult {
     let (config, health_json, docker_smoke) = parse_cli_args(args);
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        return CliRunResult {
+            exit_code: 0,
+            stdout: "Usage: openagent-http-runtime [--host <host>] [--port <port>] [--workspace <path>] [--session-root <path>] [--headless] [--auth-token <token>] [--health-json]\n".to_string(),
+            stderr: String::new(),
+        };
+    }
     if health_json || docker_smoke {
         let smoke_config = HttpRuntimeConfig {
             serve_static: false,
@@ -375,11 +396,384 @@ pub fn run_cli(args: &[String]) -> CliRunResult {
             stderr: String::new(),
         };
     }
+    serve_blocking(config)
+}
+
+fn serve_blocking(config: HttpRuntimeConfig) -> CliRunResult {
+    let listener = match TcpListener::bind((config.host.as_str(), config.port)) {
+        Ok(listener) => listener,
+        Err(error) => {
+            return CliRunResult {
+                exit_code: 1,
+                stdout: String::new(),
+                stderr: format!("failed to bind HTTP runtime: {error}\n"),
+            };
+        }
+    };
+    let local = listener
+        .local_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|_| format!("{}:{}", config.host, config.port));
+    println!("openagent HTTP runtime listening on http://{local}");
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                let _ = handle_http_stream(&mut stream, &config);
+            }
+            Err(error) => eprintln!("openagent HTTP runtime accept failed: {error}"),
+        }
+    }
     CliRunResult {
         exit_code: 0,
-        stdout: format!("{}\n", command_name()),
+        stdout: String::new(),
         stderr: String::new(),
     }
+}
+
+fn handle_http_stream(stream: &mut TcpStream, config: &HttpRuntimeConfig) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| error.to_string())?;
+    let request = read_http_request(stream)?;
+    let response = route_http_request(&request, config);
+    write_http_response(stream, response)
+}
+
+#[derive(Clone, Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: BTreeMap<String, String>,
+    body: String,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+        if buffer.len() > 1024 * 1024 {
+            return Err("request headers too large".to_string());
+        }
+    }
+    let split = buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
+        .ok_or_else(|| "invalid HTTP request".to_string())?;
+    let head = String::from_utf8_lossy(&buffer[..split]).to_string();
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_string();
+    let path = parts.next().unwrap_or("/").to_string();
+    let mut headers = BTreeMap::new();
+    for line in lines {
+        if let Some((key, value)) = line.split_once(':') {
+            headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let mut body_bytes = buffer[split..].to_vec();
+    while body_bytes.len() < content_length {
+        let read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        body_bytes.extend_from_slice(&chunk[..read]);
+    }
+    body_bytes.truncate(content_length);
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body: String::from_utf8_lossy(&body_bytes).to_string(),
+    })
+}
+
+fn route_http_request(request: &HttpRequest, config: &HttpRuntimeConfig) -> HttpResponseSpec {
+    if request.method == "OPTIONS" {
+        return route_options();
+    }
+    if !authorized(request, config) {
+        return route_unauthorized();
+    }
+    let path = request.path.split('?').next().unwrap_or("/");
+    match (request.method.as_str(), path) {
+        ("GET", "/api/health") => json_response(200, health_payload(config)),
+        ("GET", "/api/sessions") => json_response(200, list_sessions_payload(config)),
+        ("POST", "/api/sessions") => {
+            json_response(200, create_session_payload(config, &request.body))
+        }
+        _ => route_dynamic_request(request, config, path),
+    }
+}
+
+fn route_dynamic_request(
+    request: &HttpRequest,
+    config: &HttpRuntimeConfig,
+    path: &str,
+) -> HttpResponseSpec {
+    let parts = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    if parts.len() == 3 && parts[0] == "api" && parts[1] == "sessions" && request.method == "GET" {
+        return json_response(200, get_session_payload(config, parts[2]));
+    }
+    if parts.len() == 4
+        && parts[0] == "api"
+        && parts[1] == "sessions"
+        && parts[3] == "turns"
+        && request.method == "POST"
+    {
+        return match start_turn_payload(config, parts[2], &request.body) {
+            Ok(payload) => json_response(200, payload),
+            Err(error) => json_response(400, json!({"error": error})),
+        };
+    }
+    route_unknown()
+}
+
+fn authorized(request: &HttpRequest, config: &HttpRuntimeConfig) -> bool {
+    let Some(token) = config.auth_token.as_ref().filter(|token| !token.is_empty()) else {
+        return true;
+    };
+    request
+        .headers
+        .get("authorization")
+        .is_some_and(|value| value == &format!("Bearer {token}"))
+        || request
+            .headers
+            .get("x-openagent-token")
+            .is_some_and(|value| value == token)
+}
+
+fn json_response(status: u16, body: Value) -> HttpResponseSpec {
+    HttpResponseSpec {
+        status,
+        content_type: Some("application/json; charset=utf-8".to_string()),
+        headers: Map::new(),
+        body: Some(body),
+    }
+}
+
+fn write_http_response(stream: &mut TcpStream, response: HttpResponseSpec) -> Result<(), String> {
+    let body = response
+        .body
+        .as_ref()
+        .map(python_json_dumps)
+        .unwrap_or_default();
+    let content_type = response
+        .content_type
+        .unwrap_or_else(|| "application/json; charset=utf-8".to_string());
+    let status_text = match response.status {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        _ => "OK",
+    };
+    let mut headers = format!(
+        "HTTP/1.1 {} {}\r\ncontent-type: {}\r\ncontent-length: {}\r\nconnection: close\r\n",
+        response.status,
+        status_text,
+        content_type,
+        body.len()
+    );
+    for (key, value) in response.headers {
+        if let Some(value) = value.as_str() {
+            headers.push_str(&format!("{key}: {value}\r\n"));
+        }
+    }
+    headers.push_str("\r\n");
+    stream
+        .write_all(headers.as_bytes())
+        .and_then(|()| stream.write_all(body.as_bytes()))
+        .map_err(|error| error.to_string())
+}
+
+fn list_sessions_payload(config: &HttpRuntimeConfig) -> Value {
+    let root = session_root(config);
+    let mut sessions = Vec::new();
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let state = read_json_file(&path.join("state.latest.json"));
+            if state.as_object().is_none_or(Map::is_empty) {
+                continue;
+            }
+            sessions.push(json!({
+                "session_id": state.get("session_id").cloned().unwrap_or_else(|| json!(entry.file_name().to_string_lossy())),
+                "workspace": state.get("workspace").cloned().unwrap_or_else(|| json!(".")),
+                "status": state.get("status").cloned().unwrap_or_else(|| json!("idle")),
+                "updated_at_ms": state.get("updated_at_ms").cloned().unwrap_or_else(|| json!(0)),
+            }));
+        }
+    }
+    sessions.sort_by(|left, right| {
+        right["updated_at_ms"]
+            .as_u64()
+            .cmp(&left["updated_at_ms"].as_u64())
+    });
+    json!({"session_root": root.to_string_lossy(), "sessions": sessions})
+}
+
+fn create_session_payload(config: &HttpRuntimeConfig, body: &str) -> Value {
+    let payload: Value = serde_json::from_str(body).unwrap_or_else(|_| json!({}));
+    let workspace = payload
+        .get("cwd")
+        .or_else(|| payload.get("workspace"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| config.workspace.as_ref().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let session_id = new_id("session");
+    let mut session = Session::new(session_id.clone(), workspace);
+    session
+        .metadata
+        .insert("created_by".to_string(), json!("openagent-http-runtime"));
+    let store = FileSessionStore::new(session_root(config));
+    let _ = store.save_state(&session, None);
+    json!({"session_id": session_id, "status": "created"})
+}
+
+fn get_session_payload(config: &HttpRuntimeConfig, session_id: &str) -> Value {
+    let store = FileSessionStore::new(session_root(config));
+    match store.load_session(session_id) {
+        Ok(session) => json!({
+            "session_id": session.id,
+            "workspace": session.directory.to_string_lossy(),
+            "status": session_status_text(&session.status),
+            "message_count": session.messages.len(),
+            "metadata": session.metadata,
+        }),
+        Err(error) => json!({"error": error.to_string()}),
+    }
+}
+
+fn start_turn_payload(
+    config: &HttpRuntimeConfig,
+    session_id: &str,
+    body: &str,
+) -> Result<Value, String> {
+    let payload: Value = serde_json::from_str(body).map_err(|error| error.to_string())?;
+    let input = payload
+        .get("input")
+        .or_else(|| payload.get("message"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if input.trim().is_empty() {
+        return Err("turn input is required".to_string());
+    }
+    let store = FileSessionStore::new(session_root(config));
+    let mut session = store
+        .load_session(session_id)
+        .unwrap_or_else(|_| Session::new(session_id.to_string(), workspace(config)));
+    let run_id = new_id("turn");
+    session.status = SessionStatus::Running;
+    let _ = store.start_run(
+        &mut session,
+        StartRunOptions {
+            run_id: run_id.clone(),
+            trace_id: new_id("trace"),
+            agent_name: "server".to_string(),
+            model_id: Some("server-local".to_string()),
+            provider_id: Some("openagent".to_string()),
+            permission: "server".to_string(),
+            max_steps: 1,
+            started_at_ms: None,
+        },
+    );
+    let user = ChatMessage {
+        role: Role::User,
+        content: input.to_string(),
+        name: None,
+        tool_call_id: None,
+        metadata: BTreeMap::new(),
+    };
+    let user_index = session.messages.len() as u64;
+    session.add(user.clone());
+    let _ = store.append_message(&session, &user, &run_id, user_index);
+    let answer =
+        std::env::var("OPENAGENT_MOCK_ANSWER").unwrap_or_else(|_| "hello from server".to_string());
+    let assistant = ChatMessage {
+        role: Role::Assistant,
+        content: answer.clone(),
+        name: None,
+        tool_call_id: None,
+        metadata: BTreeMap::new(),
+    };
+    let assistant_index = session.messages.len() as u64;
+    session.add(assistant.clone());
+    session.status = SessionStatus::Idle;
+    let _ = store.append_message(&session, &assistant, &run_id, assistant_index);
+    let _ = store.finish_run(&session, &run_id, "completed", 1, Some("stop"), None);
+    Ok(json!({
+        "session_id": session_id,
+        "turn_id": run_id.clone(),
+        "events": [
+            {"method": "turn/started", "params": {"thread_id": session_id, "turn_id": run_id.clone(), "status": "running"}},
+            {"method": "item/agentMessage/delta", "params": {"thread_id": session_id, "turn_id": run_id.clone(), "delta": answer.clone()}},
+            {"method": "turn/completed", "params": {"thread_id": session_id, "turn_id": run_id.clone(), "status": "completed", "final_answer": answer}}
+        ]
+    }))
+}
+
+fn session_root(config: &HttpRuntimeConfig) -> PathBuf {
+    config
+        .session_store_root
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace(config).join(".openagent/sessions"))
+}
+
+fn workspace(config: &HttpRuntimeConfig) -> PathBuf {
+    config
+        .workspace
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn read_json_file(path: &Path) -> Value {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+fn session_status_text(status: &SessionStatus) -> &'static str {
+    match status {
+        SessionStatus::Idle => "idle",
+        SessionStatus::Running => "running",
+        SessionStatus::Paused => "paused",
+        SessionStatus::Stop => "stop",
+        SessionStatus::Compacting => "compacting",
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn new_id(prefix: &str) -> String {
+    format!("{prefix}_{}_{}", now_ms(), std::process::id())
 }
 
 #[must_use]
