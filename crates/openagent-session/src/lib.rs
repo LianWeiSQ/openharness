@@ -516,7 +516,15 @@ impl FileSessionStore {
             .map(|items| {
                 items
                     .iter()
-                    .filter_map(|item| serde_json::from_value::<ChatMessage>(item.clone()).ok())
+                    .filter_map(|item| {
+                        serde_json::from_value::<ChatMessage>(item.clone())
+                            .ok()
+                            .or_else(|| {
+                                serde_json::from_value::<StoredMessage>(item.clone())
+                                    .ok()
+                                    .map(chat_message_from_stored)
+                            })
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -1989,6 +1997,16 @@ fn stored_message(message: &ChatMessage, index: u64) -> StoredMessage {
         name: message.name.clone(),
         tool_call_id: message.tool_call_id.clone(),
         metadata: message.metadata.clone(),
+    }
+}
+
+fn chat_message_from_stored(message: StoredMessage) -> ChatMessage {
+    ChatMessage {
+        role: message.role,
+        content: message.content,
+        name: message.name,
+        tool_call_id: message.tool_call_id,
+        metadata: message.metadata,
     }
 }
 

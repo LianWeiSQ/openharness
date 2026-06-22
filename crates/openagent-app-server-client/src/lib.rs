@@ -1,6 +1,6 @@
 //! App Bridge client-side state for the Rust rewrite.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path, time::Duration};
 
 use openagent_app_server::AppEvent;
 use serde_json::{Value, json};
@@ -165,6 +165,393 @@ pub fn auth_header(token: Option<&str>) -> Option<String> {
     token
         .filter(|value| !value.is_empty())
         .map(|value| format!("Bearer {value}"))
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RemoteAuth {
+    pub token: Option<String>,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl RemoteAuth {
+    #[must_use]
+    pub fn bearer(token: impl Into<String>) -> Self {
+        Self {
+            token: Some(token.into()),
+            username: None,
+            password: None,
+        }
+    }
+
+    #[must_use]
+    pub fn basic(username: impl Into<String>, password: impl Into<String>) -> Self {
+        Self {
+            token: None,
+            username: Some(username.into()),
+            password: Some(password.into()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RemoteRuntimeClient {
+    server_url: String,
+    auth: RemoteAuth,
+    timeout: Duration,
+}
+
+impl RemoteRuntimeClient {
+    #[must_use]
+    pub fn new(server_url: impl Into<String>) -> Self {
+        Self {
+            server_url: normalize_server_url(&server_url.into()),
+            auth: RemoteAuth::default(),
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[must_use]
+    pub fn with_auth(mut self, auth: RemoteAuth) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn server_url(&self) -> &str {
+        &self.server_url
+    }
+
+    #[must_use]
+    pub fn auth(&self) -> &RemoteAuth {
+        &self.auth
+    }
+
+    pub fn health(&self) -> Result<Value, String> {
+        self.json("GET", "/api/health", None)
+    }
+
+    pub fn models(&self) -> Result<Value, String> {
+        self.json("GET", "/api/models", None)
+    }
+
+    pub fn agents(&self) -> Result<Value, String> {
+        self.json("GET", "/api/agents", None)
+    }
+
+    pub fn list_sessions(&self) -> Result<Vec<Value>, String> {
+        let payload = self.json("GET", "/api/sessions", None)?;
+        Ok(payload
+            .get("sessions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn get_session(&self, session_id: &str) -> Result<Value, String> {
+        self.json("GET", &format!("/api/sessions/{session_id}"), None)
+    }
+
+    pub fn search_sessions(&self, query: &str) -> Result<Vec<Value>, String> {
+        let path = if query.trim().is_empty() {
+            "/api/sessions".to_string()
+        } else {
+            format!("/api/sessions?query={}", quote_path(query.trim()))
+        };
+        let payload = self.json("GET", &path, None)?;
+        Ok(payload
+            .get("sessions")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn create_session(
+        &self,
+        workspace: &Path,
+        fork_from: Option<&str>,
+    ) -> Result<String, String> {
+        let mut body = json!({"cwd": workspace.to_string_lossy()});
+        if let Some(fork_from) = fork_from.filter(|value| !value.is_empty()) {
+            body["fork_from"] = json!(fork_from);
+        }
+        let payload = self.json("POST", "/api/sessions", Some(body))?;
+        session_id_from_payload(&payload)
+            .ok_or_else(|| "server did not return a session id".to_string())
+    }
+
+    pub fn select_session(
+        &self,
+        explicit: Option<String>,
+        continue_last: bool,
+        fork: bool,
+        workspace: &Path,
+    ) -> Result<String, String> {
+        if fork && explicit.is_none() && !continue_last {
+            return Err("fork requires an explicit session or continue_last".to_string());
+        }
+        let base = if let Some(session_id) = explicit {
+            Some(session_id)
+        } else if continue_last {
+            self.list_sessions()?
+                .first()
+                .and_then(session_id_from_payload)
+        } else {
+            None
+        };
+        if !fork && let Some(session_id) = base {
+            return Ok(session_id);
+        }
+        self.create_session(workspace, base.as_deref())
+    }
+
+    pub fn start_turn(
+        &self,
+        session_id: &str,
+        prompt: &str,
+        mut extra: Value,
+    ) -> Result<Value, String> {
+        if !extra.is_object() {
+            extra = json!({});
+        }
+        extra["input"] = json!(prompt);
+        self.json(
+            "POST",
+            &format!("/api/sessions/{session_id}/turns"),
+            Some(extra),
+        )
+    }
+
+    pub fn interrupt_turn(&self, turn_id: &str) -> Result<Value, String> {
+        self.json("POST", &format!("/api/turns/{turn_id}/interrupt"), None)
+    }
+
+    pub fn update_session(&self, session_id: &str, body: Value) -> Result<Value, String> {
+        self.json("PATCH", &format!("/api/sessions/{session_id}"), Some(body))
+    }
+
+    pub fn delete_session(&self, session_id: &str) -> Result<Value, String> {
+        self.json("DELETE", &format!("/api/sessions/{session_id}"), None)
+    }
+
+    pub fn children(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        let payload = self.json("GET", &format!("/api/sessions/{session_id}/children"), None)?;
+        Ok(payload
+            .get("children")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn share_session(&self, session_id: &str) -> Result<Value, String> {
+        self.json("POST", &format!("/api/sessions/{session_id}/share"), None)
+    }
+
+    pub fn unshare_session(&self, session_id: &str) -> Result<Value, String> {
+        self.json("DELETE", &format!("/api/sessions/{session_id}/share"), None)
+    }
+
+    pub fn compact_session(&self, session_id: &str) -> Result<Value, String> {
+        self.json("POST", &format!("/api/sessions/{session_id}/compact"), None)
+    }
+
+    pub fn session_diff(&self, session_id: &str) -> Result<Value, String> {
+        self.json("GET", &format!("/api/sessions/{session_id}/diff"), None)
+    }
+
+    pub fn undo_session(&self, session_id: &str) -> Result<Value, String> {
+        self.json("POST", &format!("/api/sessions/{session_id}/undo"), None)
+    }
+
+    pub fn redo_session(&self, session_id: &str) -> Result<Value, String> {
+        self.json("POST", &format!("/api/sessions/{session_id}/redo"), None)
+    }
+
+    pub fn turn_events(&self, turn_id: &str, last_event_id: u64) -> Result<Vec<Value>, String> {
+        let path = if last_event_id == 0 {
+            format!("/api/turns/{turn_id}/events")
+        } else {
+            format!("/api/turns/{turn_id}/events?last_event_id={last_event_id}")
+        };
+        self.sse_events(&path)
+    }
+
+    pub fn global_events(&self, last_event_id: u64) -> Result<Vec<Value>, String> {
+        self.sse_events(&format!("/api/events?last_event_id={last_event_id}"))
+    }
+
+    pub fn respond_approval(&self, payload: &Value) -> Result<Value, String> {
+        let turn_id = string_field(payload, "turn_id");
+        let request_id = string_field(payload, "request_id");
+        if turn_id.is_empty() || request_id.is_empty() {
+            return Err("approval response requires turn_id and request_id".to_string());
+        }
+        self.json(
+            "POST",
+            &format!("/api/turns/{turn_id}/approvals/{request_id}"),
+            Some(payload.clone()),
+        )
+    }
+
+    pub fn respond_question(&self, payload: &Value) -> Result<Value, String> {
+        let turn_id = string_field(payload, "turn_id");
+        let request_id = string_field(payload, "request_id");
+        if turn_id.is_empty() || request_id.is_empty() {
+            return Err("question response requires turn_id and request_id".to_string());
+        }
+        self.json(
+            "POST",
+            &format!("/api/turns/{turn_id}/questions/{request_id}/reply"),
+            Some(payload.clone()),
+        )
+    }
+
+    pub fn next_tui_control(&self) -> Result<Value, String> {
+        self.json("GET", "/tui/control/next", None)
+    }
+
+    pub fn record_tui_control_response(&self, payload: &Value) -> Result<Value, String> {
+        self.json("POST", "/tui/control/response", Some(payload.clone()))
+    }
+
+    pub fn json(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+        let raw = self.text(method, path, body)?;
+        serde_json::from_str(&raw).map_err(|error| format!("server response was not JSON: {error}"))
+    }
+
+    pub fn sse_events(&self, path: &str) -> Result<Vec<Value>, String> {
+        let raw = self.text("GET", path, None)?;
+        parse_sse_response_lines(&raw.lines().collect::<Vec<_>>())
+    }
+
+    pub fn text(&self, method: &str, path: &str, body: Option<Value>) -> Result<String, String> {
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(self.timeout)
+            .build()
+            .map_err(|error| error.to_string())?;
+        let url = join_server_url(&self.server_url, path);
+        let mut request = match method {
+            "DELETE" => client.delete(url),
+            "GET" => client.get(url),
+            "PATCH" => client.patch(url),
+            "POST" => client.post(url),
+            other => return Err(format!("unsupported HTTP method: {other}")),
+        };
+        if let Some(token) = self.auth.token.as_deref().filter(|value| !value.is_empty()) {
+            request = request.bearer_auth(token);
+        } else if let Some(password) = self
+            .auth
+            .password
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            request = request.basic_auth(
+                self.auth.username.as_deref().unwrap_or("openagent"),
+                Some(password),
+            );
+        }
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request.send().map_err(|error| {
+            format!(
+                "{method} {} failed: {error}",
+                join_server_url(&self.server_url, path)
+            )
+        })?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let raw = response.text().map_err(|error| error.to_string())?;
+        if !status.is_success() {
+            return Err(format!(
+                "server returned HTTP {} for {method} {path}: {}",
+                status.as_u16(),
+                summarize_http_error_body(&raw, &content_type)
+            ));
+        }
+        Ok(raw)
+    }
+}
+
+pub fn parse_sse_response_lines(lines: &[&str]) -> Result<Vec<Value>, String> {
+    let mut events = Vec::new();
+    let mut data_lines: Vec<String> = Vec::new();
+    for raw_line in lines {
+        let line = raw_line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            if !data_lines.is_empty() {
+                events.push(parse_sse_data(&data_lines.join("\n"))?);
+                data_lines.clear();
+            }
+            continue;
+        }
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start().to_string());
+        }
+    }
+    if !data_lines.is_empty() {
+        events.push(parse_sse_data(&data_lines.join("\n"))?);
+    }
+    Ok(events)
+}
+
+pub fn parse_sse_data(data: &str) -> Result<Value, String> {
+    let value: Value = serde_json::from_str(data).map_err(|error| error.to_string())?;
+    if !value.is_object() {
+        return Err("SSE event data was not a JSON object".to_string());
+    }
+    Ok(value)
+}
+
+#[must_use]
+pub fn session_id_from_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("session_id")
+        .or_else(|| payload.get("id"))
+        .or_else(|| payload.get("session").and_then(|session| session.get("id")))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[must_use]
+pub fn turn_id_from_payload(payload: &Value) -> Option<String> {
+    payload
+        .get("turn_id")
+        .or_else(|| payload.get("turn").and_then(|turn| turn.get("id")))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+#[must_use]
+pub fn events_from_payload(payload: &Value) -> Vec<Value> {
+    payload
+        .get("events")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[must_use]
+pub fn event_sequence(event: &Value) -> u64 {
+    event
+        .get("global_sequence")
+        .or_else(|| event.get("sequence"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default()
 }
 
 pub fn app_event_from_value(payload: &Value, default_sequence: u64) -> Result<AppEvent, String> {
@@ -383,6 +770,25 @@ fn optional_string_field(payload: &Value, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
+}
+
+fn summarize_http_error_body(raw: &str, content_type: &str) -> String {
+    if raw.trim().is_empty() {
+        return "empty response body".to_string();
+    }
+    if content_type.contains("json")
+        && let Ok(value) = serde_json::from_str::<Value>(raw)
+    {
+        if let Some(error) = value
+            .get("error")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            return error.to_string();
+        }
+        return value.to_string();
+    }
+    raw.lines().take(5).collect::<Vec<_>>().join("\n")
 }
 
 trait EmptyStringExt {

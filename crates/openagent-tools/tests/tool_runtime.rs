@@ -5,6 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use openagent_protocol::PermissionRuleset;
 use openagent_tools::{
     LocalWorkspaceRuntime, TodoItem, ToolContext, ToolRegistry, Toolkit, blocked_command,
     ensure_within_root, exclusive_schema, format_read_output_from_text, qualify_tool_id,
@@ -182,6 +183,97 @@ fn shell_runtime_blocks_destructive_commands_and_saves_truncated_output()
     assert_eq!(command.returncode, 0);
     assert_eq!(command.stdout, "runtime-ok");
     assert!(runtime.resolve_path(Some("../outside"), true).is_err());
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn toolkit_enforces_permission_rules_before_execution() -> Result<(), Box<dyn Error>> {
+    let root = unique_temp_dir("openagent-tools-permission")?;
+    fs::write(root.join("notes.txt"), "alpha\n")?;
+    let toolkit = Toolkit::with_builtins();
+
+    let mut readonly = ToolContext::new(&root)
+        .with_session_id("session/readonly")
+        .with_permission_ruleset(PermissionRuleset::Readonly);
+    let read = toolkit.execute(
+        "read",
+        json!({"file_path": "notes.txt"}),
+        "call_read_allowed",
+        &mut readonly,
+    );
+    assert!(read.error.is_none());
+    assert_eq!(read.metadata["tool"], json!("read"));
+
+    let denied_write = toolkit.execute(
+        "write",
+        json!({"file_path": "denied.txt", "content": "nope"}),
+        "call_write_denied",
+        &mut readonly,
+    );
+    assert!(
+        denied_write
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Permission denied")
+    );
+    assert_eq!(denied_write.metadata["permission_action"], json!("deny"));
+    assert_eq!(
+        denied_write.metadata["error_kind"],
+        json!("permission_denied")
+    );
+    assert!(!root.join("denied.txt").exists());
+
+    let mut plan_only = ToolContext::new(&root)
+        .with_session_id("session/plan")
+        .with_permission_ruleset(PermissionRuleset::PlanOnly);
+    let needs_approval = toolkit.execute(
+        "bash",
+        json!({"command": "printf blocked"}),
+        "call_bash_ask",
+        &mut plan_only,
+    );
+    assert!(
+        needs_approval
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Permission requires user confirmation")
+    );
+    assert_eq!(needs_approval.metadata["permission_action"], json!("ask"));
+    assert_eq!(needs_approval.metadata["requires_approval"], json!(true));
+    assert_eq!(
+        needs_approval.metadata["input"]["command"],
+        json!("printf blocked")
+    );
+
+    let mut auto_allow = ToolContext::new(&root)
+        .with_session_id("session/auto")
+        .with_permission_ruleset(PermissionRuleset::PlanOnly)
+        .with_dangerously_skip_permissions(true);
+    let allowed_by_skip = toolkit.execute(
+        "bash",
+        json!({"command": "printf allowed"}),
+        "call_bash_auto_allow",
+        &mut auto_allow,
+    );
+    assert!(allowed_by_skip.error.is_none());
+    assert_eq!(allowed_by_skip.output, "allowed");
+
+    let mut auto_deny = ToolContext::new(&root)
+        .with_session_id("session/auto-deny")
+        .with_permission_ruleset(PermissionRuleset::Readonly)
+        .with_dangerously_skip_permissions(true);
+    let still_denied = toolkit.execute(
+        "write",
+        json!({"file_path": "still-denied.txt", "content": "nope"}),
+        "call_write_still_denied",
+        &mut auto_deny,
+    );
+    assert_eq!(still_denied.metadata["permission_action"], json!("deny"));
+    assert!(!root.join("still-denied.txt").exists());
 
     fs::remove_dir_all(root)?;
     Ok(())

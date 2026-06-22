@@ -323,6 +323,69 @@ pub fn parse_turn_approval_path(path: &str) -> Result<(String, String), String> 
     Ok((turn_id.to_string(), request_id.to_string()))
 }
 
+pub fn parse_turn_question_reply_path(path: &str) -> Result<(String, String), String> {
+    let raw = path.strip_prefix("/api/turns/").unwrap_or(path);
+    let Some((turn_id, rest)) = raw.split_once("/questions/") else {
+        return Err(
+            "question reply path must be /api/turns/{turn_id}/questions/{request_id}/reply"
+                .to_string(),
+        );
+    };
+    let Some(request_id) = rest.strip_suffix("/reply") else {
+        return Err(
+            "question reply path must be /api/turns/{turn_id}/questions/{request_id}/reply"
+                .to_string(),
+        );
+    };
+    let turn_id = turn_id.trim_matches('/');
+    let request_id = request_id.trim_matches('/');
+    if turn_id.is_empty() || request_id.is_empty() {
+        return Err(
+            "question reply path must be /api/turns/{turn_id}/questions/{request_id}/reply"
+                .to_string(),
+        );
+    }
+    Ok((turn_id.to_string(), request_id.to_string()))
+}
+
+pub fn approval_response_payload(payload: &Value) -> Result<Value, String> {
+    let raw_action = required_string(payload, "action")?;
+    let action = normalize_approval_action(&raw_action)?;
+    let scope = normalize_approval_scope(optional_string(payload, "scope").as_deref())?
+        .or_else(|| implied_approval_scope(&raw_action));
+    let note = optional_string(payload, "note");
+    let mut object = Map::new();
+    object.insert("action".to_string(), Value::String(action));
+    if let Some(scope) = scope {
+        object.insert("scope".to_string(), Value::String(scope));
+    }
+    if let Some(note) = note {
+        object.insert("note".to_string(), Value::String(note));
+    }
+    Ok(Value::Object(object))
+}
+
+pub fn question_reply_payload(payload: &Value) -> Result<Value, String> {
+    let answers = normalized_question_answers(payload)?;
+    let mut object = Map::new();
+    object.insert("answers".to_string(), answers);
+    object.insert("dismissed".to_string(), Value::Bool(false));
+    if let Some(note) = optional_string(payload, "note") {
+        object.insert("note".to_string(), Value::String(note));
+    }
+    Ok(Value::Object(object))
+}
+
+pub fn question_dismiss_payload(payload: &Value) -> Value {
+    let mut object = Map::new();
+    object.insert("answers".to_string(), Value::Array(Vec::new()));
+    object.insert("dismissed".to_string(), Value::Bool(true));
+    if let Some(note) = optional_string(payload, "note") {
+        object.insert("note".to_string(), Value::String(note));
+    }
+    Value::Object(object)
+}
+
 pub fn publish_to_control(payload: &Value) -> Result<(String, Value), String> {
     let topic = ["type", "topic", "event", "method"]
         .iter()
@@ -364,10 +427,10 @@ pub fn publish_to_control(payload: &Value) -> Result<(String, Value), String> {
             );
             if let Some(object) = params.as_object() {
                 for key in ["title", "variant", "duration"] {
-                    if let Some(value) = object.get(key)
-                        && !value.is_null()
-                    {
-                        result.insert(key.to_string(), value.clone());
+                    if let Some(value) = object.get(key) {
+                        if !value.is_null() {
+                            result.insert(key.to_string(), value.clone());
+                        }
                     }
                 }
             }
@@ -376,6 +439,18 @@ pub fn publish_to_control(payload: &Value) -> Result<(String, Value), String> {
         "tui.session.select" => Ok((
             "session.select".to_string(),
             json!({"sessionID": required_string(&params, "sessionID")?}),
+        )),
+        "tui.approval.respond" => Ok((
+            "approval.respond".to_string(),
+            approval_response_payload(&params)?,
+        )),
+        "tui.question.reply" => Ok((
+            "question.reply".to_string(),
+            question_reply_payload(&params)?,
+        )),
+        "tui.question.dismiss" => Ok((
+            "question.dismiss".to_string(),
+            question_dismiss_payload(&params),
         )),
         _ => Err(format!("unsupported publish type: {topic}")),
     }
@@ -392,6 +467,9 @@ pub fn tui_control_request_for_path(
         "/tui/execute-command" => json!({"command": required_string(payload, "command")?}),
         "/tui/show-toast" => validate_toast_payload(payload)?,
         "/tui/select-session" => json!({"sessionID": required_string(payload, "sessionID")?}),
+        "/tui/respond-approval" => approval_response_payload(payload)?,
+        "/tui/reply-question" => question_reply_payload(payload)?,
+        "/tui/dismiss-question" => question_dismiss_payload(payload),
         "/tui/publish" => {
             let _ = publish_to_control(payload)?;
             payload.clone()
@@ -677,24 +755,101 @@ fn validate_toast_payload(payload: &Value) -> Result<Value, String> {
     let mut object = Map::new();
     object.insert("message".to_string(), Value::String(message));
     for key in ["title", "variant"] {
-        if let Some(value) = payload.get(key)
-            && !value.is_null()
-        {
-            if !value.is_string() {
-                return Err(format!("{key} must be a string"));
+        if let Some(value) = payload.get(key) {
+            if !value.is_null() {
+                if !value.is_string() {
+                    return Err(format!("{key} must be a string"));
+                }
+                object.insert(key.to_string(), value.clone());
             }
-            object.insert(key.to_string(), value.clone());
         }
     }
-    if let Some(value) = payload.get("duration")
-        && !value.is_null()
-    {
-        if !value.is_number() {
-            return Err("duration must be a number".to_string());
+    if let Some(value) = payload.get("duration") {
+        if !value.is_null() {
+            if !value.is_number() {
+                return Err("duration must be a number".to_string());
+            }
+            object.insert("duration".to_string(), value.clone());
         }
-        object.insert("duration".to_string(), value.clone());
     }
     Ok(Value::Object(object))
+}
+
+fn normalize_approval_action(action: &str) -> Result<String, String> {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "allow" | "approve" | "approved" | "yes" | "y" | "allow_once" | "allow-once" => {
+            Ok("allow".to_string())
+        }
+        "allow_always" | "allow-always" | "always" => Ok("allow".to_string()),
+        "deny" | "reject" | "rejected" | "no" | "n" => Ok("deny".to_string()),
+        _ => Err("approval action must be allow or deny".to_string()),
+    }
+}
+
+fn normalize_approval_scope(scope: Option<&str>) -> Result<Option<String>, String> {
+    match scope.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some("once") | Some("this") => Ok(Some("once".to_string())),
+        Some("always") | Some("session") => Ok(Some("always".to_string())),
+        Some(_) => Err("approval scope must be once or always".to_string()),
+    }
+}
+
+fn implied_approval_scope(action: &str) -> Option<String> {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "allow_always" | "allow-always" | "always" => Some("always".to_string()),
+        "allow_once" | "allow-once" => Some("once".to_string()),
+        _ => None,
+    }
+}
+
+fn normalized_question_answers(payload: &Value) -> Result<Value, String> {
+    if let Some(answers) = payload.get("answers") {
+        return normalize_answer_array(answers);
+    }
+    if let Some(answer) = optional_string(payload, "answer") {
+        return Ok(json!([[answer]]));
+    }
+    Err("answers or answer is required".to_string())
+}
+
+fn normalize_answer_array(value: &Value) -> Result<Value, String> {
+    let Some(items) = value.as_array() else {
+        return Err("answers must be an array".to_string());
+    };
+    let normalized = items
+        .iter()
+        .map(|item| {
+            if let Some(text) = item.as_str() {
+                if text.trim().is_empty() {
+                    Err("answers must contain non-empty strings".to_string())
+                } else {
+                    Ok(json!([text]))
+                }
+            } else if let Some(values) = item.as_array() {
+                let answers = values
+                    .iter()
+                    .map(|answer| {
+                        answer
+                            .as_str()
+                            .filter(|value| !value.trim().is_empty())
+                            .map(|value| Value::String(value.to_string()))
+                            .ok_or_else(|| "answers must contain non-empty strings".to_string())
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if answers.is_empty() {
+                    return Err("answers must contain at least one string".to_string());
+                }
+                Ok(Value::Array(answers))
+            } else {
+                Err("answers must contain strings or string arrays".to_string())
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if normalized.is_empty() {
+        return Err("answers must not be empty".to_string());
+    }
+    Ok(Value::Array(normalized))
 }
 
 fn required_string(payload: &Value, key: &str) -> Result<String, String> {
@@ -704,6 +859,15 @@ fn required_string(payload: &Value, key: &str) -> Result<String, String> {
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
         .ok_or_else(|| format!("{key} is required"))
+}
+
+fn optional_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn object_from_value(value: Value) -> Map<String, Value> {
@@ -734,5 +898,55 @@ mod tests {
     fn links_to_core_crate() {
         assert_eq!(crate_name(), "openagent-app-server");
         assert_eq!(core_crate_name(), "openagent-core");
+    }
+
+    #[test]
+    fn normalizes_approval_and_question_interaction_payloads() {
+        assert_eq!(
+            approval_response_payload(&json!({"action": "allow_always", "note": "trusted"}))
+                .expect("approval payload"),
+            json!({"action": "allow", "scope": "always", "note": "trusted"})
+        );
+        assert_eq!(
+            approval_response_payload(&json!({"action": "deny", "scope": "once"}))
+                .expect("deny payload"),
+            json!({"action": "deny", "scope": "once"})
+        );
+        assert_eq!(
+            parse_turn_question_reply_path("/api/turns/turn_1/questions/question_1/reply")
+                .expect("question path"),
+            ("turn_1".to_string(), "question_1".to_string())
+        );
+        assert_eq!(
+            question_reply_payload(&json!({"answer": "Fast path"})).expect("question reply"),
+            json!({"answers": [["Fast path"]], "dismissed": false})
+        );
+        assert_eq!(
+            question_dismiss_payload(&json!({"note": "not needed"})),
+            json!({"answers": [], "dismissed": true, "note": "not needed"})
+        );
+    }
+
+    #[test]
+    fn queues_tui_approval_and_question_controls() {
+        assert_eq!(
+            tui_control_request_for_path(
+                "/tui/respond-approval",
+                &json!({"action": "allow", "scope": "always"}),
+            )
+            .expect("approval control")
+            .to_value(),
+            json!({"path": "/tui/respond-approval", "body": {"action": "allow", "scope": "always"}})
+        );
+        assert_eq!(
+            publish_to_control(
+                &json!({"type": "tui.question.reply", "properties": {"answer": "Safe path"}}),
+            )
+            .expect("publish question reply"),
+            (
+                "question.reply".to_string(),
+                json!({"answers": [["Safe path"]], "dismissed": false})
+            )
+        );
     }
 }

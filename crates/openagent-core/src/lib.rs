@@ -88,7 +88,8 @@ impl PermissionManager {
         matched
     }
 
-    pub fn check(&self, tool_call: &Value) -> Result<PermissionAction, String> {
+    #[must_use]
+    pub fn decide(&self, tool_call: &Value) -> PermissionAction {
         let tool = tool_call
             .get("name")
             .or_else(|| tool_call.get("tool"))
@@ -96,14 +97,22 @@ impl PermissionManager {
             .unwrap_or_default();
         let payload = tool_call.get("input").cloned().unwrap_or_else(|| json!({}));
         let pattern = pattern_for(&payload);
-        let action = self
-            .evaluate(tool, &pattern)
+        self.evaluate(tool, &pattern)
             .map(|rule| rule.action.clone())
-            .unwrap_or(PermissionAction::Ask);
-        if action == PermissionAction::Ask {
-            return Err(format!("Permission requires user confirmation: {tool}"));
+            .unwrap_or(PermissionAction::Ask)
+    }
+
+    pub fn check(&self, tool_call: &Value) -> Result<PermissionAction, String> {
+        let tool = tool_call
+            .get("name")
+            .or_else(|| tool_call.get("tool"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match self.decide(tool_call) {
+            PermissionAction::Allow => Ok(PermissionAction::Allow),
+            PermissionAction::Deny => Err(format!("Permission denied: {tool}")),
+            PermissionAction::Ask => Err(format!("Permission requires user confirmation: {tool}")),
         }
-        Ok(action)
     }
 }
 

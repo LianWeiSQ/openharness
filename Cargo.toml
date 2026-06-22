@@ -32,6 +32,7 @@ openagent-provider = { path = "crates/openagent-provider" }
 openagent-session = { path = "crates/openagent-session" }
 openagent-swarm = { path = "crates/openagent-swarm" }
 openagent-tools = { path = "crates/openagent-tools" }
+openagent-tui = { path = "crates/openagent-tui" }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 regex = "1"

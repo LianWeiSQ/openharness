@@ -2,6 +2,7 @@ const state = {
   activeSessionId: null,
   activeTurnId: null,
   pendingApproval: null,
+  pendingQuestion: null,
   source: null,
   textNodes: new Map(),
 };
@@ -18,6 +19,13 @@ const els = {
   approvalBody: document.querySelector("#approval-body"),
   approvalAllow: document.querySelector("#approval-allow"),
   approvalDeny: document.querySelector("#approval-deny"),
+  approvalScope: document.querySelector("#approval-scope"),
+  approvalNote: document.querySelector("#approval-note"),
+  questionPanel: document.querySelector("#question-panel"),
+  questionBody: document.querySelector("#question-body"),
+  questionAnswer: document.querySelector("#question-answer"),
+  questionReply: document.querySelector("#question-reply"),
+  questionDismiss: document.querySelector("#question-dismiss"),
   timeline: document.querySelector("#timeline"),
   clear: document.querySelector("#clear-events"),
   turnState: document.querySelector("#turn-state"),
@@ -40,6 +48,7 @@ const eventNames = [
   "runtime/warning",
   "item/patch/detected",
   "item/question/requested",
+  "item/question/resolved",
   "turn/error",
   "turn/interrupt_requested",
   "turn/interrupted",
@@ -58,6 +67,8 @@ async function boot() {
   els.clear.addEventListener("click", clearTimeline);
   els.approvalAllow.addEventListener("click", () => respondApproval("allow"));
   els.approvalDeny.addEventListener("click", () => respondApproval("deny"));
+  els.questionReply.addEventListener("click", respondQuestion);
+  els.questionDismiss.addEventListener("click", dismissQuestion);
 }
 
 async function refreshHealth() {
@@ -130,6 +141,7 @@ async function runTurn() {
 
   clearTimeline();
   clearApproval();
+  clearQuestion();
   els.run.disabled = true;
   els.turnState.textContent = "starting";
   els.finalAnswer.textContent = "-";
@@ -138,9 +150,13 @@ async function runTurn() {
     const data = await postJSON(`/api/sessions/${encodeURIComponent(state.activeSessionId)}/turns`, {
       input,
     });
-    state.activeTurnId = data.turn.id;
+    state.activeTurnId = data.turn?.id || data.turn_id;
     els.detailTurn.textContent = state.activeTurnId;
-    streamTurn(state.activeTurnId);
+    if (Array.isArray(data.events)) {
+      data.events.forEach(handleAppEvent);
+    } else {
+      streamTurn(state.activeTurnId);
+    }
   } catch (error) {
     els.run.disabled = false;
     els.turnState.textContent = "failed";
@@ -177,6 +193,7 @@ function handleAppEvent(appEvent) {
     els.finalAnswer.textContent = params.final_answer || "-";
     els.detailTrace.textContent = traceLabel(params.trace);
     clearApproval();
+    clearQuestion();
     if (state.source) state.source.close();
   }
   if (method === "turn/interrupted") {
@@ -185,6 +202,7 @@ function handleAppEvent(appEvent) {
     els.finalAnswer.textContent = params.final_answer || "-";
     els.detailTrace.textContent = traceLabel(params.trace);
     clearApproval();
+    clearQuestion();
     if (state.source) state.source.close();
   }
   if (method === "turn/approval_requested") {
@@ -192,6 +210,12 @@ function handleAppEvent(appEvent) {
   }
   if (method === "turn/approval_resolved") {
     clearApproval();
+  }
+  if (method === "item/question/requested" || method === "turn/question_requested") {
+    showQuestion(params.event || params.question || params);
+  }
+  if (method === "item/question/resolved") {
+    clearQuestion();
   }
 
   const severity = method.includes("warning") ? "warning" : method.includes("failed") || method.includes("error") ? "error" : "";
@@ -272,6 +296,8 @@ function showApproval(approval) {
 function clearApproval() {
   state.pendingApproval = null;
   els.approvalBody.textContent = "-";
+  els.approvalScope.value = "once";
+  els.approvalNote.value = "";
   els.approvalPanel.hidden = true;
 }
 
@@ -280,12 +306,17 @@ async function respondApproval(action) {
   if (!approval?.turn_id || !approval?.request_id) return;
   els.approvalAllow.disabled = true;
   els.approvalDeny.disabled = true;
+  const body = { action };
+  if (action === "allow") body.scope = els.approvalScope.value || "once";
+  const note = els.approvalNote.value.trim();
+  if (note) body.note = note;
   try {
-    await postJSON(
+    const data = await postJSON(
       `/api/turns/${encodeURIComponent(approval.turn_id)}/approvals/${encodeURIComponent(approval.request_id)}`,
-      { action },
+      body,
     );
     els.turnState.textContent = `approval ${action} sent`;
+    if (Array.isArray(data.events)) data.events.forEach(handleAppEvent);
   } catch (error) {
     addEventRow("turn/approval_failed", error.message, "error");
   } finally {
@@ -294,15 +325,77 @@ async function respondApproval(action) {
   }
 }
 
+function showQuestion(question) {
+  if (!question) return;
+  state.pendingQuestion = question;
+  els.questionBody.textContent = questionSummary(question);
+  els.questionAnswer.value = "";
+  els.questionPanel.hidden = false;
+  els.turnState.textContent = "waiting answer";
+}
+
+function clearQuestion() {
+  state.pendingQuestion = null;
+  els.questionBody.textContent = "-";
+  els.questionAnswer.value = "";
+  els.questionPanel.hidden = true;
+}
+
+async function respondQuestion() {
+  const question = state.pendingQuestion;
+  const answer = els.questionAnswer.value.trim();
+  if (!question?.turn_id || !question?.request_id || !answer) return;
+  await sendQuestionResponse(question, { answer });
+}
+
+async function dismissQuestion() {
+  const question = state.pendingQuestion;
+  if (!question?.turn_id || !question?.request_id) return;
+  await sendQuestionResponse(question, { dismissed: true, note: els.questionAnswer.value.trim() });
+}
+
+async function sendQuestionResponse(question, body) {
+  els.questionReply.disabled = true;
+  els.questionDismiss.disabled = true;
+  try {
+    const data = await postJSON(
+      `/api/turns/${encodeURIComponent(question.turn_id)}/questions/${encodeURIComponent(question.request_id)}/reply`,
+      body,
+    );
+    els.turnState.textContent = body.dismissed ? "question dismissed" : "question answered";
+    clearQuestion();
+    if (Array.isArray(data.events)) data.events.forEach(handleAppEvent);
+  } catch (error) {
+    addEventRow("turn/question_failed", error.message, "error");
+  } finally {
+    els.questionReply.disabled = false;
+    els.questionDismiss.disabled = false;
+  }
+}
+
 function approvalSummary(approval) {
   return [
     `tool: ${approval.tool_name || "tool"}`,
     `request: ${approval.request_id || "-"}`,
     approval.call_id ? `call: ${approval.call_id}` : null,
+    approval.permission_pattern ? `pattern: ${approval.permission_pattern}` : null,
     `input: ${JSON.stringify(approval.tool_input || {}, null, 2)}`,
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function questionSummary(question) {
+  const questions = question.questions || question.event?.questions || [];
+  if (!questions.length) return JSON.stringify(question, null, 2);
+  return questions
+    .map((item, index) => {
+      const options = (item.options || [])
+        .map((option) => `  - ${option.label || option}`)
+        .join("\n");
+      return `${index + 1}. ${item.header || "Question"}\n${item.question || ""}${options ? `\n${options}` : ""}`;
+    })
+    .join("\n\n");
 }
 
 function clearTimeline() {

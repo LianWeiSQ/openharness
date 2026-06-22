@@ -48,8 +48,26 @@
               <pre id="approval-body" class="approval-body">-</pre>
             </div>
             <div class="approval-actions">
+              <select id="approval-scope" class="control-select" aria-label="Approval scope">
+                <option value="once">Once</option>
+                <option value="always">Always</option>
+              </select>
+              <input id="approval-note" class="control-input" type="text" placeholder="Note" />
               <button id="approval-deny" class="ghost-button danger" type="button">Deny</button>
               <button id="approval-allow" class="run-button" type="button">Allow</button>
+            </div>
+          </div>
+          <div id="question-panel" class="approval-panel question-panel" hidden>
+            <div>
+              <div class="approval-title">Question requested</div>
+              <pre id="question-body" class="approval-body">-</pre>
+            </div>
+            <div class="question-actions">
+              <textarea id="question-answer" rows="2" placeholder="Answer"></textarea>
+              <div class="approval-actions">
+                <button id="question-dismiss" class="ghost-button" type="button">Dismiss</button>
+                <button id="question-reply" class="run-button" type="button">Reply</button>
+              </div>
             </div>
           </div>
           <div class="composer-actions">

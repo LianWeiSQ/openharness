@@ -42,16 +42,20 @@ fn permission_manager_uses_last_matching_rule_and_payload_patterns() -> Result<(
     ));
 
     assert_eq!(
-        manager.check(&json!({"name": "skill", "input": {"name": "code-review"}}))?,
+        manager.decide(&json!({"name": "skill", "input": {"name": "code-review"}})),
         PermissionAction::Allow
     );
     assert_eq!(
-        manager.check(&json!({"name": "skill", "input": {"name": "code-secret"}}))?,
+        manager.decide(&json!({"name": "skill", "input": {"name": "code-secret"}})),
         PermissionAction::Deny
     );
+    let denied = manager
+        .check(&json!({"name": "skill", "input": {"name": "code-secret"}}))
+        .expect_err("deny must block in check");
+    assert!(denied.contains("Permission denied"));
     assert_eq!(pattern_for(&json!({"file_path": "a.txt"})), "a.txt");
     assert_eq!(
-        manager.check(&json!({"name": "bash", "input": {"command": "echo hi"}}))?,
+        manager.decide(&json!({"name": "bash", "input": {"command": "echo hi"}})),
         PermissionAction::Deny
     );
     Ok(())
@@ -283,12 +287,12 @@ fn permission_decisions() -> Result<Value, Box<dyn Error>> {
         Some("code-review"),
     ));
     Ok(json!({
-        "readonly_write": readonly.check(&json!({"name": "write", "input": {"file_path": "a.txt", "content": "x"}}))?,
-        "readonly_ls": readonly.check(&json!({"name": "ls", "input": {}}))?,
-        "readonly_skill": readonly.check(&json!({"name": "skill", "input": {"name": "code-review"}}))?,
-        "readonly_todowrite": readonly.check(&json!({"name": "todowrite", "input": {"todos": []}}))?,
-        "plan_only_todowrite": plan_only.check(&json!({"name": "todowrite", "input": {"todos": []}}))?,
-        "custom_skill": custom.check(&json!({"name": "skill", "input": {"name": "code-review"}}))?,
+        "readonly_write": readonly.decide(&json!({"name": "write", "input": {"file_path": "a.txt", "content": "x"}})),
+        "readonly_ls": readonly.decide(&json!({"name": "ls", "input": {}})),
+        "readonly_skill": readonly.decide(&json!({"name": "skill", "input": {"name": "code-review"}})),
+        "readonly_todowrite": readonly.decide(&json!({"name": "todowrite", "input": {"todos": []}})),
+        "plan_only_todowrite": plan_only.decide(&json!({"name": "todowrite", "input": {"todos": []}})),
+        "custom_skill": custom.decide(&json!({"name": "skill", "input": {"name": "code-review"}})),
         "pattern_for_file": pattern_for(&json!({"file_path": "src/lib.rs", "command": "ignored"})),
         "pattern_for_name": pattern_for(&json!({"name": "code-review"})),
         "pattern_for_json": pattern_for(&json!({"b": 2, "a": 1})),

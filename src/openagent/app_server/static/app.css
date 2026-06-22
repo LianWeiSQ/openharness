@@ -320,6 +320,37 @@ textarea:focus {
   flex-shrink: 0;
 }
 
+.control-select,
+.control-input {
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.control-input {
+  width: 160px;
+}
+
+.question-panel {
+  align-items: stretch;
+}
+
+.question-actions {
+  display: grid;
+  gap: 8px;
+  width: min(320px, 42vw);
+  flex-shrink: 0;
+}
+
+.question-actions textarea {
+  min-height: 72px;
+}
+
 .ghost-button.danger {
   border-color: #f1a5a5;
   background: var(--danger-soft);

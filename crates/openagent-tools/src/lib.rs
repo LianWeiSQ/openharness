@@ -9,9 +9,12 @@ use std::{
     time::SystemTime,
 };
 
-use openagent_core::{SkillDiscoveryReport, SkillRegistry, render_skill_document};
+use openagent_core::{
+    PermissionManager, SkillDiscoveryReport, SkillRegistry, pattern_for, render_skill_document,
+};
 use openagent_protocol::{
-    ToolConcurrency, ToolExecutionSchema, ToolExecutionScope, ToolResult, ToolSchema,
+    PermissionAction, PermissionRuleset, ToolConcurrency, ToolExecutionSchema, ToolExecutionScope,
+    ToolResult, ToolSchema,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -214,6 +217,8 @@ pub struct ToolContext {
     pub execution_metadata: BTreeMap<String, Value>,
     pub agent_options: BTreeMap<String, Value>,
     pub require_read_before_write: bool,
+    pub permission_manager: Option<PermissionManager>,
+    pub dangerously_skip_permissions: bool,
     pub read_files: BTreeSet<PathBuf>,
     pub memory: BTreeMap<String, Value>,
     pub todos: Vec<TodoItem>,
@@ -233,6 +238,8 @@ impl ToolContext {
             execution_metadata: BTreeMap::new(),
             agent_options: BTreeMap::new(),
             require_read_before_write: true,
+            permission_manager: None,
+            dangerously_skip_permissions: false,
             read_files: BTreeSet::new(),
             memory: BTreeMap::new(),
             todos: Vec::new(),
@@ -255,6 +262,26 @@ impl ToolContext {
     #[must_use]
     pub fn with_read_before_write(mut self, enabled: bool) -> Self {
         self.require_read_before_write = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_manager(mut self, manager: PermissionManager) -> Self {
+        self.permission_manager = Some(manager);
+        self
+    }
+
+    #[must_use]
+    pub fn with_permission_ruleset(mut self, ruleset: PermissionRuleset) -> Self {
+        let mut manager = PermissionManager::new();
+        manager.set_ruleset(ruleset);
+        self.permission_manager = Some(manager);
+        self
+    }
+
+    #[must_use]
+    pub fn with_dangerously_skip_permissions(mut self, enabled: bool) -> Self {
+        self.dangerously_skip_permissions = enabled;
         self
     }
 
@@ -644,6 +671,9 @@ impl Toolkit {
                 ]),
             };
         }
+        if let Some(result) = permission_gate(tool, &input, call_id, ctx) {
+            return result;
+        }
 
         ctx.call_id = call_id.to_string();
         match execute_builtin(name, input, ctx) {
@@ -709,6 +739,98 @@ impl Toolkit {
             error: output.error,
             metadata,
         }
+    }
+}
+
+fn permission_gate(
+    tool: &ToolDefinition,
+    input: &Value,
+    call_id: &str,
+    ctx: &ToolContext,
+) -> Option<ToolResult> {
+    let manager = ctx.permission_manager.as_ref()?;
+    let tool_call = json!({"name": tool.id, "input": input});
+    match manager.decide(&tool_call) {
+        PermissionAction::Allow => None,
+        PermissionAction::Ask if ctx.dangerously_skip_permissions => None,
+        PermissionAction::Ask => Some(permission_tool_result(
+            tool,
+            input,
+            call_id,
+            PermissionFailure {
+                action: PermissionAction::Ask,
+                message: "Permission requires user confirmation",
+                error_kind: "permission_required",
+                requires_approval: true,
+                dangerously_skip_permissions: ctx.dangerously_skip_permissions,
+            },
+        )),
+        PermissionAction::Deny => Some(permission_tool_result(
+            tool,
+            input,
+            call_id,
+            PermissionFailure {
+                action: PermissionAction::Deny,
+                message: "Permission denied",
+                error_kind: "permission_denied",
+                requires_approval: false,
+                dangerously_skip_permissions: ctx.dangerously_skip_permissions,
+            },
+        )),
+    }
+}
+
+struct PermissionFailure {
+    action: PermissionAction,
+    message: &'static str,
+    error_kind: &'static str,
+    requires_approval: bool,
+    dangerously_skip_permissions: bool,
+}
+
+fn permission_tool_result(
+    tool: &ToolDefinition,
+    input: &Value,
+    call_id: &str,
+    failure: PermissionFailure,
+) -> ToolResult {
+    ToolResult {
+        call_id: call_id.to_string(),
+        output: String::new(),
+        error: Some(format!("{}: {}", failure.message, tool.id)),
+        metadata: BTreeMap::from([
+            ("tool".to_string(), json!(tool.id)),
+            (
+                "permission_action".to_string(),
+                json!(permission_action_name(&failure.action)),
+            ),
+            ("permission_pattern".to_string(), json!(pattern_for(input))),
+            (
+                "permission_required".to_string(),
+                json!(failure.requires_approval),
+            ),
+            (
+                "requires_approval".to_string(),
+                json!(failure.requires_approval),
+            ),
+            (
+                "dangerously_skip_permissions".to_string(),
+                json!(failure.dangerously_skip_permissions),
+            ),
+            ("dangerous".to_string(), json!(tool.dangerous)),
+            ("group".to_string(), json!(tool.group)),
+            ("call_id".to_string(), json!(call_id)),
+            ("input".to_string(), input.clone()),
+            ("error_kind".to_string(), json!(failure.error_kind)),
+        ]),
+    }
+}
+
+fn permission_action_name(action: &PermissionAction) -> &'static str {
+    match action {
+        PermissionAction::Allow => "allow",
+        PermissionAction::Deny => "deny",
+        PermissionAction::Ask => "ask",
     }
 }
 
