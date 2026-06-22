@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-22 TUI Variant Thinking Picker Slice
+
+- Upgraded `/variant` and `/thinking` from passive command/help paths into OpenCode-style keyboard pickers.
+- Added a shared choice picker dock with query filtering, Up/Down/Tab selection, Enter-to-select, and Esc-to-close.
+- Wired both pickers through `TerminalEventHandler::list_models`; `AppBridgeTerminalHandler` backs them with `RemoteRuntimeClient::models`, so opening either picker calls real `GET /api/models`.
+- Selection reuses the existing `/variant <name>` and `/thinking <level>` commands and writes the current session setting through `PATCH /api/sessions/{session_id}`.
+- Updated `/tui/open-variants` and `/tui/open-thinking` remote control to use the same handler-backed picker path when no direct payload is supplied, while preserving direct payload support for embedded control requests.
+- Added keyflow, remote control, terminal render snapshot, and App Bridge handler smoke coverage.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui variant_and_thinking
+cargo test -q -p openagent-tui terminal_render_snapshot_contains_choice_picker_overlay
+cargo test -q -p openagent-tui
+cargo check -q -p openagent-tui -p openagent-app-server-client
+git diff --check
+```
+
+Residual risk:
+
+- This completes the variant/thinking picker path only; theme picker and richer agent/variant profile semantics remain future slices.
+- The App Bridge smoke uses a deterministic in-test bridge server, not a full provider-backed runtime.
+
 ## 2026-06-22 TUI Agent Picker Slice
 
 - Upgraded `/agents` from a passive list command into an OpenCode-style keyboard agent/profile picker.

@@ -256,12 +256,14 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let has_session_picker = state.session_picker.is_some();
     let has_model_picker = state.model_picker.is_some();
     let has_agent_picker = state.agent_picker.is_some();
+    let has_choice_picker = state.choice_picker.is_some();
     let mut constraints = vec![Constraint::Length(3), Constraint::Min(5)];
     if has_interaction
         || has_file_picker
         || has_session_picker
         || has_model_picker
         || has_agent_picker
+        || has_choice_picker
     {
         constraints.push(Constraint::Length(9));
     }
@@ -299,6 +301,9 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let prompt_index = if has_interaction {
         draw_interaction_dock(frame, chunks[2], state);
         3
+    } else if has_choice_picker {
+        draw_choice_picker_dock(frame, chunks[2], state);
+        3
     } else if has_agent_picker {
         draw_agent_picker_dock(frame, chunks[2], state);
         3
@@ -318,6 +323,64 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
         .block(Block::default().borders(Borders::ALL).title("Prompt"))
         .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[prompt_index]);
+}
+
+fn draw_choice_picker_dock(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    state: &TuiState,
+) {
+    let title = state
+        .choice_picker
+        .as_ref()
+        .map(|picker| picker.kind.title())
+        .unwrap_or("Choices");
+    let lines = choice_picker_dock_lines(state);
+    let dock = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dock, area);
+}
+
+fn choice_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let Some(picker) = state.choice_picker.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Query ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(if picker.query.is_empty() {
+            "(all)".to_string()
+        } else {
+            picker.query.clone()
+        }),
+        Span::styled(
+            "  Type to filter, Enter select, Esc close",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    if picker.candidates.is_empty() {
+        lines.push(Line::from(format!(
+            "No matching {}",
+            picker.kind.item_label()
+        )));
+        return lines;
+    }
+    for (index, choice) in picker.candidates.iter().enumerate().take(6) {
+        let marker = if picker.selected == index { ">" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{marker} {}. ", index + 1),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(choice.clone()),
+        ]));
+    }
+    lines
 }
 
 fn draw_agent_picker_dock(
@@ -674,6 +737,10 @@ fn handle_key_event<H: TerminalEventHandler>(
         dispatch_new_interaction_responses(state, handler, approval_start, question_start)?;
         return Ok(false);
     }
+    if state.choice_picker.is_some() {
+        handle_choice_picker_key(key, state, handler)?;
+        return Ok(false);
+    }
     if state.agent_picker.is_some() {
         handle_agent_picker_key(key, state, handler)?;
         return Ok(false);
@@ -744,6 +811,10 @@ fn handle_key_event<H: TerminalEventHandler>(
                 if handle_local_state_command(&submitted, state, handler)? {
                     return Ok(false);
                 }
+                if let Some(kind) = choice_picker_command_kind(&submitted) {
+                    open_choice_picker_from_handler(state, handler, kind)?;
+                    return Ok(false);
+                }
                 if agent_picker_command_query(&submitted).is_some() {
                     open_agent_picker_from_handler(state, handler, "")?;
                     return Ok(false);
@@ -790,6 +861,41 @@ fn handle_key_event<H: TerminalEventHandler>(
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_choice_picker_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc => {
+            state.close_choice_picker();
+        }
+        KeyCode::Enter => {
+            select_choice_picker_from_handler(state, handler)?;
+        }
+        KeyCode::Up => {
+            state.choice_picker_previous();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            state.choice_picker_next();
+        }
+        KeyCode::Backspace => {
+            if let Some(picker) = state.choice_picker.as_mut() {
+                picker.query.pop();
+            }
+            state.filter_choice_picker();
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(picker) = state.choice_picker.as_mut() {
+                picker.query.push(ch);
+            }
+            state.filter_choice_picker();
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn handle_agent_picker_key<H: TerminalEventHandler>(
@@ -952,6 +1058,31 @@ fn handle_file_picker_key<H: TerminalEventHandler>(
     Ok(())
 }
 
+fn open_choice_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    kind: ChoicePickerKind,
+) -> Result<(), String> {
+    let payload = handler.list_models()?;
+    let choices = choice_picker_values_from_models(&payload, kind);
+    state.open_choice_picker(kind, "", choices);
+    Ok(())
+}
+
+fn select_choice_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    let Some((kind, value)) = state.selected_choice_picker_value() else {
+        state.status = "choice picker empty".to_string();
+        return Ok(());
+    };
+    state.close_choice_picker();
+    let lines = handler.handle_command(&format!("/{} {value}", kind.command_name()))?;
+    apply_handler_output(state, handler, lines);
+    Ok(())
+}
+
 fn open_agent_picker_from_handler<H: TerminalEventHandler>(
     state: &mut TuiState,
     handler: &mut H,
@@ -1105,6 +1236,14 @@ fn model_picker_command_query(command: &str) -> Option<&str> {
 
 fn agent_picker_command_query(command: &str) -> Option<&str> {
     (command == "/agents").then_some("")
+}
+
+fn choice_picker_command_kind(command: &str) -> Option<ChoicePickerKind> {
+    match command {
+        "/variant" => Some(ChoicePickerKind::Variant),
+        "/thinking" => Some(ChoicePickerKind::Thinking),
+        _ => None,
+    }
 }
 
 fn handle_local_state_command<H: TerminalEventHandler>(
@@ -1275,7 +1414,11 @@ fn handle_remote_control_request<H: TerminalEventHandler>(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        if agent_picker_command_query(command).is_some() {
+        if let Some(kind) = choice_picker_command_kind(command) {
+            if let Err(error) = open_choice_picker_from_handler(state, handler, kind) {
+                state.timeline.push(TimelineLine::new("error", error, true));
+            }
+        } else if agent_picker_command_query(command).is_some() {
             if let Err(error) = open_agent_picker_from_handler(state, handler, "") {
                 state.timeline.push(TimelineLine::new("error", error, true));
             }
@@ -1519,6 +1662,36 @@ pub struct TuiState {
     pub session_picker: Option<SessionPickerState>,
     pub model_picker: Option<ModelPickerState>,
     pub agent_picker: Option<AgentPickerState>,
+    pub choice_picker: Option<ChoicePickerState>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChoicePickerKind {
+    Variant,
+    Thinking,
+}
+
+impl ChoicePickerKind {
+    fn command_name(self) -> &'static str {
+        match self {
+            Self::Variant => "variant",
+            Self::Thinking => "thinking",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Variant => "Variants",
+            Self::Thinking => "Thinking",
+        }
+    }
+
+    fn item_label(self) -> &'static str {
+        match self {
+            Self::Variant => "variants",
+            Self::Thinking => "thinking levels",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1549,6 +1722,15 @@ pub struct AgentPickerState {
     pub selected: usize,
     pub agents: Vec<Value>,
     pub candidates: Vec<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChoicePickerState {
+    pub kind: ChoicePickerKind,
+    pub query: String,
+    pub selected: usize,
+    pub choices: Vec<String>,
+    pub candidates: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1584,6 +1766,7 @@ impl TuiState {
             session_picker: None,
             model_picker: None,
             agent_picker: None,
+            choice_picker: None,
         }
     }
 
@@ -1923,10 +2106,77 @@ impl TuiState {
         self.status = "attachment inserted".to_string();
     }
 
+    pub fn open_choice_picker(
+        &mut self,
+        kind: ChoicePickerKind,
+        query: &str,
+        choices: Vec<String>,
+    ) {
+        self.file_picker = None;
+        self.session_picker = None;
+        self.model_picker = None;
+        self.agent_picker = None;
+        let query = query.trim().to_string();
+        let candidates = filter_choice_picker_values(&choices, &query);
+        self.choice_picker = Some(ChoicePickerState {
+            kind,
+            query,
+            selected: 0,
+            choices,
+            candidates,
+        });
+        self.status = format!("{} picker", kind.command_name());
+    }
+
+    pub fn close_choice_picker(&mut self) {
+        self.choice_picker = None;
+        self.status = "choice picker closed".to_string();
+    }
+
+    pub fn filter_choice_picker(&mut self) {
+        let Some(picker) = self.choice_picker.as_mut() else {
+            return;
+        };
+        picker.candidates = filter_choice_picker_values(&picker.choices, &picker.query);
+        picker.selected = picker
+            .selected
+            .min(picker.candidates.len().saturating_sub(1));
+        self.status = format!("{} picker", picker.kind.command_name());
+    }
+
+    pub fn choice_picker_previous(&mut self) {
+        let Some(picker) = self.choice_picker.as_mut() else {
+            return;
+        };
+        picker.selected = picker.selected.saturating_sub(1);
+        self.status = format!("{} picker", picker.kind.command_name());
+    }
+
+    pub fn choice_picker_next(&mut self) {
+        let Some(picker) = self.choice_picker.as_mut() else {
+            return;
+        };
+        if !picker.candidates.is_empty() {
+            picker.selected = (picker.selected + 1).min(picker.candidates.len() - 1);
+        }
+        self.status = format!("{} picker", picker.kind.command_name());
+    }
+
+    pub fn selected_choice_picker_value(&self) -> Option<(ChoicePickerKind, String)> {
+        self.choice_picker.as_ref().and_then(|picker| {
+            picker
+                .candidates
+                .get(picker.selected)
+                .filter(|value| !value.is_empty())
+                .map(|value| (picker.kind, value.clone()))
+        })
+    }
+
     pub fn open_agent_picker(&mut self, query: &str, agents: Vec<Value>) {
         self.file_picker = None;
         self.session_picker = None;
         self.model_picker = None;
+        self.choice_picker = None;
         let query = query.trim().to_string();
         let candidates = filter_agents_for_picker(&agents, &query);
         self.agent_picker = Some(AgentPickerState {
@@ -1985,6 +2235,7 @@ impl TuiState {
         self.file_picker = None;
         self.session_picker = None;
         self.agent_picker = None;
+        self.choice_picker = None;
         let query = query.trim().to_string();
         let candidates = filter_models_for_picker(&models, &query);
         self.model_picker = Some(ModelPickerState {
@@ -2042,6 +2293,7 @@ impl TuiState {
     pub fn open_session_picker(&mut self, query: &str, candidates: Vec<Value>) {
         self.model_picker = None;
         self.agent_picker = None;
+        self.choice_picker = None;
         self.file_picker = None;
         self.session_picker = Some(SessionPickerState {
             query: query.trim().to_string(),
@@ -2084,6 +2336,7 @@ impl TuiState {
     pub fn open_file_picker(&mut self, query: &str, candidates: Vec<ComposerFileCandidate>) {
         self.model_picker = None;
         self.agent_picker = None;
+        self.choice_picker = None;
         self.session_picker = None;
         self.file_picker = Some(FilePickerState {
             query: query.trim().to_string(),
@@ -3206,46 +3459,52 @@ impl TuiState {
     }
 
     fn open_variant_control(&mut self, params: &Value, action_name: &str) -> Value {
-        let variants = params
+        if let Some(variants) = params
             .get("variants")
             .and_then(Value::as_array)
             .map(|items| string_array(items))
             .filter(|items| !items.is_empty())
-            .unwrap_or_else(|| {
-                ["default", "fast", "balanced", "deep"]
-                    .into_iter()
-                    .map(ToString::to_string)
-                    .collect()
-            });
+        {
+            self.open_choice_picker(ChoicePickerKind::Variant, "", variants.clone());
+            self.timeline.push(TimelineLine::new(
+                "status",
+                format!("variants: {}", variants.join(", ")),
+                true,
+            ));
+            return json!({"applied": true, "action": action_name, "variants": variants});
+        }
         self.timeline.push(TimelineLine::new(
             "status",
-            format!("variants: {}", variants.join(", ")),
+            "queued variant picker: /variant",
             true,
         ));
-        self.status = "variant picker".to_string();
-        json!({"applied": true, "action": action_name, "variants": variants})
+        self.status = "variant picker queued".to_string();
+        json!({"applied": true, "action": action_name, "command": "/variant"})
     }
 
     fn open_thinking_control(&mut self, params: &Value, action_name: &str) -> Value {
-        let levels = params
+        if let Some(levels) = params
             .get("levels")
             .or_else(|| params.get("thinking"))
             .and_then(Value::as_array)
             .map(|items| string_array(items))
             .filter(|items| !items.is_empty())
-            .unwrap_or_else(|| {
-                ["off", "low", "medium", "high"]
-                    .into_iter()
-                    .map(ToString::to_string)
-                    .collect()
-            });
+        {
+            self.open_choice_picker(ChoicePickerKind::Thinking, "", levels.clone());
+            self.timeline.push(TimelineLine::new(
+                "status",
+                format!("thinking levels: {}", levels.join(", ")),
+                true,
+            ));
+            return json!({"applied": true, "action": action_name, "levels": levels});
+        }
         self.timeline.push(TimelineLine::new(
             "status",
-            format!("thinking levels: {}", levels.join(", ")),
+            "queued thinking picker: /thinking",
             true,
         ));
-        self.status = "thinking picker".to_string();
-        json!({"applied": true, "action": action_name, "levels": levels})
+        self.status = "thinking picker queued".to_string();
+        json!({"applied": true, "action": action_name, "command": "/thinking"})
     }
 
     fn select_named_session_setting_control(
@@ -4619,6 +4878,41 @@ fn model_picker_label(model: &Value) -> String {
     format!("{provider}/{id} - {name}{default}")
 }
 
+fn choice_picker_values_from_models(payload: &Value, kind: ChoicePickerKind) -> Vec<String> {
+    let key = match kind {
+        ChoicePickerKind::Variant => "variants",
+        ChoicePickerKind::Thinking => "thinking",
+    };
+    payload
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| string_array(items))
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| default_choice_picker_values(kind))
+}
+
+fn default_choice_picker_values(kind: ChoicePickerKind) -> Vec<String> {
+    match kind {
+        ChoicePickerKind::Variant => ["default", "fast", "balanced", "deep"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect(),
+        ChoicePickerKind::Thinking => ["off", "low", "medium", "high"]
+            .into_iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+}
+
+fn filter_choice_picker_values(choices: &[String], query: &str) -> Vec<String> {
+    let query = query.trim().to_ascii_lowercase();
+    choices
+        .iter()
+        .filter(|choice| query.is_empty() || choice.to_ascii_lowercase().contains(&query))
+        .cloned()
+        .collect()
+}
+
 fn session_picker_label(session: &Value) -> String {
     let id = session_id_from_payload(session).unwrap_or_else(|| "<unknown>".to_string());
     let title = session
@@ -5832,6 +6126,73 @@ mod tests {
     }
 
     #[test]
+    fn remote_control_open_variant_and_thinking_dispatch_picker_fetch() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            model_fetches: usize,
+            responses: Vec<Value>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, _command: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn list_models(&mut self) -> Result<Value, String> {
+                self.model_fetches += 1;
+                Ok(json!({
+                    "models": [],
+                    "variants": ["default", "deep"],
+                    "thinking": ["low", "high"]
+                }))
+            }
+
+            fn record_control_response(&mut self, payload: &Value) -> Result<(), String> {
+                self.responses.push(payload.clone());
+                Ok(())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        handle_remote_control_request(
+            &mut state,
+            &mut handler,
+            &json!({"path": "/tui/open-variants", "body": {}}),
+        );
+
+        assert_eq!(handler.model_fetches, 1);
+        let picker = state.choice_picker.as_ref().expect("variant picker");
+        assert_eq!(picker.kind, ChoicePickerKind::Variant);
+        assert_eq!(
+            picker.candidates,
+            vec!["default".to_string(), "deep".to_string()]
+        );
+        assert_eq!(handler.responses.len(), 1);
+        assert_eq!(handler.responses[0]["ok"], json!(true));
+
+        handle_remote_control_request(
+            &mut state,
+            &mut handler,
+            &json!({"path": "/tui/open-thinking", "body": {}}),
+        );
+
+        assert_eq!(handler.model_fetches, 2);
+        let picker = state.choice_picker.as_ref().expect("thinking picker");
+        assert_eq!(picker.kind, ChoicePickerKind::Thinking);
+        assert_eq!(
+            picker.candidates,
+            vec!["low".to_string(), "high".to_string()]
+        );
+        assert_eq!(handler.responses.len(), 2);
+        assert_eq!(handler.responses[1]["ok"], json!(true));
+    }
+
+    #[test]
     fn remote_control_agent_variant_and_thinking_dispatch_handler_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -6789,6 +7150,92 @@ mod tests {
     }
 
     #[test]
+    fn key_event_flow_opens_variant_and_thinking_pickers() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            model_fetches: usize,
+            commands: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                Ok(vec![TimelineLine::new(
+                    "status",
+                    format!("handled {command}"),
+                    true,
+                )])
+            }
+
+            fn list_models(&mut self) -> Result<Value, String> {
+                self.model_fetches += 1;
+                Ok(json!({
+                    "models": [],
+                    "variants": ["default", "deep"],
+                    "thinking": ["low", "high"]
+                }))
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+
+        send_key_text("/variant", &mut state, &mut handler).expect("type variant command");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("open variant picker");
+        assert_eq!(handler.model_fetches, 1);
+        assert_eq!(
+            state.choice_picker.as_ref().expect("variant picker").kind,
+            ChoicePickerKind::Variant
+        );
+
+        send_key_text("dee", &mut state, &mut handler).expect("filter variant picker");
+        assert_eq!(
+            state
+                .choice_picker
+                .as_ref()
+                .expect("variant picker")
+                .candidates,
+            vec!["deep".to_string()]
+        );
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("select variant");
+
+        send_key_text("/thinking", &mut state, &mut handler).expect("type thinking command");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("open thinking picker");
+        assert_eq!(handler.model_fetches, 2);
+        assert_eq!(
+            state.choice_picker.as_ref().expect("thinking picker").kind,
+            ChoicePickerKind::Thinking
+        );
+
+        send_key_text("hi", &mut state, &mut handler).expect("filter thinking picker");
+        assert_eq!(
+            state
+                .choice_picker
+                .as_ref()
+                .expect("thinking picker")
+                .candidates,
+            vec!["high".to_string()]
+        );
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("select thinking");
+
+        assert!(state.choice_picker.is_none());
+        assert_eq!(
+            handler.commands,
+            vec!["/variant deep".to_string(), "/thinking high".to_string()]
+        );
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("handled /thinking high"))
+        );
+    }
+
+    #[test]
     fn key_event_flow_at_opens_file_picker_without_touching_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -7173,6 +7620,87 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_variant_and_thinking_pickers_fetch_and_set() -> Result<(), Box<dyn Error>>
+    {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-choice-picker")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            session_id: Some("session_smoke".to_string()),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let mut state = TuiState::new();
+
+        send_key_text("/variant", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+        send_key_text("dee", &mut state, &mut handler)?;
+        assert_eq!(
+            state
+                .choice_picker
+                .as_ref()
+                .expect("variant picker")
+                .candidates,
+            vec!["deep".to_string()]
+        );
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert!(state.choice_picker.is_none());
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("variant set to deep"))
+        );
+        let variant_updates = bridge.variant_update_payloads();
+        assert_eq!(variant_updates.len(), 1);
+        assert_eq!(variant_updates[0]["variant"], json!("deep"));
+
+        send_key_text("/thinking", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+        send_key_text("hi", &mut state, &mut handler)?;
+        assert_eq!(
+            state
+                .choice_picker
+                .as_ref()
+                .expect("thinking picker")
+                .candidates,
+            vec!["high".to_string()]
+        );
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert!(state.choice_picker.is_none());
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("thinking set to high"))
+        );
+        let thinking_updates = bridge.thinking_update_payloads();
+        assert_eq!(thinking_updates.len(), 1);
+        assert_eq!(thinking_updates[0]["thinking"], json!("high"));
+        let recorded = bridge.requests();
+        assert_eq!(
+            recorded
+                .iter()
+                .filter(|request| request.as_str() == "GET /api/models")
+                .count(),
+            2
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "PATCH /api/sessions/session_smoke")
+        );
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn app_bridge_terminal_interaction_keyflow_posts_real_responses() -> Result<(), Box<dyn Error>>
     {
         let bridge = FakeAppBridge::start()?;
@@ -7436,6 +7964,28 @@ mod tests {
     }
 
     #[test]
+    fn terminal_render_snapshot_contains_choice_picker_overlay() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.open_choice_picker(
+            ChoicePickerKind::Variant,
+            "dee",
+            vec!["default".to_string(), "deep".to_string()],
+        );
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw frame");
+        let rendered = format!("{:?}", terminal.backend().buffer());
+
+        assert!(rendered.contains("Variants"));
+        assert!(rendered.contains("Query"));
+        assert!(rendered.contains("deep"));
+        assert!(rendered.contains("Enter select"));
+    }
+
+    #[test]
     fn key_event_flow_answers_question_option_from_dock() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -7619,6 +8169,8 @@ mod tests {
         question_payloads: Vec<Value>,
         model_update_payloads: Vec<Value>,
         agent_update_payloads: Vec<Value>,
+        variant_update_payloads: Vec<Value>,
+        thinking_update_payloads: Vec<Value>,
     }
 
     struct FakeAppBridge {
@@ -7698,6 +8250,22 @@ mod tests {
                 .clone()
         }
 
+        fn variant_update_payloads(&self) -> Vec<Value> {
+            self.state
+                .lock()
+                .expect("bridge state")
+                .variant_update_payloads
+                .clone()
+        }
+
+        fn thinking_update_payloads(&self) -> Vec<Value> {
+            self.state
+                .lock()
+                .expect("bridge state")
+                .thinking_update_payloads
+                .clone()
+        }
+
         fn stop(mut self) {
             self.shutdown.store(true, Ordering::Relaxed);
             let _ = TcpStream::connect(self.server_url.trim_start_matches("http://"));
@@ -7741,6 +8309,20 @@ mod tests {
                         .model_update_payloads
                         .push(payload.clone());
                 }
+                if payload.get("variant").is_some() {
+                    state
+                        .lock()
+                        .expect("bridge state")
+                        .variant_update_payloads
+                        .push(payload.clone());
+                }
+                if payload.get("thinking").is_some() {
+                    state
+                        .lock()
+                        .expect("bridge state")
+                        .thinking_update_payloads
+                        .push(payload.clone());
+                }
                 write_json(
                     &mut stream,
                     json!({
@@ -7752,9 +8334,13 @@ mod tests {
                             "status": "idle",
                             "model": payload.get("model").cloned().unwrap_or(Value::Null),
                             "agent": payload.get("agent").cloned().unwrap_or(Value::Null),
+                            "variant": payload.get("variant").cloned().unwrap_or(Value::Null),
+                            "thinking": payload.get("thinking").cloned().unwrap_or(Value::Null),
                             "metadata": {
                                 "model": payload.get("model").cloned().unwrap_or(Value::Null),
-                                "agent": payload.get("agent").cloned().unwrap_or(Value::Null)
+                                "agent": payload.get("agent").cloned().unwrap_or(Value::Null),
+                                "variant": payload.get("variant").cloned().unwrap_or(Value::Null),
+                                "thinking": payload.get("thinking").cloned().unwrap_or(Value::Null)
                             }
                         }
                     }),
