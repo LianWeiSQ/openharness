@@ -5707,6 +5707,103 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_interaction_keyflow_posts_real_responses() -> Result<(), Box<dyn Error>>
+    {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-interactions")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let mut state = TuiState::new();
+
+        state.apply_app_event(&json!({
+            "method": "turn/approval_requested",
+            "params": {
+                "session_id": "session_smoke",
+                "thread_id": "session_smoke",
+                "turn_id": "turn_approval",
+                "status": "waiting_approval",
+                "approval": {
+                    "request_id": "approval_smoke",
+                    "turn_id": "turn_approval",
+                    "session_id": "session_smoke",
+                    "tool_name": "bash",
+                    "tool_input": {"command": "printf ok"}
+                }
+            }
+        }));
+        press_key(KeyCode::Char('1'), &mut state, &mut handler)?;
+
+        assert!(state.active_approval.is_none());
+        assert_eq!(state.status, "completed");
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("approved through bridge"))
+        );
+        let approvals = bridge.approval_payloads();
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0]["action"], json!("allow"));
+        assert_eq!(approvals[0]["scope"], json!("once"));
+        assert_eq!(approvals[0]["request_id"], json!("approval_smoke"));
+
+        state.apply_app_event(&json!({
+            "method": "item/question/requested",
+            "params": {
+                "session_id": "session_smoke",
+                "thread_id": "session_smoke",
+                "turn_id": "turn_question",
+                "event": {
+                    "request_id": "question_smoke",
+                    "turn_id": "turn_question",
+                    "session_id": "session_smoke",
+                    "questions": [{
+                        "header": "Mode",
+                        "question": "Which path?",
+                        "options": [
+                            {"label": "Fast"},
+                            {"label": "Safe"}
+                        ]
+                    }]
+                }
+            }
+        }));
+        press_key(KeyCode::Char('2'), &mut state, &mut handler)?;
+
+        assert!(state.active_question.is_none());
+        assert_eq!(state.status, "completed");
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("question bridge answer"))
+        );
+        let questions = bridge.question_payloads();
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0]["request_id"], json!("question_smoke"));
+        assert_eq!(questions[0]["answers"], json!([["Safe"]]));
+
+        let recorded = bridge.requests();
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "POST /api/turns/turn_approval/approvals/approval_smoke")
+        );
+        assert!(recorded.iter().any(|request| {
+            request == "POST /api/turns/turn_question/questions/question_smoke/reply"
+        }));
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn terminal_render_snapshot_contains_permission_overlay() {
         let backend = TestBackend::new(96, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -5950,6 +6047,8 @@ mod tests {
     struct FakeBridgeState {
         requests: Vec<String>,
         turn_inputs: Vec<String>,
+        approval_payloads: Vec<Value>,
+        question_payloads: Vec<Value>,
     }
 
     struct FakeAppBridge {
@@ -5995,6 +6094,22 @@ mod tests {
 
         fn turn_inputs(&self) -> Vec<String> {
             self.state.lock().expect("bridge state").turn_inputs.clone()
+        }
+
+        fn approval_payloads(&self) -> Vec<Value> {
+            self.state
+                .lock()
+                .expect("bridge state")
+                .approval_payloads
+                .clone()
+        }
+
+        fn question_payloads(&self) -> Vec<Value> {
+            self.state
+                .lock()
+                .expect("bridge state")
+                .question_payloads
+                .clone()
         }
 
         fn stop(mut self) {
@@ -6048,6 +6163,40 @@ mod tests {
                         "turn_id": "turn_smoke",
                         "status": "completed",
                         "events": fake_turn_events(),
+                    }),
+                )
+            }
+            ("POST", "/api/turns/turn_approval/approvals/approval_smoke") => {
+                let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({}));
+                state
+                    .lock()
+                    .expect("bridge state")
+                    .approval_payloads
+                    .push(payload);
+                write_json(
+                    &mut stream,
+                    json!({
+                        "session_id": "session_smoke",
+                        "turn_id": "turn_approval",
+                        "status": "completed",
+                        "events": fake_approval_response_events(),
+                    }),
+                )
+            }
+            ("POST", "/api/turns/turn_question/questions/question_smoke/reply") => {
+                let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({}));
+                state
+                    .lock()
+                    .expect("bridge state")
+                    .question_payloads
+                    .push(payload);
+                write_json(
+                    &mut stream,
+                    json!({
+                        "session_id": "session_smoke",
+                        "turn_id": "turn_question",
+                        "status": "completed",
+                        "events": fake_question_response_events(),
                     }),
                 )
             }
@@ -6122,6 +6271,75 @@ mod tests {
                         "total_tokens": 3,
                         "cost": 0.0
                     }
+                }
+            }),
+        ]
+    }
+
+    fn fake_approval_response_events() -> Vec<Value> {
+        vec![
+            json!({
+                "method": "turn/approval_resolved",
+                "global_sequence": 10,
+                "sequence": 10,
+                "params": {
+                    "session_id": "session_smoke",
+                    "thread_id": "session_smoke",
+                    "turn_id": "turn_approval",
+                    "status": "running",
+                    "approval": {
+                        "request_id": "approval_smoke",
+                        "turn_id": "turn_approval",
+                        "session_id": "session_smoke",
+                        "tool_name": "bash",
+                        "action": "allow",
+                        "scope": "once"
+                    }
+                }
+            }),
+            json!({
+                "method": "turn/completed",
+                "global_sequence": 11,
+                "sequence": 11,
+                "params": {
+                    "session_id": "session_smoke",
+                    "thread_id": "session_smoke",
+                    "turn_id": "turn_approval",
+                    "status": "completed",
+                    "final_answer": "approved through bridge"
+                }
+            }),
+        ]
+    }
+
+    fn fake_question_response_events() -> Vec<Value> {
+        vec![
+            json!({
+                "method": "item/question/resolved",
+                "global_sequence": 12,
+                "sequence": 12,
+                "params": {
+                    "session_id": "session_smoke",
+                    "thread_id": "session_smoke",
+                    "turn_id": "turn_question",
+                    "status": "answered",
+                    "question": {
+                        "request_id": "question_smoke",
+                        "turn_id": "turn_question",
+                        "session_id": "session_smoke"
+                    }
+                }
+            }),
+            json!({
+                "method": "turn/completed",
+                "global_sequence": 13,
+                "sequence": 13,
+                "params": {
+                    "session_id": "session_smoke",
+                    "thread_id": "session_smoke",
+                    "turn_id": "turn_question",
+                    "status": "completed",
+                    "final_answer": "question bridge answer"
                 }
             }),
         ]

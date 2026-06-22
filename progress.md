@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-22 App Bridge Interaction Keyflow Smoke Slice
+
+- Added a real-handler TUI smoke for permission/question interaction flows.
+- The smoke drives approval and question dock key events through `handle_key_event`, `AppBridgeTerminalHandler`, and `RemoteRuntimeClient`, with the deterministic in-test App Bridge server receiving actual HTTP response routes:
+  - `POST /api/turns/{turn_id}/approvals/{request_id}`
+  - `POST /api/turns/{turn_id}/questions/{request_id}/reply`
+- Verified approval quick-pick posts `allow`/`once`, clears the active approval, and applies the returned resolved/completed events into the TUI timeline.
+- Verified question option selection posts structured `answers`, clears the active question, and applies the returned resolved/completed events into the TUI timeline.
+- This strengthens the permission/question parity evidence beyond state-only dock tests and client-only runtime tests.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui app_bridge_terminal_interaction_keyflow_posts_real_responses
+cargo test -q -p openagent-tui
+```
+
+Residual risk:
+
+- The smoke still uses a deterministic in-test App Bridge server rather than the full `openagent-http-runtime` binary.
+- It verifies keyflow-to-HTTP response integration, not a full raw-mode PTY loop.
+
 ## 2026-06-22 App Bridge Terminal Keyflow Smoke Slice
 
 - Added an end-to-end TUI smoke that drives `handle_key_event` through the real `AppBridgeTerminalHandler` and `RemoteRuntimeClient` over HTTP.
