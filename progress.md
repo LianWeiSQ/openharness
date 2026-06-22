@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-22 TUI Model Picker Slice
+
+- Upgraded `/models` from a passive list command into an OpenCode-style keyboard model picker.
+- Added a TUI model picker dock with query filtering, Up/Down/Tab selection, Enter-to-select, and Esc-to-close.
+- Wired the picker through `TerminalEventHandler::list_models`; `AppBridgeTerminalHandler` now backs it with `RemoteRuntimeClient::models`, so opening the picker calls real `GET /api/models`.
+- Selection reuses the existing `/models <id>` path and writes the current session model through `PATCH /api/sessions/{session_id}`.
+- Updated `/tui/open-models` remote control to open the same picker path, with direct model payload support and handler-backed fetch support.
+- Added keyflow, remote control, terminal render snapshot, and App Bridge handler smoke coverage.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui key_event_flow_opens_model_picker_filters_and_selects
+cargo test -q -p openagent-tui remote_control_open_models_dispatches_picker_fetch
+cargo test -q -p openagent-tui terminal_render_snapshot_contains_model_picker_overlay
+cargo test -q -p openagent-tui app_bridge_terminal_model_picker_fetches_and_sets_model
+cargo test -q -p openagent-tui
+cargo check -q -p openagent-tui -p openagent-app-server-client
+```
+
+Residual risk:
+
+- This completes the model picker path only; agent, variant, and thinking pickers still have command/control coverage but are not yet full keyboard docks.
+- The App Bridge smoke uses a deterministic in-test bridge server, not a full provider-backed runtime.
+
 ## 2026-06-22 TUI Session Picker Slice
 
 - Upgraded `/sessions [query]` from a passive timeline listing into an OpenCode-style keyboard session picker.

@@ -154,6 +154,10 @@ pub trait TerminalEventHandler {
         Ok(Vec::new())
     }
 
+    fn list_models(&mut self) -> Result<Value, String> {
+        Ok(json!({"models": []}))
+    }
+
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String>;
 
     fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String>;
@@ -246,8 +250,9 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let has_interaction = state.active_interaction_focus().is_some();
     let has_file_picker = state.file_picker.is_some();
     let has_session_picker = state.session_picker.is_some();
+    let has_model_picker = state.model_picker.is_some();
     let mut constraints = vec![Constraint::Length(3), Constraint::Min(5)];
-    if has_interaction || has_file_picker || has_session_picker {
+    if has_interaction || has_file_picker || has_session_picker || has_model_picker {
         constraints.push(Constraint::Length(9));
     }
     constraints.push(Constraint::Length(3));
@@ -284,6 +289,9 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let prompt_index = if has_interaction {
         draw_interaction_dock(frame, chunks[2], state);
         3
+    } else if has_model_picker {
+        draw_model_picker_dock(frame, chunks[2], state);
+        3
     } else if has_session_picker {
         draw_session_picker_dock(frame, chunks[2], state);
         3
@@ -297,6 +305,56 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
         .block(Block::default().borders(Borders::ALL).title("Prompt"))
         .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[prompt_index]);
+}
+
+fn draw_model_picker_dock(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    state: &TuiState,
+) {
+    let lines = model_picker_dock_lines(state);
+    let dock = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Models")
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dock, area);
+}
+
+fn model_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let Some(picker) = state.model_picker.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Query ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(if picker.query.is_empty() {
+            "(all)".to_string()
+        } else {
+            picker.query.clone()
+        }),
+        Span::styled(
+            "  Type to filter, Enter select, Esc close",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    if picker.candidates.is_empty() {
+        lines.push(Line::from("No matching models"));
+        return lines;
+    }
+    for (index, model) in picker.candidates.iter().enumerate().take(6) {
+        let marker = if picker.selected == index { ">" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{marker} {}. ", index + 1),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(model_picker_label(model)),
+        ]));
+    }
+    lines
 }
 
 fn draw_session_picker_dock(
@@ -553,6 +611,10 @@ fn handle_key_event<H: TerminalEventHandler>(
         dispatch_new_interaction_responses(state, handler, approval_start, question_start)?;
         return Ok(false);
     }
+    if state.model_picker.is_some() {
+        handle_model_picker_key(key, state, handler)?;
+        return Ok(false);
+    }
     if state.session_picker.is_some() {
         handle_session_picker_key(key, state, handler)?;
         return Ok(false);
@@ -615,6 +677,10 @@ fn handle_key_event<H: TerminalEventHandler>(
                 if handle_local_state_command(&submitted, state, handler)? {
                     return Ok(false);
                 }
+                if model_picker_command_query(&submitted).is_some() {
+                    open_model_picker_from_handler(state, handler, "")?;
+                    return Ok(false);
+                }
                 if let Some(query) = session_picker_command_query(&submitted) {
                     open_session_picker_from_handler(state, handler, query)?;
                     return Ok(false);
@@ -653,6 +719,41 @@ fn handle_key_event<H: TerminalEventHandler>(
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_model_picker_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc => {
+            state.close_model_picker();
+        }
+        KeyCode::Enter => {
+            select_model_picker_from_handler(state, handler)?;
+        }
+        KeyCode::Up => {
+            state.model_picker_previous();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            state.model_picker_next();
+        }
+        KeyCode::Backspace => {
+            if let Some(picker) = state.model_picker.as_mut() {
+                picker.query.pop();
+            }
+            state.filter_model_picker();
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(picker) = state.model_picker.as_mut() {
+                picker.query.push(ch);
+            }
+            state.filter_model_picker();
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn handle_session_picker_key<H: TerminalEventHandler>(
@@ -745,6 +846,35 @@ fn handle_file_picker_key<H: TerminalEventHandler>(
     Ok(())
 }
 
+fn open_model_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    query: &str,
+) -> Result<(), String> {
+    let payload = handler.list_models()?;
+    let models = payload
+        .get("models")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    state.open_model_picker(query, models);
+    Ok(())
+}
+
+fn select_model_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    let Some(model_id) = state.selected_model_picker_id() else {
+        state.status = "model picker empty".to_string();
+        return Ok(());
+    };
+    state.close_model_picker();
+    let lines = handler.handle_command(&format!("/models {model_id}"))?;
+    apply_handler_output(state, handler, lines);
+    Ok(())
+}
+
 fn open_session_picker_from_handler<H: TerminalEventHandler>(
     state: &mut TuiState,
     handler: &mut H,
@@ -832,6 +962,10 @@ fn session_picker_command_query(command: &str) -> Option<&str> {
         return Some("");
     }
     command.strip_prefix("/sessions ").map(str::trim)
+}
+
+fn model_picker_command_query(command: &str) -> Option<&str> {
+    (command == "/models").then_some("")
 }
 
 fn handle_local_state_command<H: TerminalEventHandler>(
@@ -1002,7 +1136,11 @@ fn handle_remote_control_request<H: TerminalEventHandler>(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        if let Some(query) = session_picker_command_query(command) {
+        if model_picker_command_query(command).is_some() {
+            if let Err(error) = open_model_picker_from_handler(state, handler, "") {
+                state.timeline.push(TimelineLine::new("error", error, true));
+            }
+        } else if let Some(query) = session_picker_command_query(command) {
             if let Err(error) = open_session_picker_from_handler(state, handler, query) {
                 state.timeline.push(TimelineLine::new("error", error, true));
             }
@@ -1236,6 +1374,7 @@ pub struct TuiState {
     pub usage_totals: Value,
     pub file_picker: Option<FilePickerState>,
     pub session_picker: Option<SessionPickerState>,
+    pub model_picker: Option<ModelPickerState>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1249,6 +1388,14 @@ pub struct FilePickerState {
 pub struct SessionPickerState {
     pub query: String,
     pub selected: usize,
+    pub candidates: Vec<Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ModelPickerState {
+    pub query: String,
+    pub selected: usize,
+    pub models: Vec<Value>,
     pub candidates: Vec<Value>,
 }
 
@@ -1283,6 +1430,7 @@ impl TuiState {
             usage_totals: usage_totals_value(0, 0, 0, 0.0),
             file_picker: None,
             session_picker: None,
+            model_picker: None,
         }
     }
 
@@ -1622,7 +1770,65 @@ impl TuiState {
         self.status = "attachment inserted".to_string();
     }
 
+    pub fn open_model_picker(&mut self, query: &str, models: Vec<Value>) {
+        self.file_picker = None;
+        self.session_picker = None;
+        let query = query.trim().to_string();
+        let candidates = filter_models_for_picker(&models, &query);
+        self.model_picker = Some(ModelPickerState {
+            query,
+            selected: 0,
+            models,
+            candidates,
+        });
+        self.status = "model picker".to_string();
+    }
+
+    pub fn close_model_picker(&mut self) {
+        self.model_picker = None;
+        self.status = "model picker closed".to_string();
+    }
+
+    pub fn filter_model_picker(&mut self) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        picker.candidates = filter_models_for_picker(&picker.models, &picker.query);
+        picker.selected = picker
+            .selected
+            .min(picker.candidates.len().saturating_sub(1));
+        self.status = "model picker".to_string();
+    }
+
+    pub fn model_picker_previous(&mut self) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        picker.selected = picker.selected.saturating_sub(1);
+        self.status = "model picker".to_string();
+    }
+
+    pub fn model_picker_next(&mut self) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        if !picker.candidates.is_empty() {
+            picker.selected = (picker.selected + 1).min(picker.candidates.len() - 1);
+        }
+        self.status = "model picker".to_string();
+    }
+
+    pub fn selected_model_picker_id(&self) -> Option<String> {
+        self.model_picker
+            .as_ref()
+            .and_then(|picker| picker.candidates.get(picker.selected))
+            .and_then(|model| model.get("id").and_then(Value::as_str))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    }
+
     pub fn open_session_picker(&mut self, query: &str, candidates: Vec<Value>) {
+        self.model_picker = None;
         self.file_picker = None;
         self.session_picker = Some(SessionPickerState {
             query: query.trim().to_string(),
@@ -1663,6 +1869,7 @@ impl TuiState {
     }
 
     pub fn open_file_picker(&mut self, query: &str, candidates: Vec<ComposerFileCandidate>) {
+        self.model_picker = None;
         self.session_picker = None;
         self.file_picker = Some(FilePickerState {
             query: query.trim().to_string(),
@@ -2728,17 +2935,19 @@ impl TuiState {
     }
 
     fn open_model_control(&mut self, params: &Value, action_name: &str) -> Value {
-        self.status = "model picker".to_string();
-        if params.get("models").and_then(Value::as_array).is_some() {
+        if let Some(models) = params.get("models").and_then(Value::as_array).cloned() {
+            self.open_model_picker("", models);
             self.timeline.extend(model_list_lines(params));
+            json!({"applied": true, "action": action_name})
         } else {
             self.timeline.push(TimelineLine::new(
                 "status",
-                "model picker opened. Use /models to fetch remote models or /models <id> to select.",
+                "queued model picker: /models",
                 true,
             ));
+            self.status = "model picker queued".to_string();
+            json!({"applied": true, "action": action_name, "command": "/models"})
         }
-        json!({"applied": true, "action": action_name})
     }
 
     fn select_model_control(&mut self, params: &Value, action_name: &str) -> Value {
@@ -3681,6 +3890,10 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
         self.client.search_sessions(query)
     }
 
+    fn list_models(&mut self) -> Result<Value, String> {
+        self.client.models()
+    }
+
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String> {
         let session_id = self.ensure_session()?;
         let mut lines = Vec::new();
@@ -4102,6 +4315,45 @@ fn session_list_lines(sessions: &[Value]) -> Vec<TimelineLine> {
         )
     }));
     lines
+}
+
+fn filter_models_for_picker(models: &[Value], query: &str) -> Vec<Value> {
+    let query = query.trim().to_ascii_lowercase();
+    models
+        .iter()
+        .filter(|model| query.is_empty() || model_matches_query(model, &query))
+        .cloned()
+        .collect()
+}
+
+fn model_matches_query(model: &Value, query: &str) -> bool {
+    ["id", "name", "provider_id"].iter().any(|key| {
+        model
+            .get(*key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains(query)
+    })
+}
+
+fn model_picker_label(model: &Value) -> String {
+    let provider = model
+        .get("provider_id")
+        .and_then(Value::as_str)
+        .unwrap_or("provider");
+    let id = model.get("id").and_then(Value::as_str).unwrap_or("model");
+    let name = model.get("name").and_then(Value::as_str).unwrap_or(id);
+    let default = if model
+        .get("default")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "  default"
+    } else {
+        ""
+    };
+    format!("{provider}/{id} - {name}{default}")
 }
 
 fn session_picker_label(session: &Value) -> String {
@@ -5207,6 +5459,61 @@ mod tests {
     }
 
     #[test]
+    fn remote_control_open_models_dispatches_picker_fetch() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            model_fetches: usize,
+            responses: Vec<Value>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, _command: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn list_models(&mut self) -> Result<Value, String> {
+                self.model_fetches += 1;
+                Ok(json!({
+                    "models": [
+                        {"id": "server-local", "provider_id": "openagent", "name": "Server Local"},
+                        {"id": "deep-model", "provider_id": "openagent", "name": "Deep Model"}
+                    ]
+                }))
+            }
+
+            fn record_control_response(&mut self, payload: &Value) -> Result<(), String> {
+                self.responses.push(payload.clone());
+                Ok(())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        handle_remote_control_request(
+            &mut state,
+            &mut handler,
+            &json!({"path": "/tui/open-models", "body": {}}),
+        );
+
+        assert_eq!(handler.model_fetches, 1);
+        assert_eq!(
+            state
+                .model_picker
+                .as_ref()
+                .expect("model picker")
+                .candidates
+                .len(),
+            2
+        );
+        assert_eq!(handler.responses.len(), 1);
+        assert_eq!(handler.responses[0]["ok"], json!(true));
+    }
+
+    #[test]
     fn remote_control_agent_variant_and_thinking_dispatch_handler_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -6013,6 +6320,86 @@ mod tests {
     }
 
     #[test]
+    fn key_event_flow_opens_model_picker_filters_and_selects() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            model_fetches: usize,
+            commands: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                Ok(vec![TimelineLine::new(
+                    "status",
+                    format!("handled {command}"),
+                    true,
+                )])
+            }
+
+            fn list_models(&mut self) -> Result<Value, String> {
+                self.model_fetches += 1;
+                Ok(json!({
+                    "models": [
+                        {"id": "server-local", "provider_id": "openagent", "name": "Server Local"},
+                        {"id": "deep-model", "provider_id": "openagent", "name": "Deep Model"}
+                    ]
+                }))
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        send_key_text("/models", &mut state, &mut handler).expect("type models command");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("open model picker");
+
+        assert_eq!(handler.model_fetches, 1);
+        assert_eq!(
+            state
+                .model_picker
+                .as_ref()
+                .expect("model picker")
+                .candidates
+                .len(),
+            2
+        );
+
+        press_key(KeyCode::Char('d'), &mut state, &mut handler).expect("filter picker");
+        assert_eq!(
+            state
+                .model_picker
+                .as_ref()
+                .expect("model picker")
+                .candidates
+                .len(),
+            1
+        );
+        assert_eq!(
+            state
+                .model_picker
+                .as_ref()
+                .expect("model picker")
+                .candidates[0]["id"],
+            json!("deep-model")
+        );
+
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("select model");
+
+        assert!(state.model_picker.is_none());
+        assert_eq!(handler.commands, vec!["/models deep-model".to_string()]);
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("handled /models deep-model"))
+        );
+    }
+
+    #[test]
     fn key_event_flow_at_opens_file_picker_without_touching_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -6273,6 +6660,68 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_model_picker_fetches_and_sets_model() -> Result<(), Box<dyn Error>> {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-model-picker")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            session_id: Some("session_smoke".to_string()),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let mut state = TuiState::new();
+
+        send_key_text("/models", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert_eq!(
+            state
+                .model_picker
+                .as_ref()
+                .expect("model picker")
+                .candidates
+                .len(),
+            2
+        );
+
+        press_key(KeyCode::Char('d'), &mut state, &mut handler)?;
+        assert_eq!(
+            state
+                .model_picker
+                .as_ref()
+                .expect("model picker")
+                .candidates[0]["id"],
+            json!("deep-model")
+        );
+
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert!(state.model_picker.is_none());
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("model set to deep-model"))
+        );
+        let model_updates = bridge.model_update_payloads();
+        assert_eq!(model_updates.len(), 1);
+        assert_eq!(model_updates[0]["model"], json!("deep-model"));
+        let recorded = bridge.requests();
+        assert!(recorded.iter().any(|request| request == "GET /api/models"));
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "PATCH /api/sessions/session_smoke")
+        );
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn app_bridge_terminal_interaction_keyflow_posts_real_responses() -> Result<(), Box<dyn Error>>
     {
         let bridge = FakeAppBridge::start()?;
@@ -6470,6 +6919,39 @@ mod tests {
     }
 
     #[test]
+    fn terminal_render_snapshot_contains_model_picker_overlay() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.open_model_picker(
+            "deep",
+            vec![
+                json!({
+                    "id": "server-local",
+                    "provider_id": "openagent",
+                    "name": "Server Local",
+                    "default": true
+                }),
+                json!({
+                    "id": "deep-model",
+                    "provider_id": "openagent",
+                    "name": "Deep Model"
+                }),
+            ],
+        );
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw frame");
+        let rendered = format!("{:?}", terminal.backend().buffer());
+
+        assert!(rendered.contains("Models"));
+        assert!(rendered.contains("Query"));
+        assert!(rendered.contains("deep-model"));
+        assert!(rendered.contains("Deep Model"));
+    }
+
+    #[test]
     fn key_event_flow_answers_question_option_from_dock() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -6651,6 +7133,7 @@ mod tests {
         turn_inputs: Vec<String>,
         approval_payloads: Vec<Value>,
         question_payloads: Vec<Value>,
+        model_update_payloads: Vec<Value>,
     }
 
     struct FakeAppBridge {
@@ -6714,6 +7197,14 @@ mod tests {
                 .clone()
         }
 
+        fn model_update_payloads(&self) -> Vec<Value> {
+            self.state
+                .lock()
+                .expect("bridge state")
+                .model_update_payloads
+                .clone()
+        }
+
         fn stop(mut self) {
             self.shutdown.store(true, Ordering::Relaxed);
             let _ = TcpStream::connect(self.server_url.trim_start_matches("http://"));
@@ -6735,9 +7226,32 @@ mod tests {
             .push(format!("{method} {path}"));
         match (method.as_str(), path.as_str()) {
             ("GET", "/api/health") => write_json(&mut stream, json!({"ok": true})),
+            ("GET", "/api/models") => write_json(&mut stream, fake_models_payload()),
             ("GET", "/api/sessions") => write_json(&mut stream, json!({"sessions": []})),
             ("GET", "/api/sessions?query=smoke") => {
                 write_json(&mut stream, fake_session_search_payload())
+            }
+            ("PATCH", "/api/sessions/session_smoke") => {
+                let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({}));
+                state
+                    .lock()
+                    .expect("bridge state")
+                    .model_update_payloads
+                    .push(payload.clone());
+                write_json(
+                    &mut stream,
+                    json!({
+                        "session_id": "session_smoke",
+                        "updated": true,
+                        "session": {
+                            "session_id": "session_smoke",
+                            "id": "session_smoke",
+                            "status": "idle",
+                            "model": payload.get("model").cloned().unwrap_or(Value::Null),
+                            "metadata": {"model": payload.get("model").cloned().unwrap_or(Value::Null)}
+                        }
+                    }),
+                )
             }
             ("GET", "/api/sessions/session_smoke/messages?limit=2") => {
                 write_json(&mut stream, fake_transcript_payload())
@@ -6882,6 +7396,26 @@ mod tests {
                 }
             }),
         ]
+    }
+
+    fn fake_models_payload() -> Value {
+        json!({
+            "models": [
+                {
+                    "id": "server-local",
+                    "provider_id": "openagent",
+                    "name": "Server Local",
+                    "default": true
+                },
+                {
+                    "id": "deep-model",
+                    "provider_id": "openagent",
+                    "name": "Deep Model"
+                }
+            ],
+            "variants": ["default", "deep"],
+            "thinking": ["low", "high"]
+        })
     }
 
     fn fake_session_search_payload() -> Value {
