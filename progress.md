@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-22 Composer File Picker Slice
+
+- Added OpenCode-style composer file discovery commands: `/files [query]` searches the active workspace and renders ranked `@path` attachment candidates; `/attach <path[:range]>` inserts a normalized file/image reference back into the prompt composer.
+- Added App Bridge TUI controls for file attachment workflows:
+  - `/tui/open-files` and `file.open` queue a real `/files <query>` command through the terminal handler.
+  - `/tui/select-file`, `file.select`, and publish topics `tui.file.select` / `tui.file.attach` insert `@path`, `@path:line`, or `@path:start-end` into the composer.
+- Reused the same fuzzy file matcher for both picker listing and submit-time `@file` expansion so selected refs and direct typed refs resolve consistently.
+- Updated App Bridge TUI golden action mapping and added coverage for local `/attach`, fuzzy file listing, image/file refs, and remote control dispatch.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui composer_file_picker_and_attach_controls_insert_references
+cargo test -q -p openagent-tui remote_control_file_picker_dispatches_and_selects_into_composer
+cargo test -q -p openagent-tui
+```
+
+Residual risk:
+
+- The picker is still rendered as timeline rows, not a dedicated modal with incremental keyboard selection.
+- Attachment tokens with whitespace in paths are rejected because the current submit-time parser is whitespace-token based.
+- `/files` is workspace-local; remote resource/URL attachments still remain future composer work.
+
 ## 2026-06-22 Agent Variant Thinking Control Slice
 
 - Added App Bridge TUI control actions for `agent.open`, `agent.select`, `variant.open`, `variant.select`, `thinking.open`, and `thinking.select`.

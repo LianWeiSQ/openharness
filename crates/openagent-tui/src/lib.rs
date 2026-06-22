@@ -69,6 +69,11 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/stash <draft>", "stash a draft prompt"),
     ("/unstash", "restore the latest stashed prompt"),
     ("/stashes", "list stashed prompt drafts"),
+    ("/files [query]", "search workspace files for @ attachments"),
+    (
+        "/attach <path[:range]>",
+        "insert a file/image reference into the prompt",
+    ),
     ("/export", "export the current session"),
     ("/init", "initialize OpenAgent project files"),
     ("/undo", "undo the last reversible change"),
@@ -576,6 +581,7 @@ fn is_local_state_command(submitted: &str) -> bool {
             | "warnings"
             | "tool-details"
             | "editor"
+            | "attach"
     )
 }
 
@@ -1226,6 +1232,35 @@ impl TuiState {
         self.status = "stash restored".to_string();
     }
 
+    pub fn insert_attachment_reference(&mut self, reference: &str) {
+        let Some(token) = normalize_attachment_reference_token(reference) else {
+            self.timeline.push(TimelineLine::new(
+                "warning",
+                "usage: /attach <path[:range]>",
+                true,
+            ));
+            self.status = "attach invalid".to_string();
+            return;
+        };
+        if !self.input_buffer.is_empty()
+            && !self
+                .input_buffer
+                .chars()
+                .last()
+                .is_some_and(char::is_whitespace)
+        {
+            self.input_buffer.push(' ');
+        }
+        self.input_buffer.push_str(&token);
+        self.input_buffer.push(' ');
+        self.timeline.push(TimelineLine::new(
+            "status",
+            format!("attached reference inserted: {token}"),
+            true,
+        ));
+        self.status = "attachment inserted".to_string();
+    }
+
     pub fn edit_input_with_external_editor(&mut self) -> Result<(), String> {
         let editor = std::env::var("VISUAL")
             .ok()
@@ -1484,6 +1519,8 @@ impl TuiState {
             "theme.select" | "theme.set" => self.select_theme_control(&params, &action),
             "palette.open" => self.open_palette_control(&params, &action),
             "palette.execute" => self.execute_palette_control(&params, &action),
+            "file.open" => self.open_file_control(&params, &action),
+            "file.select" | "file.attach" => self.select_file_control(&params, &action),
             _ => {
                 self.timeline.push(TimelineLine::new(
                     "warning",
@@ -1511,7 +1548,7 @@ impl TuiState {
                 command
                     .split_whitespace()
                     .next()
-                    .is_some_and(|name| matches!(name, "unstash" | "editor"))
+                    .is_some_and(|name| matches!(name, "unstash" | "editor" | "attach"))
             }) {
                 self.input_buffer.clear();
             }
@@ -2078,6 +2115,24 @@ impl TuiState {
                 self.status = "stash listed".to_string();
                 true
             }
+            "attach" => {
+                let reference = command_line
+                    .strip_prefix(name)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if reference.is_empty() {
+                    self.timeline.push(TimelineLine::new(
+                        "warning",
+                        "usage: /attach <path[:range]>",
+                        true,
+                    ));
+                    self.status = "attach invalid".to_string();
+                } else {
+                    self.input_buffer.clear();
+                    self.insert_attachment_reference(reference);
+                }
+                true
+            }
             "themes" | "theme" => {
                 let requested = command_line
                     .strip_prefix(name)
@@ -2441,6 +2496,53 @@ impl TuiState {
         }
     }
 
+    fn open_file_control(&mut self, params: &Value, action_name: &str) -> Value {
+        let query = control_string_field(params, &["query", "text", "value"]);
+        let command = if query.is_empty() {
+            "/files".to_string()
+        } else {
+            format!("/files {query}")
+        };
+        self.timeline.push(TimelineLine::new(
+            "status",
+            format!("queued file picker: {command}"),
+            true,
+        ));
+        self.status = "file picker queued".to_string();
+        json!({"applied": true, "action": action_name, "command": command})
+    }
+
+    fn select_file_control(&mut self, params: &Value, action_name: &str) -> Value {
+        let path = control_string_field(params, &["path", "file", "id", "value", "name"]);
+        if path.is_empty() {
+            self.status = "control invalid".to_string();
+            return json!({"applied": false, "action": action_name, "error": "path is required"});
+        }
+        let reference = attachment_reference_from_parts(
+            &path,
+            params
+                .get("line")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok()),
+            params
+                .get("start")
+                .or_else(|| params.get("line_start"))
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok()),
+            params
+                .get("end")
+                .or_else(|| params.get("line_end"))
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok()),
+        );
+        let Some(token) = normalize_attachment_reference_token(&reference) else {
+            self.status = "control invalid".to_string();
+            return json!({"applied": false, "action": action_name, "error": "path cannot be represented as an @ attachment"});
+        };
+        self.insert_attachment_reference(&reference);
+        json!({"applied": true, "action": action_name, "reference": token})
+    }
+
     fn session_command_control(&mut self, params: &Value, action_name: &str, verb: &str) -> Value {
         let value = control_string_field(params, &["title", "name", "value", "label"]);
         if value.is_empty() {
@@ -2475,6 +2577,7 @@ pub fn normalize_control_action(action: &str) -> String {
         "open-variants" => "variant.open",
         "open-thinking" => "thinking.open",
         "open-palette" => "palette.open",
+        "open-files" => "file.open",
         "select-session" => "session.select",
         "rename-session" => "session.rename",
         "archive-session" => "session.archive",
@@ -2494,6 +2597,7 @@ pub fn normalize_control_action(action: &str) -> String {
         "select-variant" => "variant.select",
         "select-thinking" => "thinking.select",
         "select-theme" => "theme.select",
+        "select-file" | "attach-file" => "file.select",
         "show-toast" => "toast.show",
         "execute-command" => "command.execute",
         "execute-palette" => "palette.execute",
@@ -2580,6 +2684,8 @@ pub fn control_publish_to_action(params: &Value) -> (String, Value) {
         "tui.variant.select" => "variant.select",
         "tui.thinking.open" => "thinking.open",
         "tui.thinking.select" => "thinking.select",
+        "tui.file.open" => "file.open",
+        "tui.file.select" | "tui.file.attach" => "file.select",
         other => other,
     };
     (action.to_string(), body)
@@ -3389,6 +3495,14 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
                 true,
             )]);
         }
+        if command == "/files" || command.starts_with("/files ") {
+            let query = command
+                .strip_prefix("/files")
+                .map(str::trim)
+                .unwrap_or_default();
+            let matches = fuzzy_find_files(&self.workspace, query, 20);
+            return Ok(file_picker_lines(query, &matches));
+        }
         if command == "/models" || command.starts_with("/models ") {
             let model_id = command.strip_prefix("/models ").map(str::trim);
             if let Some(model_id) = model_id.filter(|value| !value.is_empty()) {
@@ -3458,7 +3572,7 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
         }
         Ok(vec![TimelineLine::new(
             "status",
-            "commands: /sessions [query], /resume <id>, /rename <title>, /new, /fork, /children, /parent, /archive, /delete, /share, /unshare, /compact, /status, /models [id], /agents, /agent <id>, /variant <name>, /thinking <level>, /themes [name], /config, /keybinds, /interrupt [turn_id], /allow, /deny, /answer, /dismiss, /exit",
+            "commands: /sessions [query], /resume <id>, /rename <title>, /new, /fork, /children, /parent, /archive, /delete, /share, /unshare, /compact, /status, /files [query], /attach <path[:range]>, /models [id], /agents, /agent <id>, /variant <name>, /thinking <level>, /themes [name], /config, /keybinds, /interrupt [turn_id], /allow, /deny, /answer, /dismiss, /exit",
             false,
         )])
     }
@@ -3549,6 +3663,51 @@ fn agent_list_lines(payload: &Value) -> Vec<TimelineLine> {
             TimelineLine::new("status", format!("{id} - {name}: {description}"), false)
         })
         .collect()
+}
+
+fn file_picker_lines(query: &str, matches: &[FilePickerMatch]) -> Vec<TimelineLine> {
+    if matches.is_empty() {
+        let suffix = if query.trim().is_empty() {
+            String::new()
+        } else {
+            format!(" for `{}`", query.trim())
+        };
+        return vec![TimelineLine::new(
+            "warning",
+            format!("files: no matches{suffix}"),
+            true,
+        )];
+    }
+    let mut lines = vec![TimelineLine::new(
+        "status",
+        format!(
+            "files: {} match(es){}",
+            matches.len(),
+            if query.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" for `{}`", query.trim())
+            }
+        ),
+        false,
+    )];
+    lines.extend(matches.iter().enumerate().map(|(index, item)| {
+        TimelineLine::new(
+            "status",
+            format!(
+                "{}. {}  {}",
+                index + 1,
+                item.reference,
+                if is_image_path(&item.path) {
+                    "image"
+                } else {
+                    "file"
+                }
+            ),
+            false,
+        )
+    }));
+    lines
 }
 
 fn initialize_openagent_project_files(workspace: &Path) -> Result<Vec<String>, String> {
@@ -3683,13 +3842,27 @@ fn resolve_attachment_path(workspace: &Path, query: &str) -> Option<PathBuf> {
     if exact.is_file() {
         return Some(exact);
     }
-    fuzzy_find_file(workspace, query)
+    fuzzy_find_files(workspace, query, 1)
+        .into_iter()
+        .next()
+        .map(|item| item.path)
 }
 
-fn fuzzy_find_file(workspace: &Path, query: &str) -> Option<PathBuf> {
-    let query = query.to_ascii_lowercase();
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FilePickerMatch {
+    path: PathBuf,
+    reference: String,
+    score: usize,
+}
+
+fn fuzzy_find_files(workspace: &Path, query: &str, limit: usize) -> Vec<FilePickerMatch> {
+    let query = query
+        .trim()
+        .trim_start_matches('@')
+        .trim_matches(|ch: char| matches!(ch, '"' | '\'' | '`'))
+        .to_ascii_lowercase();
     let mut stack = vec![workspace.to_path_buf()];
-    let mut best: Option<PathBuf> = None;
+    let mut matches = Vec::new();
     let mut visited = 0_usize;
     while let Some(path) = stack.pop() {
         visited += 1;
@@ -3717,16 +3890,106 @@ fn fuzzy_find_file(workspace: &Path, query: &str) -> Option<PathBuf> {
         if !path.is_file() {
             continue;
         }
-        let relative = relative_display_path(workspace, &path).to_ascii_lowercase();
-        if relative.contains(&query)
-            && best.as_ref().is_none_or(|current| {
-                relative.len() < relative_display_path(workspace, current).len()
-            })
-        {
-            best = Some(path);
+        let relative = relative_display_path(workspace, &path);
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        if let Some(score) = fuzzy_file_score(&relative, name, &query) {
+            let Some(reference) = normalize_attachment_reference_token(&relative) else {
+                continue;
+            };
+            matches.push(FilePickerMatch {
+                path,
+                reference,
+                score,
+            });
         }
     }
-    best
+    matches.sort_by(|left, right| {
+        left.score
+            .cmp(&right.score)
+            .then_with(|| left.reference.len().cmp(&right.reference.len()))
+            .then_with(|| left.reference.cmp(&right.reference))
+    });
+    matches.truncate(limit);
+    matches
+}
+
+fn fuzzy_file_score(relative: &str, name: &str, query: &str) -> Option<usize> {
+    let relative = relative.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    if query.is_empty() {
+        return Some(100 + relative.matches('/').count());
+    }
+    if relative == query {
+        Some(0)
+    } else if name == query {
+        Some(1)
+    } else if relative.ends_with(query) {
+        Some(2)
+    } else if name.contains(query) {
+        Some(3)
+    } else if relative.contains(query) {
+        Some(4)
+    } else if fuzzy_subsequence(&relative, query) {
+        Some(10 + relative.len().saturating_sub(query.len()))
+    } else {
+        None
+    }
+}
+
+fn fuzzy_subsequence(value: &str, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let mut query_chars = query.chars();
+    let Some(mut expected) = query_chars.next() else {
+        return true;
+    };
+    for ch in value.chars() {
+        if ch == expected {
+            match query_chars.next() {
+                Some(next) => expected = next,
+                None => return true,
+            }
+        }
+    }
+    false
+}
+
+fn attachment_reference_from_parts(
+    path: &str,
+    line: Option<usize>,
+    start: Option<usize>,
+    end: Option<usize>,
+) -> String {
+    let mut reference = path.trim().trim_start_matches('@').to_string();
+    if let Some(line) = line.filter(|value| *value > 0) {
+        reference.push_str(&format!(":{line}"));
+    } else if let Some(start) = start.filter(|value| *value > 0) {
+        let end = end.unwrap_or(start).max(start);
+        if end == start {
+            reference.push_str(&format!(":{start}"));
+        } else {
+            reference.push_str(&format!(":{start}-{end}"));
+        }
+    }
+    reference
+}
+
+fn normalize_attachment_reference_token(reference: &str) -> Option<String> {
+    let reference = reference
+        .trim()
+        .trim_start_matches('@')
+        .trim_matches(|ch: char| matches!(ch, ',' | ';' | ')' | '(' | '"' | '\'' | '`'));
+    if reference.is_empty()
+        || reference.contains("://")
+        || reference.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(format!("@{reference}"))
 }
 
 fn render_attachment(
@@ -3964,6 +4227,7 @@ fn action_map_fixture() -> Value {
         "open-variants",
         "open-thinking",
         "open-palette",
+        "open-files",
         "select-session",
         "rename-session",
         "archive-session",
@@ -3983,6 +4247,8 @@ fn action_map_fixture() -> Value {
         "select-variant",
         "select-thinking",
         "select-theme",
+        "select-file",
+        "attach-file",
         "show-toast",
         "execute-command",
         "execute-palette",
@@ -4413,6 +4679,59 @@ mod tests {
     }
 
     #[test]
+    fn remote_control_file_picker_dispatches_and_selects_into_composer() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            commands: Vec<String>,
+            responses: Vec<Value>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                Ok(vec![TimelineLine::new(
+                    "status",
+                    format!("handled {command}"),
+                    true,
+                )])
+            }
+
+            fn record_control_response(&mut self, payload: &Value) -> Result<(), String> {
+                self.responses.push(payload.clone());
+                Ok(())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        handle_remote_control_request(
+            &mut state,
+            &mut handler,
+            &json!({"path": "/tui/open-files", "body": {"query": "main"}}),
+        );
+        state.input_buffer = "review".to_string();
+        handle_remote_control_request(
+            &mut state,
+            &mut handler,
+            &json!({"path": "/tui/publish", "body": {"type": "tui.file.select", "properties": {"path": "src/main.rs", "line": 7}}}),
+        );
+
+        assert_eq!(handler.commands, vec!["/files main".to_string()]);
+        assert_eq!(state.input_buffer, "review @src/main.rs:7 ");
+        assert_eq!(handler.responses.len(), 2);
+        assert!(
+            handler
+                .responses
+                .iter()
+                .all(|payload| payload["ok"] == json!(true))
+        );
+    }
+
+    #[test]
     fn remote_control_session_actions_dispatch_handler_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -4617,6 +4936,50 @@ mod tests {
         assert!(!expanded.prompt.contains("line1\n"));
         assert!(expanded.prompt.contains("Attached image: logo.png"));
         assert_eq!(expanded.lines.len(), 2);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn composer_file_picker_and_attach_controls_insert_references() {
+        let root =
+            std::env::temp_dir().join(format!("openagent-tui-file-picker-{}", std::process::id()));
+        let src = root.join("src");
+        let docs = root.join("docs");
+        fs::create_dir_all(&src).expect("create src");
+        fs::create_dir_all(&docs).expect("create docs");
+        fs::write(src.join("main.rs"), "fn main() {}\n").expect("write main");
+        fs::write(docs.join("guide.md"), "guide\n").expect("write guide");
+        fs::write(root.join("logo.png"), [0_u8, 1, 2, 3]).expect("write image");
+
+        let matches = fuzzy_find_files(&root, "main", 10);
+        assert_eq!(
+            matches.first().map(|item| item.reference.as_str()),
+            Some("@src/main.rs")
+        );
+        let lines = file_picker_lines("main", &matches);
+        assert!(lines.iter().any(|line| line.text.contains("@src/main.rs")));
+
+        let mut state = TuiState::new();
+        state.input_buffer = "/attach src/main.rs:2-3".to_string();
+        assert!(!state.submit());
+        assert_eq!(state.input_buffer, "@src/main.rs:2-3 ");
+
+        state.input_buffer = "review".to_string();
+        let selected = state.apply_control_request(&json!({
+            "path": "/tui/select-file",
+            "body": {"path": "docs/guide.md", "start": 4, "end": 6}
+        }));
+        assert_eq!(selected["applied"], json!(true));
+        assert_eq!(selected["reference"], json!("@docs/guide.md:4-6"));
+        assert_eq!(state.input_buffer, "review @docs/guide.md:4-6 ");
+
+        let image = state.apply_control_request(&json!({
+            "path": "/tui/publish",
+            "body": {"type": "tui.file.attach", "properties": {"path": "logo.png"}}
+        }));
+        assert_eq!(image["applied"], json!(true));
+        assert!(state.input_buffer.ends_with("@logo.png "));
 
         let _ = fs::remove_dir_all(root);
     }
