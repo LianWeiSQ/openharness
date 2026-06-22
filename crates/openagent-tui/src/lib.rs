@@ -524,6 +524,18 @@ fn handle_key_event<H: TerminalEventHandler>(
         KeyCode::Backspace => {
             state.input_buffer.pop();
         }
+        KeyCode::Char('@')
+            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                && !state.input_buffer.trim_start().starts_with('/') =>
+        {
+            if let Err(error) = open_file_picker_from_handler(state, handler, "") {
+                state.input_buffer.push('@');
+                state
+                    .timeline
+                    .push(TimelineLine::new("warning", error, true));
+                state.status = "file picker failed".to_string();
+            }
+        }
         KeyCode::Char(value) => {
             state.input_buffer.push(value);
         }
@@ -5514,6 +5526,80 @@ mod tests {
 
         assert!(state.file_picker.is_none());
         assert_eq!(state.input_buffer, "@images/map.png ");
+    }
+
+    #[test]
+    fn key_event_flow_at_opens_file_picker_without_touching_commands() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            searches: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, _command: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn search_files(&mut self, query: &str) -> Result<Vec<ComposerFileCandidate>, String> {
+                self.searches.push(query.to_string());
+                Ok(vec![
+                    ComposerFileCandidate {
+                        reference: "@src/main.rs".to_string(),
+                        kind: "file".to_string(),
+                    },
+                    ComposerFileCandidate {
+                        reference: "@docs/guide.md".to_string(),
+                        kind: "file".to_string(),
+                    },
+                ])
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        state.input_buffer = "review".to_string();
+        handle_key_event(
+            KeyEvent::new(KeyCode::Char('@'), KeyModifiers::SHIFT),
+            &mut state,
+            &mut handler,
+        )
+        .expect("@ opens file picker");
+
+        assert_eq!(handler.searches, vec!["".to_string()]);
+        assert_eq!(state.input_buffer, "review");
+        assert_eq!(
+            state
+                .file_picker
+                .as_ref()
+                .expect("file picker")
+                .candidates
+                .len(),
+            2
+        );
+
+        handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut state,
+            &mut handler,
+        )
+        .expect("attach first candidate");
+
+        assert!(state.file_picker.is_none());
+        assert_eq!(state.input_buffer, "review @src/main.rs ");
+
+        state.input_buffer = "/rename ".to_string();
+        handle_key_event(
+            KeyEvent::new(KeyCode::Char('@'), KeyModifiers::SHIFT),
+            &mut state,
+            &mut handler,
+        )
+        .expect("@ stays literal in commands");
+        assert_eq!(state.input_buffer, "/rename @");
+        assert_eq!(handler.searches, vec!["".to_string()]);
     }
 
     #[test]

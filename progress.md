@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-06-22 Composer At-Trigger File Picker Slice
+
+- Added OpenCode-style `@` composer trigger: pressing `@` in a normal prompt opens the file picker dock instead of inserting a literal character.
+- Preserved slash-command behavior: `@` remains literal inside commands such as `/rename @title`, so command arguments are not hijacked by the composer picker.
+- The existing picker path is reused, so after `@` users can type to filter, use Up/Down/Tab, press Enter to insert `@path`, or Esc to close without exiting the TUI.
+- Added key event coverage for the `@` trigger and command-literal behavior.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui key_event_flow_at_opens_file_picker_without_touching_commands
+cargo test -q -p openagent-tui key_event_flow_opens_file_picker_filters_and_attaches
+cargo test -q -p openagent-tui
+```
+
+Residual risk:
+
+- `@` only opens the local workspace file picker; remote URL/resource attachment flows remain future composer work.
+- Attachment tokens with whitespace in paths remain unsupported by the submit-time parser.
+
 ## 2026-06-22 Composer Modal File Picker Slice
 
 - Upgraded `/files [query]` from a timeline-only listing into a keyboard-driven composer file picker dock.
@@ -23,7 +43,7 @@ cargo test -q -p openagent-tui
 
 Residual risk:
 
-- File picker is modal/dock based now, but `@` typed inside an ordinary draft does not yet open it automatically.
+- Superseded by the Composer At-Trigger File Picker Slice: `@` typed inside a normal draft opens the file picker.
 - Attachment tokens with whitespace in paths remain unsupported by the submit-time parser.
 - Remote URL/resource/image upload attachment flows remain future composer work.
 
