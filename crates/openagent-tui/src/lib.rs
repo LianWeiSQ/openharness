@@ -4540,6 +4540,19 @@ impl IfEmptyThen for String {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use std::{
+        error::Error,
+        fs,
+        io::{ErrorKind, Read, Write},
+        net::{TcpListener, TcpStream},
+        path::PathBuf,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn exposes_command_boundary() {
@@ -5603,6 +5616,97 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_keyflow_smoke_uses_real_remote_handler() -> Result<(), Box<dyn Error>> {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-keyflow")?;
+        fs::write(workspace.join("notes.txt"), "hello from workspace\n")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let mut state = TuiState::new();
+
+        let initial = handler.initial_lines();
+        apply_handler_output(&mut state, &mut handler, initial);
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("connected to"))
+        );
+
+        send_key_text("/new", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+        assert_eq!(handler.current_session(), Some("session_smoke"));
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("created session: session_smoke"))
+        );
+
+        send_key_text("hello bridge", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+        assert_eq!(state.session_id.as_deref(), Some("session_smoke"));
+        assert_eq!(state.current_turn_id.as_deref(), Some("turn_smoke"));
+        assert_eq!(state.status, "completed");
+        assert_eq!(state.usage_totals["total_tokens"], json!(3));
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.kind == "assistant" && line.text.contains("bridge answer"))
+        );
+
+        let polled = handler
+            .poll_app_events()
+            .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        apply_app_event_values(&mut state, polled);
+        assert!(
+            state
+                .runtime_warnings
+                .iter()
+                .any(|warning| warning.contains("bridge smoke warning"))
+        );
+
+        let recorded = bridge.requests();
+        assert!(recorded.iter().any(|request| request == "GET /api/health"));
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "GET /api/sessions")
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "POST /api/sessions")
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "POST /api/sessions/session_smoke/turns")
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request.starts_with("GET /api/events?last_event_id="))
+        );
+        assert!(
+            bridge
+                .turn_inputs()
+                .iter()
+                .any(|input| input == "hello bridge")
+        );
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn terminal_render_snapshot_contains_permission_overlay() {
         let backend = TestBackend::new(96, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -5808,5 +5912,308 @@ mod tests {
         assert!(rendered.contains("Prompt"));
         assert!(rendered.contains("OpenAgent"));
         assert!(rendered.contains("world"));
+    }
+
+    fn send_key_text<H: TerminalEventHandler>(
+        text: &str,
+        state: &mut TuiState,
+        handler: &mut H,
+    ) -> Result<(), Box<dyn Error>> {
+        for ch in text.chars() {
+            press_key(KeyCode::Char(ch), state, handler)?;
+        }
+        Ok(())
+    }
+
+    fn press_key<H: TerminalEventHandler>(
+        key: KeyCode,
+        state: &mut TuiState,
+        handler: &mut H,
+    ) -> Result<(), Box<dyn Error>> {
+        let exit = handle_key_event(KeyEvent::new(key, KeyModifiers::NONE), state, handler)
+            .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        assert!(!exit, "test key unexpectedly requested TUI exit");
+        Ok(())
+    }
+
+    fn temp_test_dir(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_nanos()
+            .to_string();
+        let path = std::env::temp_dir().join(format!("{prefix}-{suffix}"));
+        fs::create_dir_all(&path)?;
+        Ok(path)
+    }
+
+    #[derive(Default)]
+    struct FakeBridgeState {
+        requests: Vec<String>,
+        turn_inputs: Vec<String>,
+    }
+
+    struct FakeAppBridge {
+        server_url: String,
+        state: Arc<Mutex<FakeBridgeState>>,
+        shutdown: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl FakeAppBridge {
+        fn start() -> Result<Self, Box<dyn Error>> {
+            let listener = TcpListener::bind(("127.0.0.1", 0))?;
+            listener.set_nonblocking(true)?;
+            let port = listener.local_addr()?.port();
+            let state = Arc::new(Mutex::new(FakeBridgeState::default()));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let thread_state = Arc::clone(&state);
+            let thread_shutdown = Arc::clone(&shutdown);
+            let handle = thread::spawn(move || {
+                while !thread_shutdown.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((stream, _addr)) => {
+                            let _ = handle_fake_bridge_connection(stream, &thread_state);
+                        }
+                        Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_error) => break,
+                    }
+                }
+            });
+            Ok(Self {
+                server_url: format!("http://127.0.0.1:{port}"),
+                state,
+                shutdown,
+                handle: Some(handle),
+            })
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.state.lock().expect("bridge state").requests.clone()
+        }
+
+        fn turn_inputs(&self) -> Vec<String> {
+            self.state.lock().expect("bridge state").turn_inputs.clone()
+        }
+
+        fn stop(mut self) {
+            self.shutdown.store(true, Ordering::Relaxed);
+            let _ = TcpStream::connect(self.server_url.trim_start_matches("http://"));
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn handle_fake_bridge_connection(
+        mut stream: TcpStream,
+        state: &Arc<Mutex<FakeBridgeState>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let (method, path, body) = read_http_request(&mut stream)?;
+        state
+            .lock()
+            .expect("bridge state")
+            .requests
+            .push(format!("{method} {path}"));
+        match (method.as_str(), path.as_str()) {
+            ("GET", "/api/health") => write_json(&mut stream, json!({"ok": true})),
+            ("GET", "/api/sessions") => write_json(&mut stream, json!({"sessions": []})),
+            ("POST", "/api/sessions") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "session": {
+                        "session_id": "session_smoke",
+                        "status": "ready",
+                        "message_count": 0
+                    }
+                }),
+            ),
+            ("POST", "/api/sessions/session_smoke/turns") => {
+                let input = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|value| {
+                        value
+                            .get("input")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                    })
+                    .unwrap_or_default();
+                state.lock().expect("bridge state").turn_inputs.push(input);
+                write_json(
+                    &mut stream,
+                    json!({
+                        "session_id": "session_smoke",
+                        "turn_id": "turn_smoke",
+                        "status": "completed",
+                        "events": fake_turn_events(),
+                    }),
+                )
+            }
+            _ if method == "GET" && path.starts_with("/api/events?last_event_id=") => {
+                let last_event_id = path
+                    .rsplit_once('=')
+                    .and_then(|(_, value)| value.parse::<u64>().ok())
+                    .unwrap_or_default();
+                let events = if last_event_id < 4 {
+                    vec![json!({
+                        "method": "runtime/warning",
+                        "global_sequence": 4,
+                        "sequence": 4,
+                        "params": {
+                            "session_id": "session_smoke",
+                            "turn_id": "turn_smoke",
+                            "message": "bridge smoke warning"
+                        }
+                    })]
+                } else {
+                    Vec::new()
+                };
+                write_sse(&mut stream, &events)
+            }
+            _ => write_response(
+                &mut stream,
+                "404 Not Found",
+                "application/json",
+                &json!({"error": format!("unexpected route: {method} {path}")}).to_string(),
+            ),
+        }?;
+        Ok(())
+    }
+
+    fn fake_turn_events() -> Vec<Value> {
+        vec![
+            json!({
+                "method": "turn/started",
+                "global_sequence": 1,
+                "sequence": 1,
+                "params": {
+                    "session_id": "session_smoke",
+                    "thread_id": "session_smoke",
+                    "turn_id": "turn_smoke",
+                    "status": "running"
+                }
+            }),
+            json!({
+                "method": "item/agentMessage/delta",
+                "global_sequence": 2,
+                "sequence": 2,
+                "params": {
+                    "session_id": "session_smoke",
+                    "thread_id": "session_smoke",
+                    "turn_id": "turn_smoke",
+                    "delta": "bridge answer"
+                }
+            }),
+            json!({
+                "method": "turn/completed",
+                "global_sequence": 3,
+                "sequence": 3,
+                "params": {
+                    "session_id": "session_smoke",
+                    "thread_id": "session_smoke",
+                    "turn_id": "turn_smoke",
+                    "status": "completed",
+                    "final_answer": "bridge answer",
+                    "usage": {
+                        "input_tokens": 1,
+                        "output_tokens": 2,
+                        "total_tokens": 3,
+                        "cost": 0.0
+                    }
+                }
+            }),
+        ]
+    }
+
+    fn read_http_request(
+        stream: &mut TcpStream,
+    ) -> Result<(String, String, String), Box<dyn Error>> {
+        stream.set_read_timeout(Some(Duration::from_millis(500)))?;
+        let mut raw = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        let mut expected_len = None;
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => raw.extend_from_slice(&buffer[..count]),
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error.into()),
+            }
+            if expected_len.is_none()
+                && let Some(header_end) = find_header_end(&raw)
+            {
+                let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
+                let content_len = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or_default();
+                expected_len = Some(header_end + content_len);
+            }
+            if let Some(expected_len) = expected_len
+                && raw.len() >= expected_len
+            {
+                break;
+            }
+        }
+        let header_end = find_header_end(&raw).ok_or("missing HTTP headers")?;
+        let headers = String::from_utf8_lossy(&raw[..header_end]).to_string();
+        let mut lines = headers.lines();
+        let request_line = lines.next().ok_or("missing request line")?;
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or_default().to_string();
+        let path = parts.next().unwrap_or_default().to_string();
+        let body = String::from_utf8_lossy(&raw[header_end..]).to_string();
+        Ok((method, path, body))
+    }
+
+    fn find_header_end(raw: &[u8]) -> Option<usize> {
+        raw.windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+    }
+
+    fn write_json(stream: &mut TcpStream, body: Value) -> Result<(), Box<dyn Error>> {
+        write_response(stream, "200 OK", "application/json", &body.to_string())
+    }
+
+    fn write_sse(stream: &mut TcpStream, events: &[Value]) -> Result<(), Box<dyn Error>> {
+        let mut body = String::new();
+        for event in events {
+            let method = event
+                .get("method")
+                .and_then(Value::as_str)
+                .unwrap_or("event");
+            let id = event
+                .get("global_sequence")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            body.push_str(&format!("event: {method}\nid: {id}\ndata: {event}\n\n"));
+        }
+        write_response(stream, "200 OK", "text/event-stream", &body)
+    }
+
+    fn write_response(
+        stream: &mut TcpStream,
+        status: &str,
+        content_type: &str,
+        body: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(response.as_bytes())?;
+        Ok(())
     }
 }

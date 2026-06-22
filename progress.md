@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-22 App Bridge Terminal Keyflow Smoke Slice
+
+- Added an end-to-end TUI smoke that drives `handle_key_event` through the real `AppBridgeTerminalHandler` and `RemoteRuntimeClient` over HTTP.
+- The smoke uses a deterministic in-test App Bridge server implementing the session and event routes needed by the terminal handler:
+  - `GET /api/health`
+  - `GET /api/sessions`
+  - `POST /api/sessions`
+  - `POST /api/sessions/{id}/turns`
+  - `GET /api/events?last_event_id=...`
+- Verified the TUI keyflow can create a remote session with `/new`, submit a prompt through the App Bridge, apply returned turn events into the timeline, merge usage totals, and poll a runtime warning from global App Bridge SSE.
+- This closes the earlier evidence gap where TUI coverage was mostly state-level and did not prove the real terminal handler/client path.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui app_bridge_terminal_keyflow_smoke_uses_real_remote_handler
+cargo test -q -p openagent-tui
+```
+
+Residual risk:
+
+- The smoke uses a deterministic in-test App Bridge server, not the full `openagent-http-runtime` binary or a real provider.
+- It proves keyflow plus handler/client integration, but not a full PTY raw-mode terminal loop with crossterm polling.
+
 ## 2026-06-22 Composer At-Trigger File Picker Slice
 
 - Added OpenCode-style `@` composer trigger: pressing `@` in a normal prompt opens the file picker dock instead of inserting a literal character.
