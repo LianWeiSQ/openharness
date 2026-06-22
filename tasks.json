@@ -1,0 +1,297 @@
+{
+  "project": "openagent-core",
+  "last_updated": "2026-06-11",
+  "current_focus": "Maintain trace/eval/cost/runtime-warning quality loop while keeping external exporters optional and safe.",
+  "tasks": [
+    {
+      "id": "OA-001",
+      "title": "Prevent runtime options from leaking to model providers",
+      "description": "Finish the local fix that adds trace and runtime_warnings to RUNTIME_OPTION_KEYS. Add tests so internal runtime namespaces stay out of provider-facing options.",
+      "status": "in_progress",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_context_budget.py && PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'",
+      "requires_eval": false
+    },
+    {
+      "id": "OA-002",
+      "title": "Make ContextPackBuilder the single model-message assembly path",
+      "description": "Map all model-message assembly paths and move remaining paths behind ContextPackBuilder. Keep provider-specific materialization after context assembly.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_context_budget.py src/tests/test_loop.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-003",
+      "title": "Wire persistent session storage into the main loop",
+      "description": "Persist run start, step finish, pause, resume, and compaction state so runs can be recovered and audited across sessions.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_loop.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-004",
+      "title": "Run real local model gateway smoke",
+      "description": "Replace the temporary localhost smoke with a real OpenAI-compatible gateway smoke once a valid local API key is available.",
+      "status": "blocked",
+      "priority": "medium",
+      "blocked_by": "Missing valid local gateway API key for 127.0.0.1:8080.",
+      "verify": "Run one AgentLoop call through the local gateway and check trace summary status=completed and model_call_count=1.",
+      "requires_eval": false
+    },
+    {
+      "id": "OA-005",
+      "title": "Trace MCP discovery and tools/list lifecycle",
+      "description": "Add observation events around MCP connect, tools/list, refresh, failures, and cache behavior. Preserve redaction for credentials.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_trace.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-006",
+      "title": "Unify artifact tracking",
+      "description": "Define artifact kinds and record artifacts consistently from file tools, eval reports, trace exports, and benchmark outputs.",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_trace.py src/tests/test_eval_runner.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-007",
+      "title": "Add stable eval suite CLI",
+      "description": "Add python -m openagent.core.eval run with cases glob, output dir, baseline report, regression thresholds, and optional CI gate.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_eval_runner.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-008",
+      "title": "Add deterministic record-replay for external integration tests",
+      "description": "Add cassette support only for model, MCP, or HTTP tool integration tests that require deterministic external traffic.",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-009",
+      "title": "Design file-backed trace/eval index before database storage",
+      "description": "Define a read-only index over run id, case id, status, model/tool counts, cost, latency, and warning count before adding DB storage.",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_trace.py src/tests/test_eval_runner.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-010",
+      "title": "Add Langfuse real smoke runbook",
+      "description": "Keep fake-client unit tests as default CI and add an env-gated manual smoke for real Langfuse trace plus score upload.",
+      "status": "blocked",
+      "priority": "medium",
+      "blocked_by": "Requires LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, and LANGFUSE_BASE_URL.",
+      "verify": "Run an eval case with Langfuse enabled and confirm one trace plus four scores in Langfuse UI.",
+      "requires_eval": false
+    },
+    {
+      "id": "OA-011",
+      "title": "Guard against LangSmith reintroduction",
+      "description": "Keep LangSmith removed unless there is a new explicit decision. Scan for LangSmith and OpenTelemetry terms before releases.",
+      "status": "done",
+      "priority": "low",
+      "blocked_by": "",
+      "verify": "rg -n \"LangSmith|langsmith|LANGSMITH|opentelemetry|OTLP|otel\" pyproject.toml doc src/openagent src/tests || true",
+      "requires_eval": false
+    },
+    {
+      "id": "OA-012",
+      "title": "Calibrate runtime warning thresholds",
+      "description": "Tune warning thresholds from actual eval runs so context, token, and cost warnings are actionable rather than noisy.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_eval_runner.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-013",
+      "title": "Split optional dependencies by integration path",
+      "description": "Review pyproject extras and split MCP, sandbox, benchmark, and Langfuse dependencies so installs stay minimal.",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "",
+      "verify": "python -m py_compile src/openagent/core/trace/exporter.py",
+      "requires_eval": false
+    },
+    {
+      "id": "OA-014",
+      "title": "Publish reproducible benchmark reports",
+      "description": "Define Terminal-Bench and Harbor report schema with command, environment, model, cost, latency, pass/fail, and trace path.",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_terminal_bench_adapter.py src/tests/test_harbor_adapter.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-015",
+      "title": "Keep CLI and Web Console outside core",
+      "description": "When rebuilding CLI or Web Console, put them in a separate demo package with sanitized config templates, not inside the runtime core.",
+      "status": "pending",
+      "priority": "low",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-016",
+      "title": "Strengthen exporter data-boundary tests",
+      "description": "Add tests for secret redaction, metadata-only default export, and explicit content opt-in for every exporter.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_trace.py",
+      "requires_eval": false
+    },
+    {
+      "id": "OA-017",
+      "title": "Add adaptive step budgeting and closeout protection",
+      "description": "Document and then improve max_steps behavior so complex tasks do not exhaust tool-enabled rounds before edits, reports, or verification can be completed.",
+      "status": "in_progress",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_loop.py src/tests/test_eval_runner.py",
+      "requires_eval": true
+    },
+    {
+      "id": "SW-001",
+      "title": "Define the agent-agnostic AgentRunner protocol",
+      "description": "Standalone swarm kernel (see doc/multi-agent.md). Create package src/swarm/ with zero openagent imports. Define AgentRunner / AgentSpec / AgentResult / AgentDescriptor / AgentRunHandle / RunContext / RunLimits / FanoutBudget. Validate the four-part spec contract (objective, output_schema, context, boundaries). CI must assert no openagent import under src/swarm/.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py' && (rg -n 'import openagent|from openagent' src/swarm || echo 'kernel boundary clean')",
+      "requires_eval": false
+    },
+    {
+      "id": "SW-002",
+      "title": "Add Supervisor topology, scheduler, and FanoutBudget",
+      "description": "Kernel Phase 0. Implement a Registry of runners keyed by AgentDescriptor, a Scheduler with bounded concurrency, a Supervisor topology that dispatches AgentSpecs and aggregates AgentResults, and FanoutBudget enforcement (max concurrent, max total workers, aggregate token/cost). A failing runner yields a status-tagged partial result and never raises.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "SW-001",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py'",
+      "requires_eval": false
+    },
+    {
+      "id": "SW-003",
+      "title": "Add agent-agnostic trace lineage and capability routing",
+      "description": "Kernel Phase 1. Own a swarm-level span tree with span_id/parent_span_id; each runner nests under its spawn span. Metadata-only by default with content opt-in (OA-016 rule). Use AgentDescriptor for routing (role match, cost tier, context size, streaming).",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "SW-001",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py'",
+      "requires_eval": false
+    },
+    {
+      "id": "SW-004",
+      "title": "Add SubprocessRunner",
+      "description": "Kernel Phase 2. A runner that drives any CLI agent over stdio JSON (e.g. openagent run --json). Maps the four-part spec to the child's input and the child's output back to AgentResult. This is the first out-of-process runner.",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "SW-002",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py'",
+      "requires_eval": false
+    },
+    {
+      "id": "SW-005",
+      "title": "Add HttpRunner / A2ARunner",
+      "description": "Kernel Phase 2. A runner that drives remote agent endpoints over HTTP, aligned with the A2A Agent Card capability model. Unlocks mixed-vendor heterogeneous swarms (openagent + external agents).",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "SW-004",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py'",
+      "requires_eval": false
+    },
+    {
+      "id": "SW-006",
+      "title": "Add Hierarchical topology, structured handoff, and reviewer role",
+      "description": "Kernel Phase 3. Hierarchical role chains (Researcher->Builder->Reviewer), a structured handoff schema (summary/evidence/open_questions/confidence/tool_state), ping-pong loop detection, a reviewer/critic role for adversarial verification, and a file-concurrency policy (worktree or directory ownership) for write-capable runners.",
+      "status": "pending",
+      "priority": "medium",
+      "blocked_by": "SW-002",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py'",
+      "requires_eval": true
+    },
+    {
+      "id": "SW-007",
+      "title": "Add topology-agnostic LLM-as-judge eval harness",
+      "description": "Kernel Phase 1. Multi-agent has no single correct path; add LLM-as-judge plus rubric evals over swarm outputs (extends openagent OA-007/OA-012 thinking). Required before any write-capable runners land.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "SW-002",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py'",
+      "requires_eval": true
+    },
+    {
+      "id": "SW-008",
+      "title": "Add persistent team Store protocol and optional decentralized swarm",
+      "description": "Kernel Phase 4. Define a Store protocol for persisting lead/worker team state for cross-session pause/resume, plus an optional Decentralized peer-handoff topology with ping-pong detection. Backends are supplied by adapters.",
+      "status": "pending",
+      "priority": "low",
+      "blocked_by": "SW-006",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_swarm_*.py'",
+      "requires_eval": false
+    },
+    {
+      "id": "OA-018",
+      "title": "Implement OpenAgentRunner (in-process swarm adapter)",
+      "description": "OpenAgent reference adapter for the swarm kernel. Implement AgentRunner over AgentLoop: build a Session and an AgentLoop with mode=subagent, tools=readonly, lead model, READONLY permissions; map loop stream events to kernel AgentEvents; produce a structured AgentResult. No writes, no nesting, no persistence.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "OA-002, SW-001",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_loop.py && PYTHONPATH=src:src/tests python -m unittest discover -s src/tests -p 'test_*.py'",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-019",
+      "title": "Add spawn_agent tool delegating to the swarm kernel",
+      "description": "Inject a kernel client handle into ToolContext.extra['swarm'] at loop construction (backward-compatible, no global singleton). Add a spawn_agent builtin tool that submits AgentSpecs to the kernel and returns the AgentResult as compact JSON. Respect OA-017 closeout: disable spawning on the lead's final tool-enabled step.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "OA-018, SW-002",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_loop.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-020",
+      "title": "Map openagent trace events into kernel lineage",
+      "description": "Forward openagent run/step/tool trace events through the OpenAgentRunner into the kernel span tree so spawned workers carry parent_span_id linking to the lead span. Preserve metadata-only default and credential redaction.",
+      "status": "pending",
+      "priority": "high",
+      "blocked_by": "OA-018, SW-003",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_trace.py",
+      "requires_eval": true
+    },
+    {
+      "id": "OA-021",
+      "title": "Implement the kernel Store via persistent session storage",
+      "description": "OpenAgent side of swarm Phase 4. Back the kernel Store protocol with persistent session storage so team state survives across sessions, and add a shared blackboard memory pool (ContextItem kind=blackboard, source=agent_id).",
+      "status": "pending",
+      "priority": "low",
+      "blocked_by": "OA-003, SW-008",
+      "verify": "PYTHONPATH=src:src/tests python -m unittest src/tests/test_loop.py",
+      "requires_eval": true
+    }
+  ]
+}
