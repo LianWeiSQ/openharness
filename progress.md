@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-22 Composer Modal File Picker Slice
+
+- Upgraded `/files [query]` from a timeline-only listing into a keyboard-driven composer file picker dock.
+- Added `TerminalEventHandler::search_files` so the TUI state owns modal/key behavior while the App Bridge handler searches the real active workspace.
+- File picker now supports incremental query filtering, Up/Down or Tab selection, Enter-to-attach, and Esc-to-close without triggering global exit or prompt history.
+- App Bridge `file.open` / `/tui/open-files` now opens the same picker instead of dispatching a plain `/files` timeline command; `file.select` closes the picker and inserts the selected `@path[:range]` reference.
+- Added terminal render snapshot coverage proving the file picker appears in the frame, plus key event flow coverage proving filter/select/attach works end to end inside the TUI event loop.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui key_event_flow_opens_file_picker_filters_and_attaches
+cargo test -q -p openagent-tui terminal_render_snapshot_contains_file_picker_overlay
+cargo test -q -p openagent-tui remote_control_file_picker_dispatches_and_selects_into_composer
+cargo test -q -p openagent-tui
+```
+
+Residual risk:
+
+- File picker is modal/dock based now, but `@` typed inside an ordinary draft does not yet open it automatically.
+- Attachment tokens with whitespace in paths remain unsupported by the submit-time parser.
+- Remote URL/resource/image upload attachment flows remain future composer work.
+
 ## 2026-06-22 Composer File Picker Slice
 
 - Added OpenCode-style composer file discovery commands: `/files [query]` searches the active workspace and renders ranked `@path` attachment candidates; `/attach <path[:range]>` inserts a normalized file/image reference back into the prompt composer.
@@ -23,7 +46,7 @@ cargo test -q -p openagent-tui
 
 Residual risk:
 
-- The picker is still rendered as timeline rows, not a dedicated modal with incremental keyboard selection.
+- Superseded by the Composer Modal File Picker Slice: `/files` now opens a keyboard-driven TUI dock.
 - Attachment tokens with whitespace in paths are rejected because the current submit-time parser is whitespace-token based.
 - `/files` is workspace-local; remote resource/URL attachments still remain future composer work.
 

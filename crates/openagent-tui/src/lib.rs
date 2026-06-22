@@ -146,6 +146,10 @@ pub trait TerminalEventHandler {
         Vec::new()
     }
 
+    fn search_files(&mut self, _query: &str) -> Result<Vec<ComposerFileCandidate>, String> {
+        Ok(Vec::new())
+    }
+
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String>;
 
     fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String>;
@@ -236,8 +240,9 @@ fn terminal_ui_loop<H: TerminalEventHandler>(
 fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiState) {
     let area = frame.area();
     let has_interaction = state.active_interaction_focus().is_some();
+    let has_file_picker = state.file_picker.is_some();
     let mut constraints = vec![Constraint::Length(3), Constraint::Min(5)];
-    if has_interaction {
+    if has_interaction || has_file_picker {
         constraints.push(Constraint::Length(9));
     }
     constraints.push(Constraint::Length(3));
@@ -274,6 +279,9 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let prompt_index = if has_interaction {
         draw_interaction_dock(frame, chunks[2], state);
         3
+    } else if has_file_picker {
+        draw_file_picker_dock(frame, chunks[2], state);
+        3
     } else {
         2
     };
@@ -281,6 +289,60 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
         .block(Block::default().borders(Borders::ALL).title("Prompt"))
         .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[prompt_index]);
+}
+
+fn draw_file_picker_dock(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    state: &TuiState,
+) {
+    let lines = file_picker_dock_lines(state);
+    let dock = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Composer: Files")
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dock, area);
+}
+
+fn file_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let Some(picker) = state.file_picker.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Query ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(if picker.query.is_empty() {
+            "(all)".to_string()
+        } else {
+            picker.query.clone()
+        }),
+        Span::styled(
+            "  Type to filter, Enter attach, Esc close",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    if picker.candidates.is_empty() {
+        lines.push(Line::from("No matching files"));
+        return lines;
+    }
+    for (index, candidate) in picker.candidates.iter().enumerate().take(6) {
+        let marker = if picker.selected == index { ">" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{marker} {}. ", index + 1),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(candidate.reference.clone()),
+            Span::styled(
+                format!("  {}", candidate.kind),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    }
+    lines
 }
 
 fn draw_interaction_dock(
@@ -433,6 +495,10 @@ fn handle_key_event<H: TerminalEventHandler>(
         dispatch_new_interaction_responses(state, handler, approval_start, question_start)?;
         return Ok(false);
     }
+    if state.file_picker.is_some() {
+        handle_file_picker_key(key, state, handler)?;
+        return Ok(false);
+    }
     if keybind_matches(&state.config, &key, "stash", "ctrl+s") {
         state.stash_current_input();
         return Ok(false);
@@ -475,6 +541,10 @@ fn handle_key_event<H: TerminalEventHandler>(
                 if handle_local_state_command(&submitted, state, handler)? {
                     return Ok(false);
                 }
+                if let Some(query) = file_picker_command_query(&submitted) {
+                    open_file_picker_from_handler(state, handler, query)?;
+                    return Ok(false);
+                }
                 match handler.handle_command(&submitted) {
                     Ok(lines) => {
                         state.status = "command completed".to_string();
@@ -505,6 +575,88 @@ fn handle_key_event<H: TerminalEventHandler>(
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_file_picker_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc => {
+            state.close_file_picker();
+        }
+        KeyCode::Enter => {
+            state.insert_selected_file_picker_reference();
+        }
+        KeyCode::Up => {
+            state.file_picker_previous();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            state.file_picker_next();
+        }
+        KeyCode::Backspace => {
+            if let Some(picker) = state.file_picker.as_mut() {
+                picker.query.pop();
+            }
+            if let Err(error) = refresh_file_picker_from_handler(state, handler) {
+                state
+                    .timeline
+                    .push(TimelineLine::new("warning", error, true));
+                state.status = "file picker refresh failed".to_string();
+            }
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(picker) = state.file_picker.as_mut() {
+                picker.query.push(ch);
+            }
+            if let Err(error) = refresh_file_picker_from_handler(state, handler) {
+                state
+                    .timeline
+                    .push(TimelineLine::new("warning", error, true));
+                state.status = "file picker refresh failed".to_string();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn open_file_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    query: &str,
+) -> Result<(), String> {
+    let candidates = handler.search_files(query)?;
+    state.open_file_picker(query, candidates);
+    Ok(())
+}
+
+fn refresh_file_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    let query = state
+        .file_picker
+        .as_ref()
+        .map(|picker| picker.query.clone())
+        .unwrap_or_default();
+    let candidates = handler.search_files(&query)?;
+    if let Some(picker) = state.file_picker.as_mut() {
+        picker.candidates = candidates;
+        picker.selected = picker
+            .selected
+            .min(picker.candidates.len().saturating_sub(1));
+    }
+    state.status = "file picker".to_string();
+    Ok(())
+}
+
+fn file_picker_command_query(command: &str) -> Option<&str> {
+    if command == "/files" {
+        return Some("");
+    }
+    command.strip_prefix("/files ").map(str::trim)
 }
 
 fn handle_local_state_command<H: TerminalEventHandler>(
@@ -675,9 +827,15 @@ fn handle_remote_control_request<H: TerminalEventHandler>(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        match handler.handle_command(command) {
-            Ok(lines) => apply_handler_output(state, handler, lines),
-            Err(error) => state.timeline.push(TimelineLine::new("error", error, true)),
+        if let Some(query) = file_picker_command_query(command) {
+            if let Err(error) = open_file_picker_from_handler(state, handler, query) {
+                state.timeline.push(TimelineLine::new("error", error, true));
+            }
+        } else {
+            match handler.handle_command(command) {
+                Ok(lines) => apply_handler_output(state, handler, lines),
+                Err(error) => state.timeline.push(TimelineLine::new("error", error, true)),
+            }
         }
     }
     let payload = json!({
@@ -897,6 +1055,20 @@ pub struct TuiState {
     pub show_tool_details: bool,
     pub runtime_warnings: Vec<String>,
     pub usage_totals: Value,
+    pub file_picker: Option<FilePickerState>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FilePickerState {
+    pub query: String,
+    pub selected: usize,
+    pub candidates: Vec<ComposerFileCandidate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComposerFileCandidate {
+    pub reference: String,
+    pub kind: String,
 }
 
 impl TuiState {
@@ -922,6 +1094,7 @@ impl TuiState {
             show_tool_details: false,
             runtime_warnings: Vec::new(),
             usage_totals: usage_totals_value(0, 0, 0, 0.0),
+            file_picker: None,
         }
     }
 
@@ -1259,6 +1432,52 @@ impl TuiState {
             true,
         ));
         self.status = "attachment inserted".to_string();
+    }
+
+    pub fn open_file_picker(&mut self, query: &str, candidates: Vec<ComposerFileCandidate>) {
+        self.file_picker = Some(FilePickerState {
+            query: query.trim().to_string(),
+            selected: 0,
+            candidates,
+        });
+        self.status = "file picker".to_string();
+    }
+
+    pub fn close_file_picker(&mut self) {
+        self.file_picker = None;
+        self.status = "file picker closed".to_string();
+    }
+
+    pub fn file_picker_previous(&mut self) {
+        let Some(picker) = self.file_picker.as_mut() else {
+            return;
+        };
+        picker.selected = picker.selected.saturating_sub(1);
+        self.status = "file picker".to_string();
+    }
+
+    pub fn file_picker_next(&mut self) {
+        let Some(picker) = self.file_picker.as_mut() else {
+            return;
+        };
+        if !picker.candidates.is_empty() {
+            picker.selected = (picker.selected + 1).min(picker.candidates.len() - 1);
+        }
+        self.status = "file picker".to_string();
+    }
+
+    pub fn insert_selected_file_picker_reference(&mut self) {
+        let Some(reference) = self.file_picker.as_ref().and_then(|picker| {
+            picker
+                .candidates
+                .get(picker.selected)
+                .map(|candidate| candidate.reference.clone())
+        }) else {
+            self.status = "file picker empty".to_string();
+            return;
+        };
+        self.file_picker = None;
+        self.insert_attachment_reference(&reference);
     }
 
     pub fn edit_input_with_external_editor(&mut self) -> Result<(), String> {
@@ -2539,6 +2758,7 @@ impl TuiState {
             self.status = "control invalid".to_string();
             return json!({"applied": false, "action": action_name, "error": "path cannot be represented as an @ attachment"});
         };
+        self.file_picker = None;
         self.insert_attachment_reference(&reference);
         json!({"applied": true, "action": action_name, "reference": token})
     }
@@ -3213,6 +3433,13 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
 
     fn drain_app_events(&mut self) -> Vec<Value> {
         std::mem::take(&mut self.pending_events)
+    }
+
+    fn search_files(&mut self, query: &str) -> Result<Vec<ComposerFileCandidate>, String> {
+        Ok(fuzzy_find_files(&self.workspace, query, 20)
+            .into_iter()
+            .map(composer_candidate_from_match)
+            .collect())
     }
 
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String> {
@@ -3914,6 +4141,18 @@ fn fuzzy_find_files(workspace: &Path, query: &str, limit: usize) -> Vec<FilePick
     });
     matches.truncate(limit);
     matches
+}
+
+fn composer_candidate_from_match(item: FilePickerMatch) -> ComposerFileCandidate {
+    let kind = if is_image_path(&item.path) {
+        "image"
+    } else {
+        "file"
+    };
+    ComposerFileCandidate {
+        reference: item.reference,
+        kind: kind.to_string(),
+    }
 }
 
 fn fuzzy_file_score(relative: &str, name: &str, query: &str) -> Option<usize> {
@@ -4684,6 +4923,7 @@ mod tests {
         struct CaptureHandler {
             commands: Vec<String>,
             responses: Vec<Value>,
+            searches: Vec<String>,
         }
 
         impl TerminalEventHandler for CaptureHandler {
@@ -4700,6 +4940,20 @@ mod tests {
                 )])
             }
 
+            fn search_files(&mut self, query: &str) -> Result<Vec<ComposerFileCandidate>, String> {
+                self.searches.push(query.to_string());
+                Ok(vec![
+                    ComposerFileCandidate {
+                        reference: "@src/lib.rs".to_string(),
+                        kind: "file".to_string(),
+                    },
+                    ComposerFileCandidate {
+                        reference: "@src/main.rs".to_string(),
+                        kind: "file".to_string(),
+                    },
+                ])
+            }
+
             fn record_control_response(&mut self, payload: &Value) -> Result<(), String> {
                 self.responses.push(payload.clone());
                 Ok(())
@@ -4713,6 +4967,18 @@ mod tests {
             &mut handler,
             &json!({"path": "/tui/open-files", "body": {"query": "main"}}),
         );
+        assert!(handler.commands.is_empty());
+        assert_eq!(handler.searches, vec!["main".to_string()]);
+        assert_eq!(
+            state
+                .file_picker
+                .as_ref()
+                .expect("file picker")
+                .candidates
+                .len(),
+            2
+        );
+
         state.input_buffer = "review".to_string();
         handle_remote_control_request(
             &mut state,
@@ -4720,7 +4986,8 @@ mod tests {
             &json!({"path": "/tui/publish", "body": {"type": "tui.file.select", "properties": {"path": "src/main.rs", "line": 7}}}),
         );
 
-        assert_eq!(handler.commands, vec!["/files main".to_string()]);
+        assert!(handler.commands.is_empty());
+        assert!(state.file_picker.is_none());
         assert_eq!(state.input_buffer, "review @src/main.rs:7 ");
         assert_eq!(handler.responses.len(), 2);
         assert!(
@@ -5145,6 +5412,111 @@ mod tests {
     }
 
     #[test]
+    fn key_event_flow_opens_file_picker_filters_and_attaches() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            searches: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, _command: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn search_files(&mut self, query: &str) -> Result<Vec<ComposerFileCandidate>, String> {
+                self.searches.push(query.to_string());
+                let candidates = match query {
+                    "ma" => vec![
+                        ComposerFileCandidate {
+                            reference: "@src/main.rs".to_string(),
+                            kind: "file".to_string(),
+                        },
+                        ComposerFileCandidate {
+                            reference: "@images/map.png".to_string(),
+                            kind: "image".to_string(),
+                        },
+                    ],
+                    "mam" => vec![ComposerFileCandidate {
+                        reference: "@src/main.rs".to_string(),
+                        kind: "file".to_string(),
+                    }],
+                    _ => vec![
+                        ComposerFileCandidate {
+                            reference: "@src/lib.rs".to_string(),
+                            kind: "file".to_string(),
+                        },
+                        ComposerFileCandidate {
+                            reference: "@docs/guide.md".to_string(),
+                            kind: "file".to_string(),
+                        },
+                    ],
+                };
+                Ok(candidates)
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        for ch in "/files ma".chars() {
+            handle_key_event(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+                &mut state,
+                &mut handler,
+            )
+            .expect("char event");
+        }
+        handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut state,
+            &mut handler,
+        )
+        .expect("open picker");
+        assert_eq!(handler.searches, vec!["ma".to_string()]);
+        assert_eq!(
+            state.file_picker.as_ref().expect("picker").query.as_str(),
+            "ma"
+        );
+
+        handle_key_event(
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+            &mut state,
+            &mut handler,
+        )
+        .expect("filter picker");
+        assert_eq!(
+            state.file_picker.as_ref().expect("picker").query.as_str(),
+            "mam"
+        );
+        assert_eq!(handler.searches, vec!["ma".to_string(), "mam".to_string()]);
+
+        handle_key_event(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut state,
+            &mut handler,
+        )
+        .expect("backspace filter");
+        handle_key_event(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            &mut state,
+            &mut handler,
+        )
+        .expect("select image");
+        handle_key_event(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            &mut state,
+            &mut handler,
+        )
+        .expect("attach selected file");
+
+        assert!(state.file_picker.is_none());
+        assert_eq!(state.input_buffer, "@images/map.png ");
+    }
+
+    #[test]
     fn terminal_render_snapshot_contains_permission_overlay() {
         let backend = TestBackend::new(96, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -5176,6 +5548,36 @@ mod tests {
         assert!(rendered.contains("Always allow"));
         assert!(rendered.contains("Deny"));
         assert!(rendered.contains("write"));
+    }
+
+    #[test]
+    fn terminal_render_snapshot_contains_file_picker_overlay() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.open_file_picker(
+            "main",
+            vec![
+                ComposerFileCandidate {
+                    reference: "@src/main.rs".to_string(),
+                    kind: "file".to_string(),
+                },
+                ComposerFileCandidate {
+                    reference: "@images/map.png".to_string(),
+                    kind: "image".to_string(),
+                },
+            ],
+        );
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw frame");
+        let rendered = format!("{:?}", terminal.backend().buffer());
+
+        assert!(rendered.contains("Composer: Files"));
+        assert!(rendered.contains("Query"));
+        assert!(rendered.contains("@src/main.rs"));
+        assert!(rendered.contains("@images/map.png"));
     }
 
     #[test]
