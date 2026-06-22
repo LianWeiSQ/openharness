@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-22 TUI Session Picker Slice
+
+- Upgraded `/sessions [query]` from a passive timeline listing into an OpenCode-style keyboard session picker.
+- Added a TUI session picker dock with query text, remote session candidates, Up/Down/Tab selection, Enter-to-resume, and Esc-to-close.
+- Wired the picker through the real `TerminalEventHandler::search_sessions` boundary; `AppBridgeTerminalHandler` now backs it with `RemoteRuntimeClient::search_sessions`, so `/sessions smoke` calls `GET /api/sessions?query=smoke`.
+- Updated remote control `/tui/open-sessions` to open the same picker path instead of only appending a hint line.
+- Added coverage for key event flow, remote control dispatch, terminal render snapshot, and App Bridge handler search/resume smoke.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui key_event_flow_opens_session_picker_filters_and_resumes
+cargo test -q -p openagent-tui remote_control_open_sessions_dispatches_picker_search
+cargo test -q -p openagent-tui terminal_render_snapshot_contains_session_picker_overlay
+cargo test -q -p openagent-tui app_bridge_terminal_session_picker_searches_and_resumes
+cargo test -q -p openagent-tui
+cargo check -q -p openagent-tui -p openagent-app-server-client
+```
+
+Residual risk:
+
+- Picker selection resumes by session id; richer OpenCode-style session detail panes and inline rename/delete/archive actions remain future slices.
+- The smoke uses the deterministic in-test App Bridge server, not a full provider-backed runtime session.
+
 ## 2026-06-22 TUI Session Transcript Slice
 
 - Added a real App Bridge transcript path for session management parity:

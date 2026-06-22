@@ -150,6 +150,10 @@ pub trait TerminalEventHandler {
         Ok(Vec::new())
     }
 
+    fn search_sessions(&mut self, _query: &str) -> Result<Vec<Value>, String> {
+        Ok(Vec::new())
+    }
+
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String>;
 
     fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String>;
@@ -241,8 +245,9 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let area = frame.area();
     let has_interaction = state.active_interaction_focus().is_some();
     let has_file_picker = state.file_picker.is_some();
+    let has_session_picker = state.session_picker.is_some();
     let mut constraints = vec![Constraint::Length(3), Constraint::Min(5)];
-    if has_interaction || has_file_picker {
+    if has_interaction || has_file_picker || has_session_picker {
         constraints.push(Constraint::Length(9));
     }
     constraints.push(Constraint::Length(3));
@@ -279,6 +284,9 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let prompt_index = if has_interaction {
         draw_interaction_dock(frame, chunks[2], state);
         3
+    } else if has_session_picker {
+        draw_session_picker_dock(frame, chunks[2], state);
+        3
     } else if has_file_picker {
         draw_file_picker_dock(frame, chunks[2], state);
         3
@@ -289,6 +297,56 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
         .block(Block::default().borders(Borders::ALL).title("Prompt"))
         .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[prompt_index]);
+}
+
+fn draw_session_picker_dock(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    state: &TuiState,
+) {
+    let lines = session_picker_dock_lines(state);
+    let dock = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Sessions")
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dock, area);
+}
+
+fn session_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let Some(picker) = state.session_picker.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Query ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(if picker.query.is_empty() {
+            "(recent)".to_string()
+        } else {
+            picker.query.clone()
+        }),
+        Span::styled(
+            "  Type to filter, Enter resume, Esc close",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    if picker.candidates.is_empty() {
+        lines.push(Line::from("No matching sessions"));
+        return lines;
+    }
+    for (index, session) in picker.candidates.iter().enumerate().take(6) {
+        let marker = if picker.selected == index { ">" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{marker} {}. ", index + 1),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(session_picker_label(session)),
+        ]));
+    }
+    lines
 }
 
 fn draw_file_picker_dock(
@@ -495,6 +553,10 @@ fn handle_key_event<H: TerminalEventHandler>(
         dispatch_new_interaction_responses(state, handler, approval_start, question_start)?;
         return Ok(false);
     }
+    if state.session_picker.is_some() {
+        handle_session_picker_key(key, state, handler)?;
+        return Ok(false);
+    }
     if state.file_picker.is_some() {
         handle_file_picker_key(key, state, handler)?;
         return Ok(false);
@@ -553,6 +615,10 @@ fn handle_key_event<H: TerminalEventHandler>(
                 if handle_local_state_command(&submitted, state, handler)? {
                     return Ok(false);
                 }
+                if let Some(query) = session_picker_command_query(&submitted) {
+                    open_session_picker_from_handler(state, handler, query)?;
+                    return Ok(false);
+                }
                 if let Some(query) = file_picker_command_query(&submitted) {
                     open_file_picker_from_handler(state, handler, query)?;
                     return Ok(false);
@@ -587,6 +653,51 @@ fn handle_key_event<H: TerminalEventHandler>(
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_session_picker_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc => {
+            state.close_session_picker();
+        }
+        KeyCode::Enter => {
+            select_session_picker_from_handler(state, handler)?;
+        }
+        KeyCode::Up => {
+            state.session_picker_previous();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            state.session_picker_next();
+        }
+        KeyCode::Backspace => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.query.pop();
+            }
+            if let Err(error) = refresh_session_picker_from_handler(state, handler) {
+                state
+                    .timeline
+                    .push(TimelineLine::new("warning", error, true));
+                state.status = "session picker refresh failed".to_string();
+            }
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.query.push(ch);
+            }
+            if let Err(error) = refresh_session_picker_from_handler(state, handler) {
+                state
+                    .timeline
+                    .push(TimelineLine::new("warning", error, true));
+                state.status = "session picker refresh failed".to_string();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn handle_file_picker_key<H: TerminalEventHandler>(
@@ -634,6 +745,51 @@ fn handle_file_picker_key<H: TerminalEventHandler>(
     Ok(())
 }
 
+fn open_session_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    query: &str,
+) -> Result<(), String> {
+    let candidates = handler.search_sessions(query)?;
+    state.open_session_picker(query, candidates);
+    Ok(())
+}
+
+fn refresh_session_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    let query = state
+        .session_picker
+        .as_ref()
+        .map(|picker| picker.query.clone())
+        .unwrap_or_default();
+    let candidates = handler.search_sessions(&query)?;
+    if let Some(picker) = state.session_picker.as_mut() {
+        picker.candidates = candidates;
+        picker.selected = picker
+            .selected
+            .min(picker.candidates.len().saturating_sub(1));
+    }
+    state.status = "session picker".to_string();
+    Ok(())
+}
+
+fn select_session_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    let Some(session_id) = state.selected_session_picker_id() else {
+        state.status = "session picker empty".to_string();
+        return Ok(());
+    };
+    state.close_session_picker();
+    state.session_id = Some(session_id.clone());
+    let lines = handler.handle_command(&format!("/resume {session_id}"))?;
+    apply_handler_output(state, handler, lines);
+    Ok(())
+}
+
 fn open_file_picker_from_handler<H: TerminalEventHandler>(
     state: &mut TuiState,
     handler: &mut H,
@@ -669,6 +825,13 @@ fn file_picker_command_query(command: &str) -> Option<&str> {
         return Some("");
     }
     command.strip_prefix("/files ").map(str::trim)
+}
+
+fn session_picker_command_query(command: &str) -> Option<&str> {
+    if command == "/sessions" {
+        return Some("");
+    }
+    command.strip_prefix("/sessions ").map(str::trim)
 }
 
 fn handle_local_state_command<H: TerminalEventHandler>(
@@ -839,7 +1002,11 @@ fn handle_remote_control_request<H: TerminalEventHandler>(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        if let Some(query) = file_picker_command_query(command) {
+        if let Some(query) = session_picker_command_query(command) {
+            if let Err(error) = open_session_picker_from_handler(state, handler, query) {
+                state.timeline.push(TimelineLine::new("error", error, true));
+            }
+        } else if let Some(query) = file_picker_command_query(command) {
             if let Err(error) = open_file_picker_from_handler(state, handler, query) {
                 state.timeline.push(TimelineLine::new("error", error, true));
             }
@@ -1068,6 +1235,7 @@ pub struct TuiState {
     pub runtime_warnings: Vec<String>,
     pub usage_totals: Value,
     pub file_picker: Option<FilePickerState>,
+    pub session_picker: Option<SessionPickerState>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1075,6 +1243,13 @@ pub struct FilePickerState {
     pub query: String,
     pub selected: usize,
     pub candidates: Vec<ComposerFileCandidate>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionPickerState {
+    pub query: String,
+    pub selected: usize,
+    pub candidates: Vec<Value>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1107,6 +1282,7 @@ impl TuiState {
             runtime_warnings: Vec::new(),
             usage_totals: usage_totals_value(0, 0, 0, 0.0),
             file_picker: None,
+            session_picker: None,
         }
     }
 
@@ -1446,7 +1622,48 @@ impl TuiState {
         self.status = "attachment inserted".to_string();
     }
 
+    pub fn open_session_picker(&mut self, query: &str, candidates: Vec<Value>) {
+        self.file_picker = None;
+        self.session_picker = Some(SessionPickerState {
+            query: query.trim().to_string(),
+            selected: 0,
+            candidates,
+        });
+        self.status = "session picker".to_string();
+    }
+
+    pub fn close_session_picker(&mut self) {
+        self.session_picker = None;
+        self.status = "session picker closed".to_string();
+    }
+
+    pub fn session_picker_previous(&mut self) {
+        let Some(picker) = self.session_picker.as_mut() else {
+            return;
+        };
+        picker.selected = picker.selected.saturating_sub(1);
+        self.status = "session picker".to_string();
+    }
+
+    pub fn session_picker_next(&mut self) {
+        let Some(picker) = self.session_picker.as_mut() else {
+            return;
+        };
+        if !picker.candidates.is_empty() {
+            picker.selected = (picker.selected + 1).min(picker.candidates.len() - 1);
+        }
+        self.status = "session picker".to_string();
+    }
+
+    pub fn selected_session_picker_id(&self) -> Option<String> {
+        self.session_picker
+            .as_ref()
+            .and_then(|picker| picker.candidates.get(picker.selected))
+            .and_then(session_id_from_payload)
+    }
+
     pub fn open_file_picker(&mut self, query: &str, candidates: Vec<ComposerFileCandidate>) {
+        self.session_picker = None;
         self.file_picker = Some(FilePickerState {
             query: query.trim().to_string(),
             selected: 0,
@@ -1607,13 +1824,19 @@ impl TuiState {
                 json!({"applied": true, "action": action})
             }
             "sessions.open" => {
-                self.status = "session picker".to_string();
+                let query = control_string_field(&params, &["query", "text", "value"]);
+                let command = if query.is_empty() {
+                    "/sessions".to_string()
+                } else {
+                    format!("/sessions {query}")
+                };
                 self.timeline.push(TimelineLine::new(
                     "status",
-                    "session picker opened. Use Up/Down or j/k, Enter to resume, Esc to close.",
+                    format!("queued session picker: {command}"),
                     true,
                 ));
-                json!({"applied": true, "action": action})
+                self.status = "session picker queued".to_string();
+                json!({"applied": true, "action": action, "command": command})
             }
             "session.select" => {
                 let session_id = params
@@ -3454,6 +3677,10 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
             .collect())
     }
 
+    fn search_sessions(&mut self, query: &str) -> Result<Vec<Value>, String> {
+        self.client.search_sessions(query)
+    }
+
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String> {
         let session_id = self.ensure_session()?;
         let mut lines = Vec::new();
@@ -3875,6 +4102,33 @@ fn session_list_lines(sessions: &[Value]) -> Vec<TimelineLine> {
         )
     }));
     lines
+}
+
+fn session_picker_label(session: &Value) -> String {
+    let id = session_id_from_payload(session).unwrap_or_else(|| "<unknown>".to_string());
+    let title = session
+        .get("title")
+        .or_else(|| {
+            session
+                .get("metadata")
+                .and_then(|metadata| metadata.get("title"))
+        })
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("untitled");
+    let status = session
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let messages = session
+        .get("message_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let workspace = session
+        .get("workspace")
+        .and_then(Value::as_str)
+        .unwrap_or(".");
+    format!("{id}  {title}  status={status}  messages={messages}  workspace={workspace}")
 }
 
 fn transcript_lines(payload: &Value) -> Vec<TimelineLine> {
@@ -5095,6 +5349,62 @@ mod tests {
     }
 
     #[test]
+    fn remote_control_open_sessions_dispatches_picker_search() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            searches: Vec<String>,
+            responses: Vec<Value>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, _command: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn search_sessions(&mut self, query: &str) -> Result<Vec<Value>, String> {
+                self.searches.push(query.to_string());
+                Ok(vec![json!({
+                    "session_id": "session_alpha",
+                    "title": "Alpha",
+                    "status": "idle",
+                    "message_count": 2,
+                    "workspace": "/tmp/work"
+                })])
+            }
+
+            fn record_control_response(&mut self, payload: &Value) -> Result<(), String> {
+                self.responses.push(payload.clone());
+                Ok(())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        handle_remote_control_request(
+            &mut state,
+            &mut handler,
+            &json!({"path": "/tui/open-sessions", "body": {"query": "alp"}}),
+        );
+
+        assert_eq!(handler.searches, vec!["alp".to_string()]);
+        assert_eq!(
+            state
+                .session_picker
+                .as_ref()
+                .expect("session picker")
+                .candidates
+                .len(),
+            1
+        );
+        assert_eq!(handler.responses.len(), 1);
+        assert_eq!(handler.responses[0]["ok"], json!(true));
+    }
+
+    #[test]
     fn remote_control_session_actions_dispatch_handler_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -5613,6 +5923,96 @@ mod tests {
     }
 
     #[test]
+    fn key_event_flow_opens_session_picker_filters_and_resumes() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            searches: Vec<String>,
+            commands: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                Ok(vec![TimelineLine::new(
+                    "status",
+                    format!("handled {command}"),
+                    true,
+                )])
+            }
+
+            fn search_sessions(&mut self, query: &str) -> Result<Vec<Value>, String> {
+                self.searches.push(query.to_string());
+                let sessions = match query {
+                    "al" => vec![
+                        json!({
+                            "session_id": "session_alpha",
+                            "title": "Alpha",
+                            "status": "idle",
+                            "message_count": 2,
+                            "workspace": "/tmp/alpha"
+                        }),
+                        json!({
+                            "session_id": "session_alpine",
+                            "title": "Alpine",
+                            "status": "idle",
+                            "message_count": 3,
+                            "workspace": "/tmp/alpine"
+                        }),
+                    ],
+                    "alp" => vec![json!({
+                        "session_id": "session_alpha",
+                        "title": "Alpha",
+                        "status": "idle",
+                        "message_count": 2,
+                        "workspace": "/tmp/alpha"
+                    })],
+                    _ => Vec::new(),
+                };
+                Ok(sessions)
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        send_key_text("/sessions al", &mut state, &mut handler).expect("type sessions command");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("open session picker");
+
+        assert_eq!(handler.searches, vec!["al".to_string()]);
+        assert_eq!(
+            state
+                .session_picker
+                .as_ref()
+                .expect("session picker")
+                .candidates
+                .len(),
+            2
+        );
+
+        press_key(KeyCode::Char('p'), &mut state, &mut handler).expect("filter picker");
+        assert_eq!(handler.searches, vec!["al".to_string(), "alp".to_string()]);
+        assert_eq!(
+            state.session_picker.as_ref().expect("session picker").query,
+            "alp"
+        );
+
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("resume selected session");
+
+        assert!(state.session_picker.is_none());
+        assert_eq!(state.session_id.as_deref(), Some("session_alpha"));
+        assert_eq!(handler.commands, vec!["/resume session_alpha".to_string()]);
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("handled /resume session_alpha"))
+        );
+    }
+
+    #[test]
     fn key_event_flow_at_opens_file_picker_without_touching_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -5822,6 +6222,57 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_session_picker_searches_and_resumes() -> Result<(), Box<dyn Error>> {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-session-picker")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let mut state = TuiState::new();
+
+        send_key_text("/sessions smoke", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert_eq!(
+            state
+                .session_picker
+                .as_ref()
+                .expect("session picker")
+                .candidates
+                .len(),
+            1
+        );
+        assert!(
+            state
+                .session_picker
+                .as_ref()
+                .expect("session picker")
+                .candidates[0]["session_id"]
+                == json!("session_smoke")
+        );
+
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert!(state.session_picker.is_none());
+        assert_eq!(state.session_id.as_deref(), Some("session_smoke"));
+        assert_eq!(handler.current_session(), Some("session_smoke"));
+        let recorded = bridge.requests();
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "GET /api/sessions?query=smoke")
+        );
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn app_bridge_terminal_interaction_keyflow_posts_real_responses() -> Result<(), Box<dyn Error>>
     {
         let bridge = FakeAppBridge::start()?;
@@ -5980,6 +6431,42 @@ mod tests {
         assert!(rendered.contains("Query"));
         assert!(rendered.contains("@src/main.rs"));
         assert!(rendered.contains("@images/map.png"));
+    }
+
+    #[test]
+    fn terminal_render_snapshot_contains_session_picker_overlay() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.open_session_picker(
+            "alp",
+            vec![
+                json!({
+                    "session_id": "session_alpha",
+                    "title": "Alpha",
+                    "status": "idle",
+                    "message_count": 2,
+                    "workspace": "/tmp/alpha"
+                }),
+                json!({
+                    "session_id": "session_alpine",
+                    "title": "Alpine",
+                    "status": "running",
+                    "message_count": 4,
+                    "workspace": "/tmp/alpine"
+                }),
+            ],
+        );
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw frame");
+        let rendered = format!("{:?}", terminal.backend().buffer());
+
+        assert!(rendered.contains("Sessions"));
+        assert!(rendered.contains("Query"));
+        assert!(rendered.contains("session_alpha"));
+        assert!(rendered.contains("Alpine"));
     }
 
     #[test]
@@ -6249,6 +6736,9 @@ mod tests {
         match (method.as_str(), path.as_str()) {
             ("GET", "/api/health") => write_json(&mut stream, json!({"ok": true})),
             ("GET", "/api/sessions") => write_json(&mut stream, json!({"sessions": []})),
+            ("GET", "/api/sessions?query=smoke") => {
+                write_json(&mut stream, fake_session_search_payload())
+            }
             ("GET", "/api/sessions/session_smoke/messages?limit=2") => {
                 write_json(&mut stream, fake_transcript_payload())
             }
@@ -6392,6 +6882,18 @@ mod tests {
                 }
             }),
         ]
+    }
+
+    fn fake_session_search_payload() -> Value {
+        json!({
+            "sessions": [{
+                "session_id": "session_smoke",
+                "title": "Smoke Session",
+                "status": "idle",
+                "message_count": 3,
+                "workspace": "/tmp/openagent-smoke"
+            }]
+        })
     }
 
     fn fake_transcript_payload() -> Value {
