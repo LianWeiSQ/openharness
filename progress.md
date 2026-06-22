@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-22 TUI Agent Picker Slice
+
+- Upgraded `/agents` from a passive list command into an OpenCode-style keyboard agent/profile picker.
+- Added a TUI agent picker dock with query filtering, Up/Down/Tab selection, Enter-to-select, and Esc-to-close.
+- Wired the picker through `TerminalEventHandler::list_agents`; `AppBridgeTerminalHandler` now backs it with `RemoteRuntimeClient::agents`, so opening the picker calls real `GET /api/agents`.
+- Selection reuses the existing `/agent <id>` path and writes the current session profile through `PATCH /api/sessions/{session_id}`.
+- Updated `/tui/open-agents` remote control to open the same picker path, with direct agent payload support and handler-backed fetch support.
+- Added keyflow, remote control, terminal render snapshot, and App Bridge handler smoke coverage.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui key_event_flow_opens_agent_picker_filters_and_selects
+cargo test -q -p openagent-tui remote_control_open_agents_dispatches_picker_fetch
+cargo test -q -p openagent-tui terminal_render_snapshot_contains_agent_picker_overlay
+cargo test -q -p openagent-tui app_bridge_terminal_agent_picker_fetches_and_sets_agent
+cargo test -q -p openagent-tui
+cargo check -q -p openagent-tui -p openagent-app-server-client
+```
+
+Residual risk:
+
+- This completes the agent/profile picker path only; variant and thinking pickers still have command/control coverage but are not yet full keyboard docks.
+- The App Bridge smoke uses a deterministic in-test bridge server, not a full provider-backed runtime.
+
 ## 2026-06-22 TUI Model Picker Slice
 
 - Upgraded `/models` from a passive list command into an OpenCode-style keyboard model picker.

@@ -158,6 +158,10 @@ pub trait TerminalEventHandler {
         Ok(json!({"models": []}))
     }
 
+    fn list_agents(&mut self) -> Result<Value, String> {
+        Ok(json!({"agents": []}))
+    }
+
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String>;
 
     fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String>;
@@ -251,8 +255,14 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let has_file_picker = state.file_picker.is_some();
     let has_session_picker = state.session_picker.is_some();
     let has_model_picker = state.model_picker.is_some();
+    let has_agent_picker = state.agent_picker.is_some();
     let mut constraints = vec![Constraint::Length(3), Constraint::Min(5)];
-    if has_interaction || has_file_picker || has_session_picker || has_model_picker {
+    if has_interaction
+        || has_file_picker
+        || has_session_picker
+        || has_model_picker
+        || has_agent_picker
+    {
         constraints.push(Constraint::Length(9));
     }
     constraints.push(Constraint::Length(3));
@@ -289,6 +299,9 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
     let prompt_index = if has_interaction {
         draw_interaction_dock(frame, chunks[2], state);
         3
+    } else if has_agent_picker {
+        draw_agent_picker_dock(frame, chunks[2], state);
+        3
     } else if has_model_picker {
         draw_model_picker_dock(frame, chunks[2], state);
         3
@@ -305,6 +318,56 @@ fn draw_terminal_frame(frame: &mut ratatui::Frame<'_>, title: &str, state: &TuiS
         .block(Block::default().borders(Borders::ALL).title("Prompt"))
         .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[prompt_index]);
+}
+
+fn draw_agent_picker_dock(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    state: &TuiState,
+) {
+    let lines = agent_picker_dock_lines(state);
+    let dock = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Agents")
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(dock, area);
+}
+
+fn agent_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
+    let Some(picker) = state.agent_picker.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Query ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw(if picker.query.is_empty() {
+            "(all)".to_string()
+        } else {
+            picker.query.clone()
+        }),
+        Span::styled(
+            "  Type to filter, Enter select, Esc close",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    if picker.candidates.is_empty() {
+        lines.push(Line::from("No matching agents"));
+        return lines;
+    }
+    for (index, agent) in picker.candidates.iter().enumerate().take(6) {
+        let marker = if picker.selected == index { ">" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{marker} {}. ", index + 1),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(agent_picker_label(agent)),
+        ]));
+    }
+    lines
 }
 
 fn draw_model_picker_dock(
@@ -611,6 +674,10 @@ fn handle_key_event<H: TerminalEventHandler>(
         dispatch_new_interaction_responses(state, handler, approval_start, question_start)?;
         return Ok(false);
     }
+    if state.agent_picker.is_some() {
+        handle_agent_picker_key(key, state, handler)?;
+        return Ok(false);
+    }
     if state.model_picker.is_some() {
         handle_model_picker_key(key, state, handler)?;
         return Ok(false);
@@ -677,6 +744,10 @@ fn handle_key_event<H: TerminalEventHandler>(
                 if handle_local_state_command(&submitted, state, handler)? {
                     return Ok(false);
                 }
+                if agent_picker_command_query(&submitted).is_some() {
+                    open_agent_picker_from_handler(state, handler, "")?;
+                    return Ok(false);
+                }
                 if model_picker_command_query(&submitted).is_some() {
                     open_model_picker_from_handler(state, handler, "")?;
                     return Ok(false);
@@ -719,6 +790,41 @@ fn handle_key_event<H: TerminalEventHandler>(
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_agent_picker_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc => {
+            state.close_agent_picker();
+        }
+        KeyCode::Enter => {
+            select_agent_picker_from_handler(state, handler)?;
+        }
+        KeyCode::Up => {
+            state.agent_picker_previous();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            state.agent_picker_next();
+        }
+        KeyCode::Backspace => {
+            if let Some(picker) = state.agent_picker.as_mut() {
+                picker.query.pop();
+            }
+            state.filter_agent_picker();
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(picker) = state.agent_picker.as_mut() {
+                picker.query.push(ch);
+            }
+            state.filter_agent_picker();
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn handle_model_picker_key<H: TerminalEventHandler>(
@@ -846,6 +952,35 @@ fn handle_file_picker_key<H: TerminalEventHandler>(
     Ok(())
 }
 
+fn open_agent_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    query: &str,
+) -> Result<(), String> {
+    let payload = handler.list_agents()?;
+    let agents = payload
+        .get("agents")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    state.open_agent_picker(query, agents);
+    Ok(())
+}
+
+fn select_agent_picker_from_handler<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    let Some(agent_id) = state.selected_agent_picker_id() else {
+        state.status = "agent picker empty".to_string();
+        return Ok(());
+    };
+    state.close_agent_picker();
+    let lines = handler.handle_command(&format!("/agent {agent_id}"))?;
+    apply_handler_output(state, handler, lines);
+    Ok(())
+}
+
 fn open_model_picker_from_handler<H: TerminalEventHandler>(
     state: &mut TuiState,
     handler: &mut H,
@@ -966,6 +1101,10 @@ fn session_picker_command_query(command: &str) -> Option<&str> {
 
 fn model_picker_command_query(command: &str) -> Option<&str> {
     (command == "/models").then_some("")
+}
+
+fn agent_picker_command_query(command: &str) -> Option<&str> {
+    (command == "/agents").then_some("")
 }
 
 fn handle_local_state_command<H: TerminalEventHandler>(
@@ -1136,7 +1275,11 @@ fn handle_remote_control_request<H: TerminalEventHandler>(
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
     {
-        if model_picker_command_query(command).is_some() {
+        if agent_picker_command_query(command).is_some() {
+            if let Err(error) = open_agent_picker_from_handler(state, handler, "") {
+                state.timeline.push(TimelineLine::new("error", error, true));
+            }
+        } else if model_picker_command_query(command).is_some() {
             if let Err(error) = open_model_picker_from_handler(state, handler, "") {
                 state.timeline.push(TimelineLine::new("error", error, true));
             }
@@ -1375,6 +1518,7 @@ pub struct TuiState {
     pub file_picker: Option<FilePickerState>,
     pub session_picker: Option<SessionPickerState>,
     pub model_picker: Option<ModelPickerState>,
+    pub agent_picker: Option<AgentPickerState>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1396,6 +1540,14 @@ pub struct ModelPickerState {
     pub query: String,
     pub selected: usize,
     pub models: Vec<Value>,
+    pub candidates: Vec<Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AgentPickerState {
+    pub query: String,
+    pub selected: usize,
+    pub agents: Vec<Value>,
     pub candidates: Vec<Value>,
 }
 
@@ -1431,6 +1583,7 @@ impl TuiState {
             file_picker: None,
             session_picker: None,
             model_picker: None,
+            agent_picker: None,
         }
     }
 
@@ -1770,9 +1923,68 @@ impl TuiState {
         self.status = "attachment inserted".to_string();
     }
 
+    pub fn open_agent_picker(&mut self, query: &str, agents: Vec<Value>) {
+        self.file_picker = None;
+        self.session_picker = None;
+        self.model_picker = None;
+        let query = query.trim().to_string();
+        let candidates = filter_agents_for_picker(&agents, &query);
+        self.agent_picker = Some(AgentPickerState {
+            query,
+            selected: 0,
+            agents,
+            candidates,
+        });
+        self.status = "agent picker".to_string();
+    }
+
+    pub fn close_agent_picker(&mut self) {
+        self.agent_picker = None;
+        self.status = "agent picker closed".to_string();
+    }
+
+    pub fn filter_agent_picker(&mut self) {
+        let Some(picker) = self.agent_picker.as_mut() else {
+            return;
+        };
+        picker.candidates = filter_agents_for_picker(&picker.agents, &picker.query);
+        picker.selected = picker
+            .selected
+            .min(picker.candidates.len().saturating_sub(1));
+        self.status = "agent picker".to_string();
+    }
+
+    pub fn agent_picker_previous(&mut self) {
+        let Some(picker) = self.agent_picker.as_mut() else {
+            return;
+        };
+        picker.selected = picker.selected.saturating_sub(1);
+        self.status = "agent picker".to_string();
+    }
+
+    pub fn agent_picker_next(&mut self) {
+        let Some(picker) = self.agent_picker.as_mut() else {
+            return;
+        };
+        if !picker.candidates.is_empty() {
+            picker.selected = (picker.selected + 1).min(picker.candidates.len() - 1);
+        }
+        self.status = "agent picker".to_string();
+    }
+
+    pub fn selected_agent_picker_id(&self) -> Option<String> {
+        self.agent_picker
+            .as_ref()
+            .and_then(|picker| picker.candidates.get(picker.selected))
+            .and_then(|agent| agent.get("id").and_then(Value::as_str))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    }
+
     pub fn open_model_picker(&mut self, query: &str, models: Vec<Value>) {
         self.file_picker = None;
         self.session_picker = None;
+        self.agent_picker = None;
         let query = query.trim().to_string();
         let candidates = filter_models_for_picker(&models, &query);
         self.model_picker = Some(ModelPickerState {
@@ -1829,6 +2041,7 @@ impl TuiState {
 
     pub fn open_session_picker(&mut self, query: &str, candidates: Vec<Value>) {
         self.model_picker = None;
+        self.agent_picker = None;
         self.file_picker = None;
         self.session_picker = Some(SessionPickerState {
             query: query.trim().to_string(),
@@ -1870,6 +2083,7 @@ impl TuiState {
 
     pub fn open_file_picker(&mut self, query: &str, candidates: Vec<ComposerFileCandidate>) {
         self.model_picker = None;
+        self.agent_picker = None;
         self.session_picker = None;
         self.file_picker = Some(FilePickerState {
             query: query.trim().to_string(),
@@ -2967,17 +3181,19 @@ impl TuiState {
     }
 
     fn open_agent_control(&mut self, params: &Value, action_name: &str) -> Value {
-        self.status = "agent picker".to_string();
-        if params.get("agents").and_then(Value::as_array).is_some() {
+        if let Some(agents) = params.get("agents").and_then(Value::as_array).cloned() {
+            self.open_agent_picker("", agents);
             self.timeline.extend(agent_list_lines(params));
+            json!({"applied": true, "action": action_name})
         } else {
             self.timeline.push(TimelineLine::new(
                 "status",
-                "agent picker opened. Use /agents to fetch remote agents or /agent <id> to select.",
+                "queued agent picker: /agents",
                 true,
             ));
+            self.status = "agent picker queued".to_string();
+            json!({"applied": true, "action": action_name, "command": "/agents"})
         }
-        json!({"applied": true, "action": action_name})
     }
 
     fn select_agent_control(&mut self, params: &Value, action_name: &str) -> Value {
@@ -3894,6 +4110,10 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
         self.client.models()
     }
 
+    fn list_agents(&mut self) -> Result<Value, String> {
+        self.client.agents()
+    }
+
     fn handle_submit(&mut self, prompt: &str) -> Result<Vec<TimelineLine>, String> {
         let session_id = self.ensure_session()?;
         let mut lines = Vec::new();
@@ -4315,6 +4535,49 @@ fn session_list_lines(sessions: &[Value]) -> Vec<TimelineLine> {
         )
     }));
     lines
+}
+
+fn filter_agents_for_picker(agents: &[Value], query: &str) -> Vec<Value> {
+    let query = query.trim().to_ascii_lowercase();
+    agents
+        .iter()
+        .filter(|agent| query.is_empty() || agent_matches_query(agent, &query))
+        .cloned()
+        .collect()
+}
+
+fn agent_matches_query(agent: &Value, query: &str) -> bool {
+    ["id", "name", "description"].iter().any(|key| {
+        agent
+            .get(*key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains(query)
+    })
+}
+
+fn agent_picker_label(agent: &Value) -> String {
+    let id = agent.get("id").and_then(Value::as_str).unwrap_or("agent");
+    let name = agent.get("name").and_then(Value::as_str).unwrap_or(id);
+    let description = agent
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let default = if agent
+        .get("default")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        "  default"
+    } else {
+        ""
+    };
+    if description.is_empty() {
+        format!("{id} - {name}{default}")
+    } else {
+        format!("{id} - {name}: {description}{default}")
+    }
 }
 
 fn filter_models_for_picker(models: &[Value], query: &str) -> Vec<Value> {
@@ -5514,6 +5777,61 @@ mod tests {
     }
 
     #[test]
+    fn remote_control_open_agents_dispatches_picker_fetch() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            agent_fetches: usize,
+            responses: Vec<Value>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, _command: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn list_agents(&mut self) -> Result<Value, String> {
+                self.agent_fetches += 1;
+                Ok(json!({
+                    "agents": [
+                        {"id": "server", "name": "Server", "description": "Default server agent"},
+                        {"id": "reviewer", "name": "Reviewer", "description": "Review code"}
+                    ]
+                }))
+            }
+
+            fn record_control_response(&mut self, payload: &Value) -> Result<(), String> {
+                self.responses.push(payload.clone());
+                Ok(())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        handle_remote_control_request(
+            &mut state,
+            &mut handler,
+            &json!({"path": "/tui/open-agents", "body": {}}),
+        );
+
+        assert_eq!(handler.agent_fetches, 1);
+        assert_eq!(
+            state
+                .agent_picker
+                .as_ref()
+                .expect("agent picker")
+                .candidates
+                .len(),
+            2
+        );
+        assert_eq!(handler.responses.len(), 1);
+        assert_eq!(handler.responses[0]["ok"], json!(true));
+    }
+
+    #[test]
     fn remote_control_agent_variant_and_thinking_dispatch_handler_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -6400,6 +6718,77 @@ mod tests {
     }
 
     #[test]
+    fn key_event_flow_opens_agent_picker_filters_and_selects() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            agent_fetches: usize,
+            commands: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                Ok(vec![TimelineLine::new(
+                    "status",
+                    format!("handled {command}"),
+                    true,
+                )])
+            }
+
+            fn list_agents(&mut self) -> Result<Value, String> {
+                self.agent_fetches += 1;
+                Ok(json!({
+                    "agents": [
+                        {"id": "server", "name": "Server", "description": "Default server agent"},
+                        {"id": "reviewer", "name": "Reviewer", "description": "Review code"}
+                    ]
+                }))
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        send_key_text("/agents", &mut state, &mut handler).expect("type agents command");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("open agent picker");
+
+        assert_eq!(handler.agent_fetches, 1);
+        assert_eq!(
+            state
+                .agent_picker
+                .as_ref()
+                .expect("agent picker")
+                .candidates
+                .len(),
+            2
+        );
+
+        send_key_text("rev", &mut state, &mut handler).expect("filter picker");
+        assert_eq!(
+            state
+                .agent_picker
+                .as_ref()
+                .expect("agent picker")
+                .candidates[0]["id"],
+            json!("reviewer")
+        );
+
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("select agent");
+
+        assert!(state.agent_picker.is_none());
+        assert_eq!(handler.commands, vec!["/agent reviewer".to_string()]);
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("handled /agent reviewer"))
+        );
+    }
+
+    #[test]
     fn key_event_flow_at_opens_file_picker_without_touching_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -6722,6 +7111,68 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_agent_picker_fetches_and_sets_agent() -> Result<(), Box<dyn Error>> {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-agent-picker")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            session_id: Some("session_smoke".to_string()),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let mut state = TuiState::new();
+
+        send_key_text("/agents", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert_eq!(
+            state
+                .agent_picker
+                .as_ref()
+                .expect("agent picker")
+                .candidates
+                .len(),
+            2
+        );
+
+        send_key_text("rev", &mut state, &mut handler)?;
+        assert_eq!(
+            state
+                .agent_picker
+                .as_ref()
+                .expect("agent picker")
+                .candidates[0]["id"],
+            json!("reviewer")
+        );
+
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        assert!(state.agent_picker.is_none());
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("agent set to reviewer"))
+        );
+        let agent_updates = bridge.agent_update_payloads();
+        assert_eq!(agent_updates.len(), 1);
+        assert_eq!(agent_updates[0]["agent"], json!("reviewer"));
+        let recorded = bridge.requests();
+        assert!(recorded.iter().any(|request| request == "GET /api/agents"));
+        assert!(
+            recorded
+                .iter()
+                .any(|request| request == "PATCH /api/sessions/session_smoke")
+        );
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn app_bridge_terminal_interaction_keyflow_posts_real_responses() -> Result<(), Box<dyn Error>>
     {
         let bridge = FakeAppBridge::start()?;
@@ -6952,6 +7403,39 @@ mod tests {
     }
 
     #[test]
+    fn terminal_render_snapshot_contains_agent_picker_overlay() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.open_agent_picker(
+            "rev",
+            vec![
+                json!({
+                    "id": "server",
+                    "name": "Server",
+                    "description": "Default server agent",
+                    "default": true
+                }),
+                json!({
+                    "id": "reviewer",
+                    "name": "Reviewer",
+                    "description": "Review code"
+                }),
+            ],
+        );
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw frame");
+        let rendered = format!("{:?}", terminal.backend().buffer());
+
+        assert!(rendered.contains("Agents"));
+        assert!(rendered.contains("Query"));
+        assert!(rendered.contains("reviewer"));
+        assert!(rendered.contains("Reviewer"));
+    }
+
+    #[test]
     fn key_event_flow_answers_question_option_from_dock() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -7134,6 +7618,7 @@ mod tests {
         approval_payloads: Vec<Value>,
         question_payloads: Vec<Value>,
         model_update_payloads: Vec<Value>,
+        agent_update_payloads: Vec<Value>,
     }
 
     struct FakeAppBridge {
@@ -7205,6 +7690,14 @@ mod tests {
                 .clone()
         }
 
+        fn agent_update_payloads(&self) -> Vec<Value> {
+            self.state
+                .lock()
+                .expect("bridge state")
+                .agent_update_payloads
+                .clone()
+        }
+
         fn stop(mut self) {
             self.shutdown.store(true, Ordering::Relaxed);
             let _ = TcpStream::connect(self.server_url.trim_start_matches("http://"));
@@ -7227,17 +7720,27 @@ mod tests {
         match (method.as_str(), path.as_str()) {
             ("GET", "/api/health") => write_json(&mut stream, json!({"ok": true})),
             ("GET", "/api/models") => write_json(&mut stream, fake_models_payload()),
+            ("GET", "/api/agents") => write_json(&mut stream, fake_agents_payload()),
             ("GET", "/api/sessions") => write_json(&mut stream, json!({"sessions": []})),
             ("GET", "/api/sessions?query=smoke") => {
                 write_json(&mut stream, fake_session_search_payload())
             }
             ("PATCH", "/api/sessions/session_smoke") => {
                 let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({}));
-                state
-                    .lock()
-                    .expect("bridge state")
-                    .model_update_payloads
-                    .push(payload.clone());
+                if payload.get("agent").is_some() {
+                    state
+                        .lock()
+                        .expect("bridge state")
+                        .agent_update_payloads
+                        .push(payload.clone());
+                }
+                if payload.get("model").is_some() {
+                    state
+                        .lock()
+                        .expect("bridge state")
+                        .model_update_payloads
+                        .push(payload.clone());
+                }
                 write_json(
                     &mut stream,
                     json!({
@@ -7248,7 +7751,11 @@ mod tests {
                             "id": "session_smoke",
                             "status": "idle",
                             "model": payload.get("model").cloned().unwrap_or(Value::Null),
-                            "metadata": {"model": payload.get("model").cloned().unwrap_or(Value::Null)}
+                            "agent": payload.get("agent").cloned().unwrap_or(Value::Null),
+                            "metadata": {
+                                "model": payload.get("model").cloned().unwrap_or(Value::Null),
+                                "agent": payload.get("agent").cloned().unwrap_or(Value::Null)
+                            }
                         }
                     }),
                 )
@@ -7415,6 +7922,24 @@ mod tests {
             ],
             "variants": ["default", "deep"],
             "thinking": ["low", "high"]
+        })
+    }
+
+    fn fake_agents_payload() -> Value {
+        json!({
+            "agents": [
+                {
+                    "id": "server",
+                    "name": "Server",
+                    "description": "Default server-backed coding agent",
+                    "default": true
+                },
+                {
+                    "id": "reviewer",
+                    "name": "Reviewer",
+                    "description": "Review code"
+                }
+            ]
         })
     }
 
