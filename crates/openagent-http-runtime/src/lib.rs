@@ -658,6 +658,17 @@ fn route_dynamic_request(
     if parts.len() == 4
         && parts[0] == "api"
         && parts[1] == "sessions"
+        && parts[3] == "messages"
+        && request.method == "GET"
+    {
+        return match session_messages_payload(config, parts[2], &request.path) {
+            Ok(payload) => json_response(200, payload),
+            Err(error) => json_response(400, json!({"error": error})),
+        };
+    }
+    if parts.len() == 4
+        && parts[0] == "api"
+        && parts[1] == "sessions"
         && parts[3] == "children"
         && request.method == "GET"
     {
@@ -1226,6 +1237,42 @@ fn get_session_payload(config: &HttpRuntimeConfig, session_id: &str) -> Value {
         }),
         Err(error) => json!({"error": error.to_string()}),
     }
+}
+
+fn session_messages_payload(
+    config: &HttpRuntimeConfig,
+    session_id: &str,
+    request_path: &str,
+) -> Result<Value, String> {
+    let store = FileSessionStore::new(session_root(config));
+    let session = store
+        .load_session(session_id)
+        .map_err(|error| error.to_string())?;
+    let total = session.messages.len();
+    let limit = query_param(request_path, "limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(200);
+    let start = total.saturating_sub(limit);
+    let messages = session
+        .messages
+        .iter()
+        .enumerate()
+        .skip(start)
+        .map(|(index, message)| {
+            let mut value = serde_json::to_value(message).unwrap_or_else(|_| json!({}));
+            if let Some(object) = value.as_object_mut() {
+                object.insert("index".to_string(), json!(index));
+            }
+            value
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "session_id": session.id,
+        "message_count": total,
+        "limit": limit,
+        "messages": messages,
+    }))
 }
 
 fn update_session_payload(

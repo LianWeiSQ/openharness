@@ -264,6 +264,48 @@ fn remote_runtime_client_manages_session_lifecycle() -> Result<(), Box<dyn Error
 }
 
 #[test]
+fn remote_runtime_client_reads_session_transcript() -> Result<(), Box<dyn Error>> {
+    let port = free_port()?;
+    let temp = temp_dir("openagent-http-runtime-session-transcript")?;
+    let workspace = temp.join("workspace");
+    let session_root = temp.join("sessions");
+    fs::create_dir_all(&workspace)?;
+    let mut server = spawn_runtime(port, &workspace, &session_root)?;
+    wait_for_server(port)?;
+
+    let client = RemoteRuntimeClient::new(format!("http://127.0.0.1:{port}"))
+        .with_auth(RemoteAuth::bearer("secret"));
+    let session_id = client.create_session(&workspace, None)?;
+    let started = client.start_turn(&session_id, "hello transcript", serde_json::json!({}))?;
+    assert_eq!(started["status"], "completed");
+
+    let transcript = client.session_messages(&session_id, Some(2))?;
+    let messages = transcript["messages"].as_array().expect("messages");
+
+    assert_eq!(transcript["session_id"], session_id);
+    assert_eq!(transcript["message_count"], 2);
+    assert_eq!(transcript["limit"], 2);
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["index"], 0);
+    assert_eq!(messages[0]["role"], "user");
+    assert_eq!(messages[0]["content"], "hello transcript");
+    assert_eq!(messages[1]["index"], 1);
+    assert_eq!(messages[1]["role"], "assistant");
+    assert!(
+        messages[1]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .len()
+            > 0
+    );
+
+    let _ = server.kill();
+    let _ = fs::remove_dir_all(temp);
+    Ok(())
+}
+
+#[test]
 fn remote_runtime_client_tracks_file_diff_undo_and_redo() -> Result<(), Box<dyn Error>> {
     let port = free_port()?;
     let temp = temp_dir("openagent-http-runtime-file-diff")?;

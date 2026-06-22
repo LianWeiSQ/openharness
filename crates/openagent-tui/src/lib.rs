@@ -3547,6 +3547,25 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
                 true,
             )]);
         }
+        if command == "/transcript" || command.starts_with("/transcript ") {
+            let raw_limit = command.strip_prefix("/transcript ").map(str::trim);
+            let limit = match raw_limit {
+                Some("") | None => None,
+                Some(value) => match value.parse::<usize>() {
+                    Ok(limit) => Some(limit),
+                    Err(_) => {
+                        return Ok(vec![TimelineLine::new(
+                            "warning",
+                            "usage: /transcript [limit]",
+                            true,
+                        )]);
+                    }
+                },
+            };
+            let session_id = self.require_current_session()?;
+            let payload = self.client.session_messages(&session_id, limit)?;
+            return Ok(transcript_lines(&payload));
+        }
         if let Some(title) = command.strip_prefix("/rename ").map(str::trim) {
             if title.is_empty() {
                 return Ok(vec![TimelineLine::new(
@@ -3811,7 +3830,7 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
         }
         Ok(vec![TimelineLine::new(
             "status",
-            "commands: /sessions [query], /resume <id>, /rename <title>, /new, /fork, /children, /parent, /archive, /delete, /share, /unshare, /compact, /status, /files [query], /attach <path[:range]>, /models [id], /agents, /agent <id>, /variant <name>, /thinking <level>, /themes [name], /config, /keybinds, /interrupt [turn_id], /allow, /deny, /answer, /dismiss, /exit",
+            "commands: /sessions [query], /resume <id>, /transcript [limit], /rename <title>, /new, /fork, /children, /parent, /archive, /delete, /share, /unshare, /compact, /status, /files [query], /attach <path[:range]>, /models [id], /agents, /agent <id>, /variant <name>, /thinking <level>, /themes [name], /config, /keybinds, /interrupt [turn_id], /allow, /deny, /answer, /dismiss, /exit",
             false,
         )])
     }
@@ -3852,6 +3871,58 @@ fn session_list_lines(sessions: &[Value]) -> Vec<TimelineLine> {
         TimelineLine::new(
             "status",
             format!("{id}  status={status}  messages={messages}  workspace={workspace}"),
+            false,
+        )
+    }));
+    lines
+}
+
+fn transcript_lines(payload: &Value) -> Vec<TimelineLine> {
+    let messages = payload
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let total = payload
+        .get("message_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(messages.len() as u64);
+    let limit = payload
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(messages.len() as u64);
+    let mut lines = vec![TimelineLine::new(
+        "status",
+        format!(
+            "transcript: {} of {total} message(s), limit={limit}",
+            messages.len()
+        ),
+        false,
+    )];
+    if messages.is_empty() {
+        lines.push(TimelineLine::new("status", "transcript: empty", false));
+        return lines;
+    }
+    lines.extend(messages.iter().map(|message| {
+        let index = message
+            .get("index")
+            .and_then(Value::as_u64)
+            .map(|value| format!("#{value} "))
+            .unwrap_or_default();
+        let role = message
+            .get("role")
+            .and_then(Value::as_str)
+            .unwrap_or("message");
+        let content = message
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        TimelineLine::new(
+            "message",
+            format!("{index}{role}: {}", clip_chars(&content, 220)),
             false,
         )
     }));
@@ -5707,6 +5778,50 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_transcript_reads_real_session_messages() -> Result<(), Box<dyn Error>> {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-transcript")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            session_id: Some("session_smoke".to_string()),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+
+        let lines = handler
+            .handle_command("/transcript 2")
+            .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.text.contains("transcript: 2 of 3 message(s)"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.kind == "message" && line.text.contains("#1 assistant"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.kind == "message" && line.text.contains("bridge answer"))
+        );
+        let recorded = bridge.requests();
+        assert!(
+            recorded
+                .iter()
+                .any(|request| { request == "GET /api/sessions/session_smoke/messages?limit=2" })
+        );
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn app_bridge_terminal_interaction_keyflow_posts_real_responses() -> Result<(), Box<dyn Error>>
     {
         let bridge = FakeAppBridge::start()?;
@@ -6134,6 +6249,9 @@ mod tests {
         match (method.as_str(), path.as_str()) {
             ("GET", "/api/health") => write_json(&mut stream, json!({"ok": true})),
             ("GET", "/api/sessions") => write_json(&mut stream, json!({"sessions": []})),
+            ("GET", "/api/sessions/session_smoke/messages?limit=2") => {
+                write_json(&mut stream, fake_transcript_payload())
+            }
             ("POST", "/api/sessions") => write_json(
                 &mut stream,
                 json!({
@@ -6274,6 +6392,32 @@ mod tests {
                 }
             }),
         ]
+    }
+
+    fn fake_transcript_payload() -> Value {
+        json!({
+            "session_id": "session_smoke",
+            "message_count": 3,
+            "limit": 2,
+            "messages": [
+                {
+                    "index": 1,
+                    "role": "assistant",
+                    "content": "bridge answer",
+                    "name": null,
+                    "tool_call_id": null,
+                    "metadata": {}
+                },
+                {
+                    "index": 2,
+                    "role": "user",
+                    "content": "next question",
+                    "name": null,
+                    "tool_call_id": null,
+                    "metadata": {}
+                }
+            ]
+        })
     }
 
     fn fake_approval_response_events() -> Vec<Value> {

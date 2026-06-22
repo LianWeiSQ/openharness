@@ -258,6 +258,18 @@ impl RemoteRuntimeClient {
         self.json("GET", &format!("/api/sessions/{session_id}"), None)
     }
 
+    pub fn session_messages(
+        &self,
+        session_id: &str,
+        limit: Option<usize>,
+    ) -> Result<Value, String> {
+        let path = limit.map_or_else(
+            || format!("/api/sessions/{session_id}/messages"),
+            |limit| format!("/api/sessions/{session_id}/messages?limit={limit}"),
+        );
+        self.json("GET", &path, None)
+    }
+
     pub fn search_sessions(&self, query: &str) -> Result<Vec<Value>, String> {
         let path = if query.trim().is_empty() {
             "/api/sessions".to_string()

@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-22 TUI Session Transcript Slice
+
+- Added a real App Bridge transcript path for session management parity:
+  - `GET /api/sessions/{session_id}/messages?limit=N` in `openagent-http-runtime`
+  - `RemoteRuntimeClient::session_messages`
+  - TUI `/transcript [limit]` command backed by the remote session store
+- The endpoint returns structured persisted messages with role, content, metadata, index, total message count, and a bounded limit.
+- The TUI renders a compact chronological transcript summary so a resumed session can be inspected without leaving the terminal.
+- Added a runtime client round trip against the real `openagent-http-runtime` binary and a TUI App Bridge handler smoke proving `/transcript 2` sends the expected HTTP request and renders remote messages.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-http-runtime --test http_runtime remote_runtime_client_reads_session_transcript
+cargo test -q -p openagent-tui app_bridge_terminal_transcript_reads_real_session_messages
+cargo test -q -p openagent-app-server-client
+cargo check -q -p openagent-http-runtime -p openagent-tui
+```
+
+Residual risk:
+
+- Transcript is read-only and compact text rendering only; full interactive session picker/detail navigation remains a later session-management slice.
+- The TUI transcript command verifies handler/client/HTTP integration, not full raw-mode terminal drawing.
+
 ## 2026-06-22 App Bridge Interaction Keyflow Smoke Slice
 
 - Added a real-handler TUI smoke for permission/question interaction flows.
