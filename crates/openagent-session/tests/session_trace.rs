@@ -5,19 +5,20 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use openagent_protocol::{message_parts_to_chat_messages, MessagePartKind, MessageStatus};
 use openagent_protocol::{ChatMessage, Role, Usage};
+use openagent_protocol::{MessagePartKind, MessageStatus, message_parts_to_chat_messages};
 use openagent_session::{
-    check_trace_run, format_runtime_warning_event, input_preview, load_trace_events,
-    load_trace_summary, output_stats, render_trace_summary, sanitize_observation_value,
-    sanitize_trace_value, step_usage_warnings, AgentTraceRecorder, FileSessionStore,
-    ObservationConfig, ObservationEvent, ObservationEventOptions, ObservationRecorder,
-    ObservationTraceRecord, RunRecord, RuntimeLogRecord, RuntimeLogger, RuntimeLoggingConfig,
-    RuntimeWarningConfig, RuntimeWarningRecord, Session, SessionEventOptions, SessionPartOptions,
-    SessionStatus, StartRunOptions, TodoItem, TraceConfig, TraceEvent, TraceEventOptions,
+    AgentTraceRecorder, FileSessionStore, ObservationConfig, ObservationEvent,
+    ObservationEventOptions, ObservationRecorder, ObservationTraceRecord, RunRecord,
+    RuntimeLogRecord, RuntimeLogger, RuntimeLoggingConfig, RuntimeWarningConfig,
+    RuntimeWarningRecord, Session, SessionEventOptions, SessionPartOptions, SessionStatus,
+    StartRunOptions, TodoItem, TraceConfig, TraceEvent, TraceEventOptions, check_trace_run,
+    format_runtime_warning_event, input_preview, load_trace_events, load_trace_summary,
+    output_stats, render_trace_summary, sanitize_observation_value, sanitize_trace_value,
+    step_usage_warnings,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn session_trace_observability_fixture_matches_python_oracle() {
@@ -466,16 +467,18 @@ fn observability_logging_and_warnings_write_sanitized_records() {
             Some("run_fixture".to_string()),
             Some("trace_fixture".to_string()),
         );
-        assert!(logger
-            .log(
-                "INFO",
-                "ignored",
-                "runtime",
-                BTreeMap::new(),
-                Some(1_781_840_000_500),
-            )
-            .expect("info log filters")
-            .is_none());
+        assert!(
+            logger
+                .log(
+                    "INFO",
+                    "ignored",
+                    "runtime",
+                    BTreeMap::new(),
+                    Some(1_781_840_000_500),
+                )
+                .expect("info log filters")
+                .is_none()
+        );
         logger
             .log(
                 "WARNING",
@@ -508,9 +511,11 @@ fn observability_logging_and_warnings_write_sanitized_records() {
     assert_eq!(warnings.len(), 1);
     let event = warnings[0].to_event();
     assert_eq!(event["display"]["title"], "Step token budget exceeded");
-    assert!(format_runtime_warning_event(&event)
-        .expect("warning formats")
-        .contains("total_tokens=12"));
+    assert!(
+        format_runtime_warning_event(&event)
+            .expect("warning formats")
+            .contains("total_tokens=12")
+    );
 
     fs::remove_dir_all(root).expect("temporary observability root is removed");
 }

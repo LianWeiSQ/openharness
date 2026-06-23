@@ -281,9 +281,7 @@ fn remote_runtime_client_reads_session_transcript() -> Result<(), Box<dyn Error>
 
     let transcript = client.session_messages(&session_id, Some(2))?;
     let messages = transcript["messages"].as_array().expect("messages");
-    let messages_v2 = transcript["messages_v2"]
-        .as_array()
-        .expect("messages_v2");
+    let messages_v2 = transcript["messages_v2"].as_array().expect("messages_v2");
 
     assert_eq!(transcript["session_id"], session_id);
     assert_eq!(transcript["message_count"], 2);

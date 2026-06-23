@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
 use openagent_protocol::{
-    materialize_model_messages, message_parts_to_chat_messages, MessageInfo, MessagePart,
-    MessagePartKind, MessageStatus, MessageWithParts, Role,
+    MessageInfo, MessagePart, MessagePartKind, MessageStatus, MessageWithParts, Role,
+    materialize_model_messages, message_parts_to_chat_messages,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn materializes_tool_parts_without_legacy_metadata() {
