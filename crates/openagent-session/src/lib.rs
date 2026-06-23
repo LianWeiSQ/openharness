@@ -8,7 +8,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use openagent_protocol::{ChatMessage, Role, Usage};
+use openagent_protocol::{
+    ChatMessage, MessageInfo, MessagePart, MessagePartKind, MessageStatus, MessageWithParts, Role,
+    Usage, message_parts_to_chat_messages,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -163,6 +166,19 @@ pub struct StoredMessage {
     pub name: Option<String>,
     pub tool_call_id: Option<String>,
     pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StoredMessageV2 {
+    pub schema_version: String,
+    pub index: u64,
+    pub info: MessageInfo,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct StoredMessagePartV2 {
+    pub schema_version: String,
+    pub part: MessagePart,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -335,7 +351,8 @@ impl FileSessionStore {
         run_id: &str,
         index: u64,
     ) -> SessionResult<()> {
-        let message_id = message_id(message);
+        let message_id = message_id(message, index);
+        let timestamp_ms = now_ms();
         append_jsonl(
             &self.transcript_path(&session.id),
             &json!({
@@ -349,9 +366,10 @@ impl FileSessionStore {
                 "name": message.name,
                 "tool_call_id": message.tool_call_id,
                 "metadata": message.metadata,
-                "timestamp_ms": now_ms(),
+                "timestamp_ms": timestamp_ms,
             }),
         )?;
+        self.append_message_v2(session, message, run_id, index, &message_id, timestamp_ms)?;
         self.record_event(
             &session.id,
             run_id,
@@ -361,7 +379,7 @@ impl FileSessionStore {
                 attributes: BTreeMap::from([
                     ("message_id".to_string(), json!(message_id)),
                     ("index".to_string(), json!(index)),
-                    ("role".to_string(), json!(message.role)),
+                    ("role".to_string(), json!(message.role.clone())),
                     (
                         "content_chars".to_string(),
                         json!(message.content.chars().count()),
@@ -412,26 +430,390 @@ impl FileSessionStore {
         options: SessionPartOptions,
     ) -> SessionResult<SessionPartRecord> {
         let parts_path = self.parts_path(session_id, run_id);
+        let message_id = options.message_id;
+        let content = options.content;
+        let attributes = options.attributes;
+        let status = options.status;
+        let step_index = options.step_index;
+        let timestamp_ms = options.timestamp_ms.unwrap_or_else(now_ms);
         let payload = SessionPartRecord {
             schema_version: "openagent.session_part.v1".to_string(),
             part_id: options.part_id.unwrap_or_else(|| new_id("part")),
             seq: next_seq(&parts_path)?,
             part_type: part_type.to_string(),
-            timestamp_ms: options.timestamp_ms.unwrap_or_else(now_ms),
+            timestamp_ms,
             session_id: session_id.to_string(),
             run_id: run_id.to_string(),
-            step_index: options.step_index,
-            status: if options.status == "error" {
-                "error"
-            } else {
-                "ok"
-            }
-            .to_string(),
-            attributes: options.attributes,
+            step_index,
+            status: normalize_part_status(&status),
+            attributes,
         };
         append_jsonl(&parts_path, &payload)?;
+        if let Some(message_id) = message_id.as_deref() {
+            let part = MessagePart {
+                id: payload.part_id.clone(),
+                message_id: message_id.to_string(),
+                session_id: session_id.to_string(),
+                seq: self.next_message_part_seq(session_id, message_id)?,
+                kind: MessagePartKind::from_type(part_type),
+                status: message_status_from_str(&payload.status),
+                content: content.unwrap_or_else(|| {
+                    Value::Object(payload.attributes.clone().into_iter().collect())
+                }),
+                attributes: payload.attributes.clone(),
+                timestamp_ms: payload.timestamp_ms,
+                run_id: Some(run_id.to_string()),
+                step_index: payload.step_index,
+            };
+            self.append_message_part_v2(session_id, part)?;
+        }
         self.write_run_summary(session_id, run_id)?;
         Ok(payload)
+    }
+
+    pub fn list_messages_with_parts(
+        &self,
+        session_id: &str,
+        limit: Option<usize>,
+        before: Option<&str>,
+    ) -> SessionResult<Vec<MessageWithParts>> {
+        let mut messages = self.load_v2_messages_from_transcript(session_id)?;
+        if messages.is_empty() {
+            messages = self.project_legacy_messages_from_transcript(session_id)?;
+        }
+        if let Some(before) = before.filter(|value| !value.is_empty())
+            && let Some(index) = messages
+                .iter()
+                .position(|message| message.info.id == before)
+        {
+            messages.truncate(index);
+        }
+        if let Some(limit) = limit.filter(|value| *value > 0)
+            && messages.len() > limit
+        {
+            messages = messages[messages.len() - limit..].to_vec();
+        }
+        Ok(messages)
+    }
+
+    pub fn get_message_with_parts(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> SessionResult<Option<MessageWithParts>> {
+        Ok(self
+            .list_messages_with_parts(session_id, None, None)?
+            .into_iter()
+            .find(|message| message.info.id == message_id))
+    }
+
+    pub fn materialized_chat_messages(&self, session: &Session) -> SessionResult<Vec<ChatMessage>> {
+        let messages = self.list_messages_with_parts(&session.id, None, None)?;
+        if messages.is_empty() {
+            return Ok(session.messages.clone());
+        }
+        Ok(message_parts_to_chat_messages(&messages))
+    }
+
+    fn append_message_v2(
+        &self,
+        session: &Session,
+        message: &ChatMessage,
+        run_id: &str,
+        index: u64,
+        message_id: &str,
+        timestamp_ms: u64,
+    ) -> SessionResult<()> {
+        if message.role == Role::Tool {
+            return self.append_tool_result_message_v2(
+                session,
+                message,
+                run_id,
+                index,
+                message_id,
+                timestamp_ms,
+            );
+        }
+        let mut metadata = message.metadata.clone();
+        if let Some(name) = &message.name {
+            metadata.insert("name".to_string(), json!(name));
+        }
+        if let Some(tool_call_id) = &message.tool_call_id {
+            metadata.insert("tool_call_id".to_string(), json!(tool_call_id));
+        }
+        let info = MessageInfo {
+            id: message_id.to_string(),
+            session_id: session.id.clone(),
+            role: message.role.clone(),
+            created_at_ms: timestamp_ms,
+            run_id: Some(run_id.to_string()),
+            step_index: step_index_from_metadata(&metadata),
+            status: MessageStatus::Completed,
+            metadata,
+        };
+        append_jsonl(
+            &self.transcript_path(&session.id),
+            &StoredMessageV2 {
+                schema_version: "openagent.message.v2".to_string(),
+                index,
+                info: info.clone(),
+            },
+        )?;
+        for part in message_parts_from_chat_message(
+            &session.id,
+            run_id,
+            message_id,
+            timestamp_ms,
+            message,
+            index,
+        ) {
+            self.append_message_part_v2(&session.id, part)?;
+        }
+        Ok(())
+    }
+
+    fn append_tool_result_message_v2(
+        &self,
+        session: &Session,
+        message: &ChatMessage,
+        run_id: &str,
+        index: u64,
+        message_id: &str,
+        timestamp_ms: u64,
+    ) -> SessionResult<()> {
+        let target_message_id = message
+            .metadata
+            .get("assistant_message_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .or_else(|| {
+                self.find_assistant_message_for_tool_result(
+                    &session.id,
+                    message.tool_call_id.as_deref(),
+                )
+                .ok()
+                .flatten()
+            });
+        let Some(target_message_id) = target_message_id else {
+            let info = MessageInfo {
+                id: message_id.to_string(),
+                session_id: session.id.clone(),
+                role: Role::Tool,
+                created_at_ms: timestamp_ms,
+                run_id: Some(run_id.to_string()),
+                step_index: step_index_from_metadata(&message.metadata),
+                status: if message_tool_error(message).is_some() {
+                    MessageStatus::Error
+                } else {
+                    MessageStatus::Completed
+                },
+                metadata: message.metadata.clone(),
+            };
+            append_jsonl(
+                &self.transcript_path(&session.id),
+                &StoredMessageV2 {
+                    schema_version: "openagent.message.v2".to_string(),
+                    index,
+                    info,
+                },
+            )?;
+            let part = tool_result_part_from_message(
+                &session.id,
+                run_id,
+                message_id,
+                1,
+                timestamp_ms,
+                message,
+                index,
+            );
+            return self.append_message_part_v2(&session.id, part);
+        };
+        let part = tool_result_part_from_message(
+            &session.id,
+            run_id,
+            &target_message_id,
+            self.next_message_part_seq(&session.id, &target_message_id)?,
+            timestamp_ms,
+            message,
+            index,
+        );
+        self.append_message_part_v2(&session.id, part)
+    }
+
+    fn append_message_part_v2(&self, session_id: &str, part: MessagePart) -> SessionResult<()> {
+        append_jsonl(
+            &self.transcript_path(session_id),
+            &StoredMessagePartV2 {
+                schema_version: "openagent.message_part.v2".to_string(),
+                part,
+            },
+        )
+    }
+
+    fn load_v2_messages_from_transcript(
+        &self,
+        session_id: &str,
+    ) -> SessionResult<Vec<MessageWithParts>> {
+        let mut messages = Vec::<MessageWithParts>::new();
+        let mut index_by_id = BTreeMap::<String, usize>::new();
+        for value in read_jsonl(&self.transcript_path(session_id))? {
+            match value.get("schema_version").and_then(Value::as_str) {
+                Some("openagent.message.v2") => {
+                    let record: StoredMessageV2 = serde_json::from_value(value)?;
+                    index_by_id.insert(record.info.id.clone(), messages.len());
+                    messages.push(MessageWithParts {
+                        info: record.info,
+                        parts: Vec::new(),
+                    });
+                }
+                Some("openagent.message_part.v2") => {
+                    let record: StoredMessagePartV2 = serde_json::from_value(value)?;
+                    if let Some(index) = index_by_id.get(&record.part.message_id).copied() {
+                        messages[index].parts.push(record.part);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for message in &mut messages {
+            message.parts.sort_by_key(|part| part.seq);
+        }
+        Ok(messages)
+    }
+
+    fn project_legacy_messages_from_transcript(
+        &self,
+        session_id: &str,
+    ) -> SessionResult<Vec<MessageWithParts>> {
+        let mut messages = Vec::new();
+        for (position, value) in read_jsonl(&self.transcript_path(session_id))?
+            .into_iter()
+            .enumerate()
+        {
+            if value.get("schema_version").and_then(Value::as_str)
+                == Some("openagent.message_part.v2")
+            {
+                continue;
+            }
+            let index = value
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or(position as u64);
+            let message = serde_json::from_value::<ChatMessage>(value.clone())
+                .ok()
+                .or_else(|| {
+                    serde_json::from_value::<StoredMessage>(value.clone())
+                        .ok()
+                        .map(chat_message_from_stored)
+                });
+            let Some(message) = message else {
+                continue;
+            };
+            let message_id = value
+                .get("message_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| stable_message_id(index));
+            let run_id = value
+                .get("run_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let timestamp_ms = value
+                .get("timestamp_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            let mut metadata = message.metadata.clone();
+            metadata
+                .entry("message_id".to_string())
+                .or_insert_with(|| json!(message_id.clone()));
+            let info = MessageInfo {
+                id: message_id.clone(),
+                session_id: session_id.to_string(),
+                role: message.role.clone(),
+                created_at_ms: timestamp_ms,
+                run_id: run_id.clone(),
+                step_index: step_index_from_metadata(&metadata),
+                status: if message.role == Role::Tool && message_tool_error(&message).is_some() {
+                    MessageStatus::Error
+                } else {
+                    MessageStatus::Completed
+                },
+                metadata,
+            };
+            let run_id_ref = run_id.as_deref().unwrap_or_default();
+            let parts = if message.role == Role::Tool {
+                vec![tool_result_part_from_message(
+                    session_id,
+                    run_id_ref,
+                    &message_id,
+                    1,
+                    timestamp_ms,
+                    &message,
+                    index,
+                )]
+            } else {
+                message_parts_from_chat_message(
+                    session_id,
+                    run_id_ref,
+                    &message_id,
+                    timestamp_ms,
+                    &message,
+                    index,
+                )
+            };
+            messages.push(MessageWithParts { info, parts });
+        }
+        Ok(messages)
+    }
+
+    fn find_assistant_message_for_tool_result(
+        &self,
+        session_id: &str,
+        tool_call_id: Option<&str>,
+    ) -> SessionResult<Option<String>> {
+        let mut last_assistant = None;
+        let mut tool_call_messages = BTreeMap::<String, String>::new();
+        for value in read_jsonl(&self.transcript_path(session_id))? {
+            match value.get("schema_version").and_then(Value::as_str) {
+                Some("openagent.message.v2") => {
+                    let record: StoredMessageV2 = serde_json::from_value(value)?;
+                    if record.info.role == Role::Assistant {
+                        last_assistant = Some(record.info.id);
+                    }
+                }
+                Some("openagent.message_part.v2") => {
+                    let record: StoredMessagePartV2 = serde_json::from_value(value)?;
+                    if record.part.kind == MessagePartKind::Tool
+                        && let Some(call_id) = tool_call_id_from_part(&record.part)
+                    {
+                        tool_call_messages.insert(call_id, record.part.message_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(tool_call_id) = tool_call_id
+            && let Some(message_id) = tool_call_messages.get(tool_call_id)
+        {
+            return Ok(Some(message_id.clone()));
+        }
+        Ok(last_assistant)
+    }
+
+    fn next_message_part_seq(&self, session_id: &str, message_id: &str) -> SessionResult<u64> {
+        let mut max_seq = 0;
+        for value in read_jsonl(&self.transcript_path(session_id))? {
+            if value.get("schema_version").and_then(Value::as_str)
+                != Some("openagent.message_part.v2")
+            {
+                continue;
+            }
+            let record: StoredMessagePartV2 = serde_json::from_value(value)?;
+            if record.part.message_id == message_id {
+                max_seq = max_seq.max(record.part.seq);
+            }
+        }
+        Ok(max_seq + 1)
     }
 
     pub fn finish_run(
@@ -774,6 +1156,8 @@ impl Default for SessionEventOptions {
 #[derive(Clone, Debug)]
 pub struct SessionPartOptions {
     pub part_id: Option<String>,
+    pub message_id: Option<String>,
+    pub content: Option<Value>,
     pub attributes: BTreeMap<String, Value>,
     pub step_index: Option<u64>,
     pub status: String,
@@ -784,6 +1168,8 @@ impl Default for SessionPartOptions {
     fn default() -> Self {
         Self {
             part_id: None,
+            message_id: None,
+            content: None,
             attributes: BTreeMap::new(),
             step_index: None,
             status: "ok".to_string(),
@@ -1990,7 +2376,7 @@ pub fn output_stats(output: &str) -> BTreeMap<String, u64> {
 
 fn stored_message(message: &ChatMessage, index: u64) -> StoredMessage {
     StoredMessage {
-        message_id: message_id(message),
+        message_id: message_id(message, index),
         index,
         role: message.role.clone(),
         content: message.content.clone(),
@@ -2010,13 +2396,226 @@ fn chat_message_from_stored(message: StoredMessage) -> ChatMessage {
     }
 }
 
-fn message_id(message: &ChatMessage) -> String {
+fn message_id(message: &ChatMessage, index: u64) -> String {
     message
         .metadata
         .get("message_id")
         .and_then(Value::as_str)
         .map(ToString::to_string)
-        .unwrap_or_else(|| new_id("msg"))
+        .unwrap_or_else(|| stable_message_id(index))
+}
+
+fn stable_message_id(index: u64) -> String {
+    format!("msg_{index}")
+}
+
+fn message_parts_from_chat_message(
+    session_id: &str,
+    run_id: &str,
+    message_id: &str,
+    timestamp_ms: u64,
+    message: &ChatMessage,
+    index: u64,
+) -> Vec<MessagePart> {
+    let mut parts = Vec::new();
+    let mut seq = 1_u64;
+    if !message.content.is_empty() {
+        parts.push(MessagePart {
+            id: stable_part_id(message_id, seq, "text"),
+            message_id: message_id.to_string(),
+            session_id: session_id.to_string(),
+            seq,
+            kind: MessagePartKind::Text,
+            status: MessageStatus::Completed,
+            content: json!(message.content),
+            attributes: BTreeMap::from([
+                ("role".to_string(), json!(message.role.clone())),
+                ("index".to_string(), json!(index)),
+                (
+                    "chars".to_string(),
+                    json!(message.content.chars().count() as u64),
+                ),
+            ]),
+            timestamp_ms,
+            run_id: (!run_id.is_empty()).then(|| run_id.to_string()),
+            step_index: step_index_from_metadata(&message.metadata),
+        });
+        seq += 1;
+    }
+    if message.role == Role::Assistant
+        && let Some(tool_calls) = message.metadata.get("tool_calls").and_then(Value::as_array)
+    {
+        for call in tool_calls {
+            let content = tool_call_part_content(call);
+            parts.push(MessagePart {
+                id: stable_part_id(message_id, seq, "tool"),
+                message_id: message_id.to_string(),
+                session_id: session_id.to_string(),
+                seq,
+                kind: MessagePartKind::Tool,
+                status: MessageStatus::Pending,
+                content,
+                attributes: BTreeMap::from([
+                    ("role".to_string(), json!("assistant")),
+                    ("index".to_string(), json!(index)),
+                ]),
+                timestamp_ms,
+                run_id: (!run_id.is_empty()).then(|| run_id.to_string()),
+                step_index: step_index_from_metadata(&message.metadata),
+            });
+            seq += 1;
+        }
+    }
+    parts
+}
+
+fn tool_result_part_from_message(
+    session_id: &str,
+    run_id: &str,
+    message_id: &str,
+    seq: u64,
+    timestamp_ms: u64,
+    message: &ChatMessage,
+    index: u64,
+) -> MessagePart {
+    let error = message_tool_error(message);
+    let output = message_tool_output(message);
+    let mut attributes = BTreeMap::from([
+        ("role".to_string(), json!("tool")),
+        ("index".to_string(), json!(index)),
+    ]);
+    if let Some(name) = &message.name {
+        attributes.insert("name".to_string(), json!(name));
+    }
+    if let Some(call_id) = &message.tool_call_id {
+        attributes.insert("call_id".to_string(), json!(call_id));
+    }
+    MessagePart {
+        id: stable_part_id(message_id, seq, "tool"),
+        message_id: message_id.to_string(),
+        session_id: session_id.to_string(),
+        seq,
+        kind: MessagePartKind::Tool,
+        status: if error.is_some() {
+            MessageStatus::Error
+        } else {
+            MessageStatus::Completed
+        },
+        content: json!({
+            "call_id": message.tool_call_id.clone(),
+            "name": message.name.clone(),
+            "output": output,
+            "error": error,
+            "metadata": message.metadata.get("tool_result").and_then(|value| value.get("metadata")).cloned().unwrap_or_else(|| json!({})),
+        }),
+        attributes,
+        timestamp_ms,
+        run_id: (!run_id.is_empty()).then(|| run_id.to_string()),
+        step_index: step_index_from_metadata(&message.metadata),
+    }
+}
+
+fn stable_part_id(message_id: &str, seq: u64, kind: &str) -> String {
+    format!("prt_{message_id}_{seq}_{kind}")
+}
+
+fn tool_call_part_content(call: &Value) -> Value {
+    let function = call.get("function").and_then(Value::as_object);
+    let name = function
+        .and_then(|item| item.get("name"))
+        .and_then(Value::as_str)
+        .or_else(|| call.get("name").and_then(Value::as_str))
+        .unwrap_or_default();
+    let input = call
+        .get("input")
+        .cloned()
+        .or_else(|| {
+            function
+                .and_then(|item| item.get("arguments"))
+                .map(parse_json_argument)
+        })
+        .unwrap_or_else(|| json!({}));
+    let call_id = call
+        .get("call_id")
+        .or_else(|| call.get("id"))
+        .or_else(|| call.get("tool_call_id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    json!({
+        "call_id": call_id,
+        "name": name,
+        "input": input,
+    })
+}
+
+fn parse_json_argument(value: &Value) -> Value {
+    match value {
+        Value::String(raw) => serde_json::from_str::<Value>(raw).unwrap_or_else(|_| {
+            json!({
+                "_raw": raw,
+            })
+        }),
+        Value::Object(_) => value.clone(),
+        Value::Array(_) => json!({"_value": value}),
+        Value::Null => json!({}),
+        other => json!({"_value": other}),
+    }
+}
+
+fn tool_call_id_from_part(part: &MessagePart) -> Option<String> {
+    part.content
+        .get("call_id")
+        .or_else(|| part.content.get("id"))
+        .and_then(Value::as_str)
+        .or_else(|| part.attributes.get("call_id").and_then(Value::as_str))
+        .map(ToString::to_string)
+}
+
+fn message_tool_error(message: &ChatMessage) -> Option<String> {
+    message
+        .metadata
+        .get("tool_result")
+        .and_then(|value| value.get("error"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+fn message_tool_output(message: &ChatMessage) -> String {
+    message
+        .metadata
+        .get("tool_result")
+        .and_then(|value| value.get("output"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| message.content.clone())
+}
+
+fn message_status_from_str(value: &str) -> MessageStatus {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "pending" => MessageStatus::Pending,
+        "running" => MessageStatus::Running,
+        "error" | "failed" => MessageStatus::Error,
+        "interrupted" | "cancelled" | "canceled" => MessageStatus::Interrupted,
+        _ => MessageStatus::Completed,
+    }
+}
+
+fn normalize_part_status(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "pending" => "pending".to_string(),
+        "running" => "running".to_string(),
+        "completed" => "completed".to_string(),
+        "interrupted" | "cancelled" | "canceled" => "interrupted".to_string(),
+        "error" | "failed" => "error".to_string(),
+        _ => "ok".to_string(),
+    }
+}
+
+fn step_index_from_metadata(metadata: &BTreeMap<String, Value>) -> Option<u64> {
+    metadata
+        .get("step_index")
+        .or_else(|| metadata.get("step"))
+        .and_then(Value::as_u64)
 }
 
 fn session_status_str(status: &SessionStatus) -> &'static str {

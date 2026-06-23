@@ -281,16 +281,26 @@ fn remote_runtime_client_reads_session_transcript() -> Result<(), Box<dyn Error>
 
     let transcript = client.session_messages(&session_id, Some(2))?;
     let messages = transcript["messages"].as_array().expect("messages");
+    let messages_v2 = transcript["messages_v2"]
+        .as_array()
+        .expect("messages_v2");
 
     assert_eq!(transcript["session_id"], session_id);
     assert_eq!(transcript["message_count"], 2);
+    assert_eq!(transcript["message_v2_count"], 2);
     assert_eq!(transcript["limit"], 2);
     assert_eq!(messages.len(), 2);
+    assert_eq!(messages_v2.len(), 2);
     assert_eq!(messages[0]["index"], 0);
     assert_eq!(messages[0]["role"], "user");
     assert_eq!(messages[0]["content"], "hello transcript");
+    assert_eq!(messages_v2[0]["info"]["role"], "user");
+    assert_eq!(messages_v2[0]["parts"][0]["kind"], "text");
+    assert_eq!(messages_v2[0]["parts"][0]["content"], "hello transcript");
     assert_eq!(messages[1]["index"], 1);
     assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages_v2[1]["info"]["role"], "assistant");
+    assert_eq!(messages_v2[1]["parts"][0]["kind"], "text");
     assert!(
         messages[1]["content"]
             .as_str()

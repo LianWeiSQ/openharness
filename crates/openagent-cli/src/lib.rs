@@ -2472,6 +2472,9 @@ fn run_agent_loop(
 
     for step in 1..=max_steps {
         let mut streamed_events = Vec::new();
+        let provider_messages = store
+            .materialized_chat_messages(session)
+            .unwrap_or_else(|_| session.messages.clone());
         let mut on_provider_stream = |event: &ProviderStreamEvent| {
             if let ProviderStreamEvent::TextDelta { text } = event
                 && !text.is_empty()
@@ -2497,7 +2500,7 @@ fn run_agent_loop(
             args,
             provider,
             model_id,
-            &session.messages,
+            &provider_messages,
             &tools,
             Some(&mut on_provider_stream),
         )
@@ -2555,9 +2558,17 @@ fn run_agent_loop(
                 })?;
         }
 
-        let assistant_message =
-            assistant_message_for_provider_step(step_text, &provider_result.tool_calls);
         let assistant_index = session.messages.len() as u64;
+        let assistant_message_id = cli_message_id(assistant_index);
+        let mut assistant_message =
+            assistant_message_for_provider_step(step_text, &provider_result.tool_calls);
+        assistant_message.metadata.insert(
+            "message_id".to_string(),
+            json!(assistant_message_id.clone()),
+        );
+        assistant_message
+            .metadata
+            .insert("step".to_string(), json!(step));
         session.add(assistant_message.clone());
         store
             .append_message(session, &assistant_message, run_id, assistant_index)
@@ -2660,6 +2671,27 @@ fn run_agent_loop(
                         ..SessionEventOptions::default()
                     },
                 );
+                let _ = store.append_part(
+                    &session.id,
+                    run_id,
+                    "question",
+                    SessionPartOptions {
+                        message_id: Some(assistant_message_id.clone()),
+                        content: Some(json!({
+                            "call_id": tool_call.call_id.clone(),
+                            "name": tool_call.name.clone(),
+                            "questions": tool_call.input.get("questions").cloned().unwrap_or_else(|| json!([])),
+                            "status": "pending",
+                        })),
+                        attributes: BTreeMap::from([
+                            ("call_id".to_string(), json!(tool_call.call_id.clone())),
+                            ("name".to_string(), json!(tool_call.name.clone())),
+                        ]),
+                        step_index: Some(step),
+                        status: "pending".to_string(),
+                        ..SessionPartOptions::default()
+                    },
+                );
                 session.metadata.insert(
                     "pending_question".to_string(),
                     json!({
@@ -2671,6 +2703,7 @@ fn run_agent_loop(
                         "call_id": tool_call.call_id.clone(),
                         "tool_name": tool_call.name.clone(),
                         "tool_input": tool_call.input.clone(),
+                        "assistant_message_id": assistant_message_id.clone(),
                         "questions": tool_call.input.get("questions").cloned().unwrap_or_else(|| json!([])),
                         "created_at_ms": now_ms_cli(),
                     }),
@@ -2718,13 +2751,19 @@ fn run_agent_loop(
                     "approval required for tool {} (call {})",
                     tool_call.name, tool_call.call_id
                 );
-                let approval = approval_payload_for_tool_call(
+                let mut approval = approval_payload_for_tool_call(
                     session,
                     run_id,
                     step,
                     &tool_call,
                     &tool_result.metadata,
                 );
+                if let Some(object) = approval.as_object_mut() {
+                    object.insert(
+                        "assistant_message_id".to_string(),
+                        json!(assistant_message_id.clone()),
+                    );
+                }
                 emit_run_event(
                     &mut events,
                     json!({
@@ -2760,6 +2799,27 @@ fn run_agent_loop(
                             ("metadata".to_string(), json!(tool_result.metadata)),
                         ]),
                         ..SessionEventOptions::default()
+                    },
+                );
+                let _ = store.append_part(
+                    &session.id,
+                    run_id,
+                    "approval",
+                    SessionPartOptions {
+                        message_id: Some(assistant_message_id.clone()),
+                        content: Some(json!({
+                            "call_id": tool_call.call_id.clone(),
+                            "name": tool_call.name.clone(),
+                            "approval": approval.clone(),
+                            "status": "pending",
+                        })),
+                        attributes: BTreeMap::from([
+                            ("call_id".to_string(), json!(tool_call.call_id.clone())),
+                            ("name".to_string(), json!(tool_call.name.clone())),
+                        ]),
+                        step_index: Some(step),
+                        status: "pending".to_string(),
+                        ..SessionPartOptions::default()
                     },
                 );
                 session
@@ -2848,6 +2908,13 @@ fn run_agent_loop(
             tool_message
                 .metadata
                 .insert("tool_result".to_string(), json!(tool_result));
+            tool_message.metadata.insert(
+                "assistant_message_id".to_string(),
+                json!(assistant_message_id.clone()),
+            );
+            tool_message
+                .metadata
+                .insert("step".to_string(), json!(step));
             let tool_index = session.messages.len() as u64;
             session.add(tool_message.clone());
             store
@@ -3902,6 +3969,24 @@ fn append_tool_result_to_session(
     tool_message
         .metadata
         .insert("tool_result".to_string(), json!(tool_result));
+    if let Some(message_id) = context
+        .session
+        .metadata
+        .get(if tool_call.name == "question" {
+            "pending_question"
+        } else {
+            "pending_approval"
+        })
+        .and_then(|value| value.get("assistant_message_id"))
+        .and_then(Value::as_str)
+    {
+        tool_message
+            .metadata
+            .insert("assistant_message_id".to_string(), json!(message_id));
+    }
+    tool_message
+        .metadata
+        .insert("step".to_string(), json!(step));
     let tool_index = context.session.messages.len() as u64;
     context.session.add(tool_message.clone());
     context
@@ -6919,6 +7004,10 @@ fn chat_message(role: Role, content: String) -> ChatMessage {
         tool_call_id: None,
         metadata: BTreeMap::from([("message_id".to_string(), json!(new_cli_id("msg")))]),
     }
+}
+
+fn cli_message_id(index: u64) -> String {
+    format!("msg_{index}")
 }
 
 fn join_url(base: &str, path: &str) -> String {

@@ -1253,6 +1253,10 @@ fn session_messages_payload(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(50)
         .min(200);
+    let before = query_param(request_path, "before");
+    let messages_v2 = store
+        .list_messages_with_parts(session_id, Some(limit), before.as_deref())
+        .map_err(|error| error.to_string())?;
     let start = total.saturating_sub(limit);
     let messages = session
         .messages
@@ -1270,8 +1274,10 @@ fn session_messages_payload(
     Ok(json!({
         "session_id": session.id,
         "message_count": total,
+        "message_v2_count": messages_v2.len(),
         "limit": limit,
         "messages": messages,
+        "messages_v2": messages_v2,
     }))
 }
 
@@ -2329,6 +2335,7 @@ struct RuntimeProviderResume {
 }
 
 fn provider_turn_result(
+    store: &FileSessionStore,
     session: &Session,
     payload: &Value,
     stream_sink: Option<&mut dyn FnMut(&ProviderStreamEvent)>,
@@ -2402,6 +2409,9 @@ fn provider_turn_result(
         .unwrap_or(60);
     let stream = provider_streaming_enabled_for_turn(payload);
     let tools = Toolkit::with_builtins().get_all_tools("local");
+    let provider_messages = store
+        .materialized_chat_messages(session)
+        .unwrap_or_else(|_| session.messages.clone());
     call_openai_compatible_provider_for_runtime(
         &provider,
         &model,
@@ -2410,7 +2420,7 @@ fn provider_turn_result(
         &wire_api,
         timeout,
         stream,
-        &session.messages,
+        &provider_messages,
         &tools,
         stream_sink,
     )
@@ -2902,6 +2912,36 @@ fn runtime_chat_message(role: Role, content: String) -> ChatMessage {
     }
 }
 
+fn runtime_message_id(index: u64) -> String {
+    format!("msg_{index}")
+}
+
+fn latest_assistant_message_id_for_tool(session: &Session, tool_call: &ToolCall) -> Option<String> {
+    session.messages.iter().rev().find_map(|message| {
+        if message.role != Role::Assistant {
+            return None;
+        }
+        let message_id = message
+            .metadata
+            .get("message_id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        let has_call = message
+            .metadata
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    call.get("call_id")
+                        .or_else(|| call.get("id"))
+                        .and_then(Value::as_str)
+                        == Some(tool_call.call_id.as_str())
+                })
+            });
+        if has_call { message_id } else { None }
+    })
+}
+
 fn assistant_message_for_provider_step(content: String, tool_calls: &[ToolCall]) -> ChatMessage {
     let mut message = runtime_chat_message(Role::Assistant, content);
     if !tool_calls.is_empty() {
@@ -2991,7 +3031,7 @@ fn run_provider_loop(
             }
         };
         let provider_result =
-            provider_turn_result(session, payload, Some(&mut on_provider_stream))?;
+            provider_turn_result(store, session, payload, Some(&mut on_provider_stream))?;
         add_usage(&mut carry.usage, &provider_result.usage);
         if provider_result.source == "provider_missing_api_key" {
             events.push(json!({
@@ -3038,11 +3078,16 @@ fn run_provider_loop(
             );
         }
 
-        let assistant = assistant_message_for_provider_step(
+        let assistant_index = session.messages.len() as u64;
+        let assistant_message_id = runtime_message_id(assistant_index);
+        let mut assistant = assistant_message_for_provider_step(
             provider_result.answer.clone(),
             &provider_result.tool_calls,
         );
-        let assistant_index = session.messages.len() as u64;
+        assistant
+            .metadata
+            .insert("message_id".to_string(), json!(assistant_message_id));
+        assistant.metadata.insert("step".to_string(), json!(step));
         session.add(assistant.clone());
         let _ = store.append_message(session, &assistant, run_id, assistant_index);
 
@@ -3212,6 +3257,29 @@ fn execute_provider_tool_call(
                 ..SessionEventOptions::default()
             },
         );
+        if let Some(message_id) = latest_assistant_message_id_for_tool(session, tool_call) {
+            let _ = store.append_part(
+                &session.id,
+                run_id,
+                "question",
+                SessionPartOptions {
+                    message_id: Some(message_id),
+                    content: Some(json!({
+                        "call_id": tool_call.call_id.clone(),
+                        "name": tool_call.name.clone(),
+                        "questions": tool_call.input.get("questions").cloned().unwrap_or_else(|| json!([])),
+                        "status": "pending",
+                    })),
+                    attributes: BTreeMap::from([
+                        ("call_id".to_string(), json!(tool_call.call_id.clone())),
+                        ("name".to_string(), json!(tool_call.name.clone())),
+                    ]),
+                    step_index: Some(step),
+                    status: "pending".to_string(),
+                    ..SessionPartOptions::default()
+                },
+            );
+        }
         let _ = store.save_state(session, Some(run_id));
         events.push(json!({
             "method": "item/question/requested",
@@ -3279,6 +3347,29 @@ fn execute_provider_tool_call(
                 ..SessionEventOptions::default()
             },
         );
+        if let Some(message_id) = latest_assistant_message_id_for_tool(session, tool_call) {
+            let _ = store.append_part(
+                &session.id,
+                run_id,
+                "approval",
+                SessionPartOptions {
+                    message_id: Some(message_id),
+                    content: Some(json!({
+                        "call_id": tool_call.call_id.clone(),
+                        "name": tool_call.name.clone(),
+                        "approval": approval.clone(),
+                        "status": "pending",
+                    })),
+                    attributes: BTreeMap::from([
+                        ("call_id".to_string(), json!(tool_call.call_id.clone())),
+                        ("name".to_string(), json!(tool_call.name.clone())),
+                    ]),
+                    step_index: Some(step),
+                    status: "pending".to_string(),
+                    ..SessionPartOptions::default()
+                },
+            );
+        }
         let _ = store.save_state(session, Some(run_id));
         events.push(json!({
             "method": "turn/approval_requested",
@@ -3425,6 +3516,14 @@ fn append_tool_result_to_session(
     tool_message
         .metadata
         .insert("tool_result".to_string(), json!(tool_result));
+    tool_message
+        .metadata
+        .insert("step".to_string(), json!(step));
+    if let Some(message_id) = latest_assistant_message_id_for_tool(session, tool_call) {
+        tool_message
+            .metadata
+            .insert("assistant_message_id".to_string(), json!(message_id));
+    }
     let tool_index = session.messages.len() as u64;
     session.add(tool_message.clone());
     store

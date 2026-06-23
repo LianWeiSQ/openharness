@@ -5,19 +5,19 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use openagent_protocol::{message_parts_to_chat_messages, MessagePartKind, MessageStatus};
 use openagent_protocol::{ChatMessage, Role, Usage};
 use openagent_session::{
-    AgentTraceRecorder, FileSessionStore, ObservationConfig, ObservationEvent,
-    ObservationEventOptions, ObservationRecorder, ObservationTraceRecord, RunRecord,
-    RuntimeLogRecord, RuntimeLogger, RuntimeLoggingConfig, RuntimeWarningConfig,
-    RuntimeWarningRecord, Session, SessionEventOptions, SessionPartOptions, SessionStatus,
-    StartRunOptions, TodoItem, TraceConfig, TraceEvent, TraceEventOptions, check_trace_run,
-    format_runtime_warning_event, input_preview, load_trace_events, load_trace_summary,
-    output_stats, render_trace_summary, sanitize_observation_value, sanitize_trace_value,
-    step_usage_warnings,
+    check_trace_run, format_runtime_warning_event, input_preview, load_trace_events,
+    load_trace_summary, output_stats, render_trace_summary, sanitize_observation_value,
+    sanitize_trace_value, step_usage_warnings, AgentTraceRecorder, FileSessionStore,
+    ObservationConfig, ObservationEvent, ObservationEventOptions, ObservationRecorder,
+    ObservationTraceRecord, RunRecord, RuntimeLogRecord, RuntimeLogger, RuntimeLoggingConfig,
+    RuntimeWarningConfig, RuntimeWarningRecord, Session, SessionEventOptions, SessionPartOptions,
+    SessionStatus, StartRunOptions, TodoItem, TraceConfig, TraceEvent, TraceEventOptions,
 };
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 #[test]
 fn session_trace_observability_fixture_matches_python_oracle() {
@@ -185,6 +185,136 @@ fn file_session_store_writes_summary_and_restores_state() {
 }
 
 #[test]
+fn file_session_store_writes_message_v2_parts_and_attaches_tool_results() {
+    let root = unique_temp_dir("openagent-message-v2-store");
+    let store = FileSessionStore::new(root.join("sessions"));
+    let mut session = Session::new("session_msg_v2", root.join("workspace"));
+    store
+        .start_run(
+            &mut session,
+            StartRunOptions {
+                run_id: "run_msg_v2".to_string(),
+                trace_id: "trace_msg_v2".to_string(),
+                agent_name: "agent".to_string(),
+                model_id: Some("model".to_string()),
+                provider_id: Some("provider".to_string()),
+                permission: "FULL".to_string(),
+                max_steps: 3,
+                started_at_ms: Some(1),
+            },
+        )
+        .expect("run starts");
+
+    let assistant = ChatMessage {
+        role: Role::Assistant,
+        content: "I'll read it.".to_string(),
+        name: None,
+        tool_call_id: None,
+        metadata: BTreeMap::from([
+            ("message_id".to_string(), json!("msg_assistant")),
+            ("step".to_string(), json!(1)),
+            (
+                "tool_calls".to_string(),
+                json!([{
+                    "id": "call_read",
+                    "call_id": "call_read",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{\"path\":\"Cargo.toml\"}"},
+                    "name": "read",
+                    "input": {"path": "Cargo.toml"}
+                }]),
+            ),
+        ]),
+    };
+    session.add(assistant.clone());
+    store
+        .append_message(&session, &assistant, "run_msg_v2", 0)
+        .expect("assistant appends");
+
+    let tool = ChatMessage {
+        role: Role::Tool,
+        content: "[workspace]".to_string(),
+        name: Some("read".to_string()),
+        tool_call_id: Some("call_read".to_string()),
+        metadata: BTreeMap::from([
+            ("assistant_message_id".to_string(), json!("msg_assistant")),
+            ("step".to_string(), json!(1)),
+            (
+                "tool_result".to_string(),
+                json!({
+                    "call_id": "call_read",
+                    "output": "[workspace]",
+                    "error": null,
+                    "metadata": {}
+                }),
+            ),
+        ]),
+    };
+    session.add(tool.clone());
+    store
+        .append_message(&session, &tool, "run_msg_v2", 1)
+        .expect("tool appends");
+
+    let messages = store
+        .list_messages_with_parts("session_msg_v2", None, None)
+        .expect("messages list");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].info.id, "msg_assistant");
+    assert!(messages[0].parts.iter().any(|part| {
+        part.kind == MessagePartKind::Tool && part.status == MessageStatus::Pending
+    }));
+    assert!(messages[0].parts.iter().any(|part| {
+        part.kind == MessagePartKind::Tool && part.status == MessageStatus::Completed
+    }));
+
+    let projected = message_parts_to_chat_messages(&messages);
+    assert_eq!(projected.len(), 2);
+    assert_eq!(projected[0].role, Role::Assistant);
+    assert_eq!(projected[1].role, Role::Tool);
+    assert_eq!(projected[1].tool_call_id.as_deref(), Some("call_read"));
+    assert_eq!(projected[1].content, "[workspace]");
+
+    fs::remove_dir_all(root).expect("temporary session store is removed");
+}
+
+#[test]
+fn file_session_store_projects_legacy_v1_transcripts_to_message_v2() {
+    let root = unique_temp_dir("openagent-message-v2-legacy");
+    let session_dir = root.join("sessions/session_legacy");
+    fs::create_dir_all(&session_dir).expect("session dir exists");
+    fs::write(
+        session_dir.join("transcript.jsonl"),
+        serde_json::to_string(&json!({
+            "schema_version": "openagent.message.v1",
+            "message_id": "msg_legacy",
+            "session_id": "session_legacy",
+            "run_id": "run_legacy",
+            "index": 0,
+            "role": "user",
+            "content": "hello from v1",
+            "name": null,
+            "tool_call_id": null,
+            "metadata": {},
+            "timestamp_ms": 1,
+        }))
+        .expect("json serializes")
+            + "\n",
+    )
+    .expect("legacy transcript writes");
+
+    let store = FileSessionStore::new(root.join("sessions"));
+    let messages = store
+        .list_messages_with_parts("session_legacy", None, None)
+        .expect("legacy projects");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].info.id, "msg_legacy");
+    assert_eq!(messages[0].parts[0].kind, MessagePartKind::Text);
+    assert_eq!(messages[0].parts[0].content, json!("hello from v1"));
+
+    fs::remove_dir_all(root).expect("temporary session store is removed");
+}
+
+#[test]
 fn trace_recorder_writes_jsonl_summary_and_checkable_run() {
     let root = unique_temp_dir("openagent-trace");
     let run = RunRecord {
@@ -336,18 +466,16 @@ fn observability_logging_and_warnings_write_sanitized_records() {
             Some("run_fixture".to_string()),
             Some("trace_fixture".to_string()),
         );
-        assert!(
-            logger
-                .log(
-                    "INFO",
-                    "ignored",
-                    "runtime",
-                    BTreeMap::new(),
-                    Some(1_781_840_000_500),
-                )
-                .expect("info log filters")
-                .is_none()
-        );
+        assert!(logger
+            .log(
+                "INFO",
+                "ignored",
+                "runtime",
+                BTreeMap::new(),
+                Some(1_781_840_000_500),
+            )
+            .expect("info log filters")
+            .is_none());
         logger
             .log(
                 "WARNING",
@@ -380,11 +508,9 @@ fn observability_logging_and_warnings_write_sanitized_records() {
     assert_eq!(warnings.len(), 1);
     let event = warnings[0].to_event();
     assert_eq!(event["display"]["title"], "Step token budget exceeded");
-    assert!(
-        format_runtime_warning_event(&event)
-            .expect("warning formats")
-            .contains("total_tokens=12")
-    );
+    assert!(format_runtime_warning_event(&event)
+        .expect("warning formats")
+        .contains("total_tokens=12"));
 
     fs::remove_dir_all(root).expect("temporary observability root is removed");
 }
