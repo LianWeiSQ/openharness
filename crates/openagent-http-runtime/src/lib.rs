@@ -2307,6 +2307,18 @@ struct RuntimeProviderResult {
     finish_reason: String,
 }
 
+struct OpenAiRuntimeProviderRequest<'a> {
+    provider: &'a str,
+    model: &'a str,
+    api_key: &'a str,
+    base_url: &'a str,
+    wire_api: &'a str,
+    timeout_s: u64,
+    stream: bool,
+    messages: &'a [ChatMessage],
+    tools: &'a [openagent_protocol::ToolSchema],
+}
+
 #[derive(Clone, Debug)]
 struct RuntimeProviderLoopCarry {
     answer: String,
@@ -2332,6 +2344,17 @@ struct RuntimeProviderResume {
     carry: RuntimeProviderLoopCarry,
     permission_ruleset: PermissionRuleset,
     skip_permissions: bool,
+}
+
+struct RuntimeProviderLoopInput<'a> {
+    store: &'a FileSessionStore,
+    session: &'a mut Session,
+    run_id: &'a str,
+    payload: &'a Value,
+    permission_ruleset: PermissionRuleset,
+    skip_permissions: bool,
+    events: Vec<Value>,
+    carry: RuntimeProviderLoopCarry,
 }
 
 fn provider_turn_result(
@@ -2413,31 +2436,36 @@ fn provider_turn_result(
         .materialized_chat_messages(session)
         .unwrap_or_else(|_| session.messages.clone());
     call_openai_compatible_provider_for_runtime(
-        &provider,
-        &model,
-        &api_key,
-        &base_url,
-        &wire_api,
-        timeout,
-        stream,
-        &provider_messages,
-        &tools,
+        OpenAiRuntimeProviderRequest {
+            provider: &provider,
+            model: &model,
+            api_key: &api_key,
+            base_url: &base_url,
+            wire_api: &wire_api,
+            timeout_s: timeout,
+            stream,
+            messages: &provider_messages,
+            tools: &tools,
+        },
         stream_sink,
     )
 }
 
 fn call_openai_compatible_provider_for_runtime(
-    provider: &str,
-    model: &str,
-    api_key: &str,
-    base_url: &str,
-    wire_api: &str,
-    timeout_s: u64,
-    stream: bool,
-    messages: &[ChatMessage],
-    tools: &[openagent_protocol::ToolSchema],
+    request: OpenAiRuntimeProviderRequest<'_>,
     mut stream_sink: Option<&mut dyn FnMut(&ProviderStreamEvent)>,
 ) -> Result<RuntimeProviderResult, String> {
+    let OpenAiRuntimeProviderRequest {
+        provider,
+        model,
+        api_key,
+        base_url,
+        wire_api,
+        timeout_s,
+        stream,
+        messages,
+        tools,
+    } = request;
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(timeout_s.max(1)))
@@ -2967,16 +2995,17 @@ fn openai_tool_call_value(call: &ToolCall) -> Value {
     })
 }
 
-fn run_provider_loop(
-    store: &FileSessionStore,
-    session: &mut Session,
-    run_id: &str,
-    payload: &Value,
-    permission_ruleset: PermissionRuleset,
-    skip_permissions: bool,
-    mut events: Vec<Value>,
-    mut carry: RuntimeProviderLoopCarry,
-) -> Result<Value, String> {
+fn run_provider_loop(input: RuntimeProviderLoopInput<'_>) -> Result<Value, String> {
+    let RuntimeProviderLoopInput {
+        store,
+        session,
+        run_id,
+        payload,
+        permission_ruleset,
+        skip_permissions,
+        mut events,
+        mut carry,
+    } = input;
     let max_steps = provider_max_steps(payload);
     let toolkit = Toolkit::with_builtins();
     let mut ctx = ToolContext::new(&session.directory)
@@ -3656,16 +3685,16 @@ fn start_turn_payload(
     }
     let _ = runtime_profile;
     let initial_events = vec![turn_started_event(&session, &run_id)];
-    run_provider_loop(
-        &store,
-        &mut session,
-        &run_id,
-        &payload,
+    run_provider_loop(RuntimeProviderLoopInput {
+        store: &store,
+        session: &mut session,
+        run_id: &run_id,
+        payload: &payload,
         permission_ruleset,
         skip_permissions,
-        initial_events,
-        RuntimeProviderLoopCarry::default(),
-    )
+        events: initial_events,
+        carry: RuntimeProviderLoopCarry::default(),
+    })
 }
 
 fn run_http_tool_turn(
@@ -3929,16 +3958,16 @@ fn respond_approval_payload(
         )?;
         if let Some(resume) = take_pending_provider_turn(&mut session) {
             session.status = SessionStatus::Running;
-            return run_provider_loop(
-                &store,
-                &mut session,
-                &run_id,
-                &resume.payload,
-                resume.permission_ruleset,
-                resume.skip_permissions,
+            return run_provider_loop(RuntimeProviderLoopInput {
+                store: &store,
+                session: &mut session,
+                run_id: &run_id,
+                payload: &resume.payload,
+                permission_ruleset: resume.permission_ruleset,
+                skip_permissions: resume.skip_permissions,
                 events,
-                resume.carry,
-            );
+                carry: resume.carry,
+            });
         }
         let failed = tool_result.error.is_some();
         let answer = if failed {
@@ -4110,16 +4139,16 @@ fn respond_question_payload(
 
     if let Some(resume) = take_pending_provider_turn(&mut session) {
         session.status = SessionStatus::Running;
-        return run_provider_loop(
-            &store,
-            &mut session,
-            &run_id,
-            &resume.payload,
-            resume.permission_ruleset,
-            resume.skip_permissions,
+        return run_provider_loop(RuntimeProviderLoopInput {
+            store: &store,
+            session: &mut session,
+            run_id: &run_id,
+            payload: &resume.payload,
+            permission_ruleset: resume.permission_ruleset,
+            skip_permissions: resume.skip_permissions,
             events,
-            resume.carry,
-        );
+            carry: resume.carry,
+        });
     }
     session.status = SessionStatus::Idle;
     let answer = "question answered".to_string();

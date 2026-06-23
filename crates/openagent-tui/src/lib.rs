@@ -8408,7 +8408,7 @@ mod tests {
             workspace: workspace.clone(),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
         let mut state = TuiState::new();
 
         let initial = handler.initial_lines();
@@ -8443,9 +8443,7 @@ mod tests {
                 .any(|line| line.kind == "assistant" && line.text.contains("bridge answer"))
         );
 
-        let polled = handler
-            .poll_app_events()
-            .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let polled = handler.poll_app_events().map_err(std::io::Error::other)?;
         apply_app_event_values(&mut state, polled);
         assert!(
             state
@@ -8499,11 +8497,11 @@ mod tests {
             session_id: Some("session_smoke".to_string()),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
 
         let lines = handler
             .handle_command("/transcript 2")
-            .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+            .map_err(std::io::Error::other)?;
 
         assert!(
             lines
@@ -8542,7 +8540,7 @@ mod tests {
             workspace: workspace.clone(),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
         let mut state = TuiState::new();
 
         send_key_text("/sessions smoke", &mut state, &mut handler)?;
@@ -8594,7 +8592,7 @@ mod tests {
             workspace: workspace.clone(),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
         let mut state = TuiState::new();
 
         send_key_text("/sessions smoke", &mut state, &mut handler)?;
@@ -8658,7 +8656,7 @@ mod tests {
             session_id: Some("session_smoke".to_string()),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
         let mut state = TuiState::new();
 
         send_key_text("/models", &mut state, &mut handler)?;
@@ -8720,7 +8718,7 @@ mod tests {
             session_id: Some("session_smoke".to_string()),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
         let mut state = TuiState::new();
 
         send_key_text("/agents", &mut state, &mut handler)?;
@@ -8783,7 +8781,7 @@ mod tests {
             session_id: Some("session_smoke".to_string()),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
         let mut state = TuiState::new();
 
         send_key_text("/variant", &mut state, &mut handler)?;
@@ -8863,7 +8861,7 @@ mod tests {
             workspace: workspace.clone(),
             ..AppBridgeTerminalOptions::default()
         })
-        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        .map_err(std::io::Error::other)?;
         let mut state = TuiState::new();
 
         state.apply_app_event(&json!({
@@ -9390,7 +9388,7 @@ mod tests {
         handler: &mut H,
     ) -> Result<(), Box<dyn Error>> {
         let exit = handle_key_event(KeyEvent::new(key, KeyModifiers::NONE), state, handler)
-            .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+            .map_err(std::io::Error::other)?;
         assert!(!exit, "test key unexpectedly requested TUI exit");
         Ok(())
     }

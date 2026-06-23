@@ -17,6 +17,8 @@ use openagent_app_server_client::{RemoteAuth, RemoteRuntimeClient};
 use openagent_http_runtime::http_runtime_fixture;
 use serde_json::Value;
 
+type FakeProviderServer = (u16, thread::JoinHandle<()>, Arc<Mutex<Vec<String>>>);
+
 #[test]
 fn http_runtime_fixture_matches_python_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
@@ -300,12 +302,11 @@ fn remote_runtime_client_reads_session_transcript() -> Result<(), Box<dyn Error>
     assert_eq!(messages_v2[1]["info"]["role"], "assistant");
     assert_eq!(messages_v2[1]["parts"][0]["kind"], "text");
     assert!(
-        messages[1]["content"]
+        !messages[1]["content"]
             .as_str()
             .unwrap_or_default()
             .trim()
-            .len()
-            > 0
+            .is_empty()
     );
 
     let _ = server.kill();
@@ -1299,7 +1300,7 @@ fn spawn_fake_openai_responses_provider() -> Result<(u16, thread::JoinHandle<()>
 
 fn spawn_fake_openai_responses_provider_sequence(
     responses: Vec<Value>,
-) -> Result<(u16, thread::JoinHandle<()>, Arc<Mutex<Vec<String>>>), Box<dyn Error>> {
+) -> Result<FakeProviderServer, Box<dyn Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1334,7 +1335,7 @@ fn spawn_fake_openai_responses_provider_sequence(
 
 fn spawn_fake_openai_responses_provider_sequence_with_delays(
     responses: Vec<(Value, u64)>,
-) -> Result<(u16, thread::JoinHandle<()>, Arc<Mutex<Vec<String>>>), Box<dyn Error>> {
+) -> Result<FakeProviderServer, Box<dyn Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1370,8 +1371,7 @@ fn spawn_fake_openai_responses_provider_sequence_with_delays(
     ))
 }
 
-fn spawn_fake_openai_responses_streaming_provider()
--> Result<(u16, thread::JoinHandle<()>, Arc<Mutex<Vec<String>>>), Box<dyn Error>> {
+fn spawn_fake_openai_responses_streaming_provider() -> Result<FakeProviderServer, Box<dyn Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1407,7 +1407,7 @@ fn spawn_fake_openai_responses_streaming_provider()
 }
 
 fn spawn_fake_openai_responses_streaming_tool_then_delayed_final_provider()
--> Result<(u16, thread::JoinHandle<()>, Arc<Mutex<Vec<String>>>), Box<dyn Error>> {
+-> Result<FakeProviderServer, Box<dyn Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
     let requests = Arc::new(Mutex::new(Vec::new()));
