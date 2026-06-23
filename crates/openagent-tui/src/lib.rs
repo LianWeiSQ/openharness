@@ -516,6 +516,13 @@ fn session_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
     let Some(picker) = state.session_picker.as_ref() else {
         return Vec::new();
     };
+    let mode_hint = match &picker.mode {
+        SessionPickerMode::Browse => "Type filter, Enter resume, Right actions, Ctrl-D details",
+        SessionPickerMode::Actions => "Up/Down choose, Enter run, Left/Esc back",
+        SessionPickerMode::Details => "Left/Esc back, Right actions",
+        SessionPickerMode::Rename => "Edit title, Enter save, Esc cancel",
+        SessionPickerMode::Confirm(_) => "Enter/y confirm, Esc/n cancel",
+    };
     let mut lines = vec![Line::from(vec![
         Span::styled("Query ", Style::default().add_modifier(Modifier::BOLD)),
         Span::raw(if picker.query.is_empty() {
@@ -524,7 +531,7 @@ fn session_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
             picker.query.clone()
         }),
         Span::styled(
-            "  Type to filter, Enter resume, Esc close",
+            format!("  {mode_hint}"),
             Style::default().fg(Color::DarkGray),
         ),
     ])];
@@ -532,7 +539,7 @@ fn session_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
         lines.push(Line::from("No matching sessions"));
         return lines;
     }
-    for (index, session) in picker.candidates.iter().enumerate().take(6) {
+    for (index, session) in picker.candidates.iter().enumerate().take(4) {
         let marker = if picker.selected == index { ">" } else { " " };
         lines.push(Line::from(vec![
             Span::styled(
@@ -541,6 +548,66 @@ fn session_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
             ),
             Span::raw(session_picker_label(session)),
         ]));
+    }
+    if let Some(session) = picker.candidates.get(picker.selected) {
+        lines.push(Line::from(vec![
+            Span::styled("Selected ", Style::default().fg(Color::Cyan)),
+            Span::raw(session_picker_status_line(session)),
+        ]));
+    }
+    match &picker.mode {
+        SessionPickerMode::Browse => {}
+        SessionPickerMode::Details => {
+            if let Some(session) = picker.candidates.get(picker.selected) {
+                lines.extend(session_picker_detail_lines(session));
+            }
+        }
+        SessionPickerMode::Actions => {
+            lines.push(Line::from(vec![
+                Span::styled("Actions ", Style::default().fg(Color::Cyan)),
+                Span::raw("OpenCode-style session management"),
+            ]));
+            let selected = picker
+                .action_selected
+                .min(SESSION_PICKER_ACTIONS.len().saturating_sub(1));
+            let start = selected.saturating_sub(2);
+            let end = (start + 5).min(SESSION_PICKER_ACTIONS.len());
+            for (index, action) in SESSION_PICKER_ACTIONS[start..end].iter().enumerate() {
+                let actual = start + index;
+                let marker = if actual == selected { ">" } else { " " };
+                let confirm = if action.requires_confirmation() {
+                    " confirm"
+                } else {
+                    ""
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{marker} "), Style::default().fg(Color::Yellow)),
+                    Span::raw(action.label()),
+                    Span::styled(confirm, Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+        }
+        SessionPickerMode::Rename => {
+            lines.push(Line::from(vec![
+                Span::styled("Rename ", Style::default().fg(Color::Cyan)),
+                Span::raw(if picker.rename_buffer.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    picker.rename_buffer.clone()
+                }),
+            ]));
+        }
+        SessionPickerMode::Confirm(action) => {
+            let session_id = picker
+                .candidates
+                .get(picker.selected)
+                .and_then(session_id_from_payload)
+                .unwrap_or_else(|| "<unknown>".to_string());
+            lines.push(Line::from(vec![
+                Span::styled("Confirm ", Style::default().fg(Color::Red)),
+                Span::raw(format!("{} {session_id}?", action.label())),
+            ]));
+        }
     }
     lines
 }
@@ -985,12 +1052,50 @@ fn handle_session_picker_key<H: TerminalEventHandler>(
     state: &mut TuiState,
     handler: &mut H,
 ) -> Result<(), String> {
+    let mode = state
+        .session_picker
+        .as_ref()
+        .map(|picker| picker.mode.clone())
+        .unwrap_or(SessionPickerMode::Browse);
+    match mode {
+        SessionPickerMode::Actions => {
+            return handle_session_picker_actions_key(key, state, handler);
+        }
+        SessionPickerMode::Details => {
+            return handle_session_picker_details_key(key, state);
+        }
+        SessionPickerMode::Rename => {
+            return handle_session_picker_rename_key(key, state, handler);
+        }
+        SessionPickerMode::Confirm(action) => {
+            return handle_session_picker_confirm_key(key, state, handler, action);
+        }
+        SessionPickerMode::Browse => {}
+    }
     match key.code {
         KeyCode::Esc => {
             state.close_session_picker();
         }
         KeyCode::Enter => {
             select_session_picker_from_handler(state, handler)?;
+        }
+        KeyCode::Right | KeyCode::F(2) => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Actions;
+                picker.action_selected = 0;
+            }
+            state.status = "session actions".to_string();
+        }
+        KeyCode::Char('d') | KeyCode::Char('D')
+            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+        {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Details;
+            }
+            state.status = "session details".to_string();
+        }
+        KeyCode::Delete => {
+            begin_session_picker_action(state, handler, SessionPickerAction::Delete)?;
         }
         KeyCode::Up => {
             state.session_picker_previous();
@@ -1022,6 +1127,244 @@ fn handle_session_picker_key<H: TerminalEventHandler>(
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn handle_session_picker_actions_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Left => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Browse;
+            }
+            state.status = "session picker".to_string();
+        }
+        KeyCode::Enter => {
+            let action = state
+                .session_picker
+                .as_ref()
+                .map(|picker| {
+                    SESSION_PICKER_ACTIONS
+                        [picker.action_selected.min(SESSION_PICKER_ACTIONS.len() - 1)]
+                })
+                .unwrap_or(SessionPickerAction::Resume);
+            begin_session_picker_action(state, handler, action)?;
+        }
+        KeyCode::Up => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.action_selected = picker.action_selected.saturating_sub(1);
+            }
+            state.status = "session actions".to_string();
+        }
+        KeyCode::Down | KeyCode::Tab => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.action_selected =
+                    (picker.action_selected + 1).min(SESSION_PICKER_ACTIONS.len() - 1);
+            }
+            state.status = "session actions".to_string();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_session_picker_details_key(key: KeyEvent, state: &mut TuiState) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Left => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Browse;
+            }
+            state.status = "session picker".to_string();
+        }
+        KeyCode::Right | KeyCode::F(2) => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Actions;
+            }
+            state.status = "session actions".to_string();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_session_picker_rename_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Browse;
+                picker.rename_buffer.clear();
+            }
+            state.status = "session rename cancelled".to_string();
+        }
+        KeyCode::Enter => {
+            execute_session_picker_action(state, handler, SessionPickerAction::Rename)?;
+        }
+        KeyCode::Backspace => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.rename_buffer.pop();
+            }
+            state.status = "session rename".to_string();
+        }
+        KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.rename_buffer.push(ch);
+            }
+            state.status = "session rename".to_string();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn handle_session_picker_confirm_key<H: TerminalEventHandler>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    handler: &mut H,
+    action: SessionPickerAction,
+) -> Result<(), String> {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Actions;
+            }
+            state.status = "session action cancelled".to_string();
+        }
+        KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
+            execute_session_picker_action(state, handler, action)?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn begin_session_picker_action<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    action: SessionPickerAction,
+) -> Result<(), String> {
+    if state.selected_session_picker_id().is_none() {
+        state.status = "session picker empty".to_string();
+        return Ok(());
+    }
+    match action {
+        SessionPickerAction::Details => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Details;
+            }
+            state.status = "session details".to_string();
+        }
+        SessionPickerAction::Rename => {
+            let title = state
+                .selected_session_picker_payload()
+                .map(session_picker_title)
+                .unwrap_or_default();
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.rename_buffer = title;
+                picker.mode = SessionPickerMode::Rename;
+            }
+            state.status = "session rename".to_string();
+        }
+        action if action.requires_confirmation() => {
+            if let Some(picker) = state.session_picker.as_mut() {
+                picker.mode = SessionPickerMode::Confirm(action);
+            }
+            state.status = "session action confirm".to_string();
+        }
+        _ => execute_session_picker_action(state, handler, action)?,
+    }
+    Ok(())
+}
+
+fn execute_session_picker_action<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    action: SessionPickerAction,
+) -> Result<(), String> {
+    let Some(session_id) = state.selected_session_picker_id() else {
+        state.status = "session picker empty".to_string();
+        return Ok(());
+    };
+    let selected_payload = state.selected_session_picker_payload().cloned();
+    if action == SessionPickerAction::Resume {
+        state.close_session_picker();
+        state.session_id = Some(session_id.clone());
+        let lines = handler.handle_command(&format!("/resume {session_id}"))?;
+        apply_handler_output(state, handler, lines);
+        return Ok(());
+    }
+    if action == SessionPickerAction::Details {
+        if let Some(picker) = state.session_picker.as_mut() {
+            picker.mode = SessionPickerMode::Details;
+        }
+        state.status = "session details".to_string();
+        return Ok(());
+    }
+    let rename_title = state
+        .session_picker
+        .as_ref()
+        .map(|picker| picker.rename_buffer.trim().to_string())
+        .unwrap_or_default();
+    if action == SessionPickerAction::Rename && rename_title.is_empty() {
+        state.timeline.push(TimelineLine::new(
+            "warning",
+            "session title is required",
+            true,
+        ));
+        state.status = "session rename invalid".to_string();
+        return Ok(());
+    }
+    ensure_session_picker_target_session(state, handler, &session_id)?;
+    let command = action
+        .command((action == SessionPickerAction::Rename).then_some(rename_title.as_str()))
+        .ok_or_else(|| format!("session action has no command: {action:?}"))?;
+    let lines = handler.handle_command(&command)?;
+    apply_handler_output(state, handler, lines);
+    match action {
+        SessionPickerAction::Delete => {
+            state.session_id = None;
+        }
+        SessionPickerAction::Parent => {
+            if let Some(parent) = selected_payload
+                .as_ref()
+                .and_then(session_picker_parent_id)
+                .filter(|value| !value.is_empty())
+            {
+                state.session_id = Some(parent);
+            }
+        }
+        _ => {}
+    }
+    if let Some(picker) = state.session_picker.as_mut() {
+        picker.mode = SessionPickerMode::Browse;
+        picker.rename_buffer.clear();
+    }
+    if let Err(error) = refresh_session_picker_from_handler(state, handler) {
+        state
+            .timeline
+            .push(TimelineLine::new("warning", error, true));
+    }
+    state.status = format!("session {} completed", action.label().to_ascii_lowercase());
+    Ok(())
+}
+
+fn ensure_session_picker_target_session<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    session_id: &str,
+) -> Result<(), String> {
+    if state.session_id.as_deref() == Some(session_id) {
+        return Ok(());
+    }
+    state.session_id = Some(session_id.to_string());
+    let lines = handler.handle_command(&format!("/resume {session_id}"))?;
+    apply_handler_output(state, handler, lines);
     Ok(())
 }
 
@@ -1773,6 +2116,100 @@ pub struct SessionPickerState {
     pub query: String,
     pub selected: usize,
     pub candidates: Vec<Value>,
+    pub mode: SessionPickerMode,
+    pub action_selected: usize,
+    pub rename_buffer: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum SessionPickerMode {
+    #[default]
+    Browse,
+    Actions,
+    Details,
+    Rename,
+    Confirm(SessionPickerAction),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionPickerAction {
+    Resume,
+    Details,
+    Rename,
+    Archive,
+    Unarchive,
+    Delete,
+    Fork,
+    Children,
+    Parent,
+    Share,
+    Unshare,
+    Compact,
+    Undo,
+    Redo,
+}
+
+const SESSION_PICKER_ACTIONS: &[SessionPickerAction] = &[
+    SessionPickerAction::Resume,
+    SessionPickerAction::Details,
+    SessionPickerAction::Rename,
+    SessionPickerAction::Archive,
+    SessionPickerAction::Unarchive,
+    SessionPickerAction::Delete,
+    SessionPickerAction::Fork,
+    SessionPickerAction::Children,
+    SessionPickerAction::Parent,
+    SessionPickerAction::Share,
+    SessionPickerAction::Unshare,
+    SessionPickerAction::Compact,
+    SessionPickerAction::Undo,
+    SessionPickerAction::Redo,
+];
+
+impl SessionPickerAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Resume => "Resume",
+            Self::Details => "Details",
+            Self::Rename => "Rename",
+            Self::Archive => "Archive",
+            Self::Unarchive => "Unarchive",
+            Self::Delete => "Delete",
+            Self::Fork => "Fork",
+            Self::Children => "Children",
+            Self::Parent => "Parent",
+            Self::Share => "Share",
+            Self::Unshare => "Unshare",
+            Self::Compact => "Compact",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+        }
+    }
+
+    fn command(self, rename_title: Option<&str>) -> Option<String> {
+        match self {
+            Self::Resume | Self::Details => None,
+            Self::Rename => rename_title.map(|title| format!("/rename {}", title.trim())),
+            Self::Archive => Some("/archive".to_string()),
+            Self::Unarchive => Some("/unarchive".to_string()),
+            Self::Delete => Some("/delete".to_string()),
+            Self::Fork => Some("/fork".to_string()),
+            Self::Children => Some("/children".to_string()),
+            Self::Parent => Some("/parent".to_string()),
+            Self::Share => Some("/share".to_string()),
+            Self::Unshare => Some("/unshare".to_string()),
+            Self::Compact => Some("/compact".to_string()),
+            Self::Undo => Some("/undo".to_string()),
+            Self::Redo => Some("/redo".to_string()),
+        }
+    }
+
+    fn requires_confirmation(self) -> bool {
+        matches!(
+            self,
+            Self::Archive | Self::Delete | Self::Share | Self::Unshare | Self::Compact
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -2407,6 +2844,9 @@ impl TuiState {
             query: query.trim().to_string(),
             selected: 0,
             candidates,
+            mode: SessionPickerMode::Browse,
+            action_selected: 0,
+            rename_buffer: String::new(),
         });
         self.status = "session picker".to_string();
     }
@@ -2439,6 +2879,12 @@ impl TuiState {
             .as_ref()
             .and_then(|picker| picker.candidates.get(picker.selected))
             .and_then(session_id_from_payload)
+    }
+
+    pub fn selected_session_picker_payload(&self) -> Option<&Value> {
+        self.session_picker
+            .as_ref()
+            .and_then(|picker| picker.candidates.get(picker.selected))
     }
 
     pub fn open_file_picker(&mut self, query: &str, candidates: Vec<ComposerFileCandidate>) {
@@ -5121,7 +5567,18 @@ fn filter_choice_picker_values(choices: &[String], query: &str) -> Vec<String> {
 
 fn session_picker_label(session: &Value) -> String {
     let id = session_id_from_payload(session).unwrap_or_else(|| "<unknown>".to_string());
-    let title = session
+    let title = session_picker_title(session);
+    let status = session_picker_string(session, "status").unwrap_or_else(|| "unknown".to_string());
+    let messages = session
+        .get("message_count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let workspace = session_picker_string(session, "workspace").unwrap_or_else(|| ".".to_string());
+    format!("{id}  {title}  status={status}  messages={messages}  workspace={workspace}")
+}
+
+fn session_picker_title(session: &Value) -> String {
+    session
         .get("title")
         .or_else(|| {
             session
@@ -5130,20 +5587,109 @@ fn session_picker_label(session: &Value) -> String {
         })
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .unwrap_or("untitled");
-    let status = session
-        .get("status")
+        .unwrap_or("untitled")
+        .to_string()
+}
+
+fn session_picker_string(session: &Value, key: &str) -> Option<String> {
+    session
+        .get(key)
+        .or_else(|| {
+            session
+                .get("metadata")
+                .and_then(|metadata| metadata.get(key))
+        })
         .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let messages = session
-        .get("message_count")
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn session_picker_bool(session: &Value, key: &str) -> bool {
+    session
+        .get(key)
+        .or_else(|| {
+            session
+                .get("metadata")
+                .and_then(|metadata| metadata.get(key))
+        })
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn session_picker_parent_id(session: &Value) -> Option<String> {
+    ["parent_session_id", "parent_id", "forked_from"]
+        .into_iter()
+        .find_map(|key| session_picker_string(session, key))
+}
+
+fn session_picker_child_count(session: &Value) -> Option<usize> {
+    session
+        .get("child_count")
+        .or_else(|| session.get("children_count"))
         .and_then(Value::as_u64)
-        .unwrap_or_default();
-    let workspace = session
-        .get("workspace")
-        .and_then(Value::as_str)
-        .unwrap_or(".");
-    format!("{id}  {title}  status={status}  messages={messages}  workspace={workspace}")
+        .and_then(|value| usize::try_from(value).ok())
+        .or_else(|| {
+            session
+                .get("children")
+                .or_else(|| session.get("child_session_ids"))
+                .and_then(Value::as_array)
+                .map(Vec::len)
+        })
+}
+
+fn session_picker_share_summary(session: &Value) -> String {
+    session_picker_string(session, "share_url")
+        .or_else(|| session_picker_string(session, "shared_url"))
+        .or_else(|| session_picker_string(session, "public_url"))
+        .or_else(|| session_picker_string(session, "url"))
+        .unwrap_or_else(|| {
+            if session_picker_bool(session, "shared") {
+                "shared".to_string()
+            } else {
+                "private".to_string()
+            }
+        })
+}
+
+fn session_picker_status_line(session: &Value) -> String {
+    let title = session_picker_title(session);
+    let parent = session_picker_parent_id(session).unwrap_or_else(|| "-".to_string());
+    let children = session_picker_child_count(session)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let archived = if session_picker_bool(session, "archived") {
+        "yes"
+    } else {
+        "no"
+    };
+    format!("{title}  parent={parent}  children={children}  archived={archived}")
+}
+
+fn session_picker_detail_lines(session: &Value) -> Vec<Line<'static>> {
+    let id = session_id_from_payload(session).unwrap_or_else(|| "<unknown>".to_string());
+    let created = session_picker_string(session, "created_at")
+        .or_else(|| session_picker_string(session, "created_at_ms"))
+        .unwrap_or_else(|| "-".to_string());
+    let updated = session_picker_string(session, "updated_at")
+        .or_else(|| session_picker_string(session, "updated_at_ms"))
+        .unwrap_or_else(|| "-".to_string());
+    let agent = session_picker_string(session, "agent").unwrap_or_else(|| "-".to_string());
+    let model = session_picker_string(session, "model").unwrap_or_else(|| "-".to_string());
+    let workspace = session_picker_string(session, "workspace").unwrap_or_else(|| ".".to_string());
+    vec![
+        Line::from(vec![
+            Span::styled("Details ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("id={id} workspace={workspace}")),
+        ]),
+        Line::from(vec![Span::raw(format!(
+            "agent={agent} model={model} created={created} updated={updated}"
+        ))]),
+        Line::from(vec![Span::raw(format!(
+            "share={} raw={}",
+            session_picker_share_summary(session),
+            compact_json(session)
+        ))]),
+    ]
 }
 
 fn transcript_lines(payload: &Value) -> Vec<TimelineLine> {
@@ -7269,6 +7815,177 @@ mod tests {
     }
 
     #[test]
+    fn key_event_flow_session_picker_manages_sessions_interactively() {
+        struct CaptureHandler {
+            current: Option<String>,
+            searches: Vec<String>,
+            commands: Vec<String>,
+            sessions: Vec<Value>,
+        }
+
+        impl Default for CaptureHandler {
+            fn default() -> Self {
+                Self {
+                    current: None,
+                    searches: Vec::new(),
+                    commands: Vec::new(),
+                    sessions: vec![
+                        json!({
+                            "session_id": "session_alpha",
+                            "title": "Alpha",
+                            "status": "idle",
+                            "message_count": 2,
+                            "workspace": "/tmp/alpha",
+                            "child_count": 1
+                        }),
+                        json!({
+                            "session_id": "session_child",
+                            "title": "Alpha child",
+                            "status": "idle",
+                            "message_count": 1,
+                            "workspace": "/tmp/alpha",
+                            "metadata": {"parent_session_id": "session_alpha"}
+                        }),
+                    ],
+                }
+            }
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                if let Some(session_id) = command.strip_prefix("/resume ") {
+                    self.current = Some(session_id.to_string());
+                } else if let Some(title) = command.strip_prefix("/rename ") {
+                    if let Some(current) = self.current.as_deref()
+                        && let Some(session) = self.sessions.iter_mut().find(|session| {
+                            session_id_from_payload(session).as_deref() == Some(current)
+                        })
+                    {
+                        session["title"] = json!(title);
+                    }
+                } else if command == "/archive" {
+                    if let Some(current) = self.current.as_deref()
+                        && let Some(session) = self.sessions.iter_mut().find(|session| {
+                            session_id_from_payload(session).as_deref() == Some(current)
+                        })
+                    {
+                        session["archived"] = json!(true);
+                    }
+                } else if command == "/delete"
+                    && let Some(current) = self.current.as_deref()
+                {
+                    self.sessions.retain(|session| {
+                        session_id_from_payload(session).as_deref() != Some(current)
+                    });
+                    self.current = None;
+                } else if command == "/parent" {
+                    self.current = Some("session_alpha".to_string());
+                }
+                Ok(vec![TimelineLine::new(
+                    "status",
+                    format!("handled {command}"),
+                    true,
+                )])
+            }
+
+            fn search_sessions(&mut self, query: &str) -> Result<Vec<Value>, String> {
+                self.searches.push(query.to_string());
+                Ok(self.sessions.clone())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+        open_session_picker_from_handler(&mut state, &mut handler, "").expect("open sessions");
+
+        handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            &mut state,
+            &mut handler,
+        )
+        .expect("show details");
+        assert_eq!(
+            state.session_picker.as_ref().expect("session picker").mode,
+            SessionPickerMode::Details
+        );
+
+        press_key(KeyCode::Right, &mut state, &mut handler).expect("open actions");
+        press_key(KeyCode::Down, &mut state, &mut handler).expect("details action");
+        press_key(KeyCode::Down, &mut state, &mut handler).expect("rename action");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("start rename");
+        for _ in 0..5 {
+            press_key(KeyCode::Backspace, &mut state, &mut handler).expect("clear title");
+        }
+        send_key_text("Alpha Prime", &mut state, &mut handler).expect("type new title");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("rename session");
+
+        assert_eq!(
+            handler.commands,
+            vec![
+                "/resume session_alpha".to_string(),
+                "/rename Alpha Prime".to_string(),
+            ]
+        );
+        assert_eq!(
+            state
+                .session_picker
+                .as_ref()
+                .expect("session picker")
+                .candidates[0]["title"],
+            json!("Alpha Prime")
+        );
+
+        press_key(KeyCode::Right, &mut state, &mut handler).expect("open actions again");
+        for _ in 0..3 {
+            press_key(KeyCode::Down, &mut state, &mut handler).expect("archive action");
+        }
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("confirm archive");
+        assert!(matches!(
+            state.session_picker.as_ref().expect("session picker").mode,
+            SessionPickerMode::Confirm(SessionPickerAction::Archive)
+        ));
+        press_key(KeyCode::Char('y'), &mut state, &mut handler).expect("archive session");
+        assert!(handler.commands.contains(&"/archive".to_string()));
+        assert_eq!(
+            state
+                .session_picker
+                .as_ref()
+                .expect("session picker")
+                .candidates[0]["archived"],
+            json!(true)
+        );
+
+        state
+            .session_picker
+            .as_mut()
+            .expect("session picker")
+            .selected = 1;
+        press_key(KeyCode::Right, &mut state, &mut handler).expect("open child actions");
+        for _ in 0..8 {
+            press_key(KeyCode::Down, &mut state, &mut handler).expect("parent action");
+        }
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("navigate parent");
+        assert_eq!(state.session_id.as_deref(), Some("session_alpha"));
+        assert!(
+            handler
+                .commands
+                .windows(2)
+                .any(|window| { window[0] == "/resume session_child" && window[1] == "/parent" })
+        );
+
+        press_key(KeyCode::Delete, &mut state, &mut handler).expect("delete confirm");
+        assert!(matches!(
+            state.session_picker.as_ref().expect("session picker").mode,
+            SessionPickerMode::Confirm(SessionPickerAction::Delete)
+        ));
+    }
+
+    #[test]
     fn key_event_flow_opens_model_picker_filters_and_selects() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -7867,6 +8584,70 @@ mod tests {
     }
 
     #[test]
+    fn app_bridge_terminal_session_picker_manages_real_session_actions()
+    -> Result<(), Box<dyn Error>> {
+        let bridge = FakeAppBridge::start()?;
+        let workspace = temp_test_dir("openagent-tui-bridge-session-actions")?;
+        let mut handler = AppBridgeTerminalHandler::connect(AppBridgeTerminalOptions {
+            server_url: bridge.server_url.clone(),
+            auth: RemoteAuth::bearer("secret"),
+            workspace: workspace.clone(),
+            ..AppBridgeTerminalOptions::default()
+        })
+        .map_err(|error| std::io::Error::new(ErrorKind::Other, error))?;
+        let mut state = TuiState::new();
+
+        send_key_text("/sessions smoke", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+        press_key(KeyCode::Right, &mut state, &mut handler)?;
+        press_key(KeyCode::Down, &mut state, &mut handler)?;
+        press_key(KeyCode::Down, &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+        for _ in 0.."Smoke Session".len() {
+            press_key(KeyCode::Backspace, &mut state, &mut handler)?;
+        }
+        send_key_text("Smoke Renamed", &mut state, &mut handler)?;
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        press_key(KeyCode::Right, &mut state, &mut handler)?;
+        for _ in 0..3 {
+            press_key(KeyCode::Down, &mut state, &mut handler)?;
+        }
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+        assert!(matches!(
+            state.session_picker.as_ref().expect("session picker").mode,
+            SessionPickerMode::Confirm(SessionPickerAction::Archive)
+        ));
+        press_key(KeyCode::Enter, &mut state, &mut handler)?;
+
+        let updates = bridge.session_update_payloads();
+        assert!(
+            updates
+                .iter()
+                .any(|payload| payload["title"] == json!("Smoke Renamed")),
+            "expected rename PATCH payload, got {updates:?}"
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|payload| payload["archived"] == json!(true)),
+            "expected archive PATCH payload, got {updates:?}"
+        );
+        let recorded = bridge.requests();
+        assert!(
+            recorded
+                .iter()
+                .filter(|request| request.as_str() == "PATCH /api/sessions/session_smoke")
+                .count()
+                >= 2
+        );
+
+        bridge.stop();
+        let _ = fs::remove_dir_all(workspace);
+        Ok(())
+    }
+
+    #[test]
     fn app_bridge_terminal_model_picker_fetches_and_sets_model() -> Result<(), Box<dyn Error>> {
         let bridge = FakeAppBridge::start()?;
         let workspace = temp_test_dir("openagent-tui-bridge-model-picker")?;
@@ -8269,6 +9050,56 @@ mod tests {
     }
 
     #[test]
+    fn terminal_render_snapshot_contains_session_management_views() {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.open_session_picker(
+            "alp",
+            vec![json!({
+                "session_id": "session_child",
+                "title": "Alpha child",
+                "status": "idle",
+                "message_count": 2,
+                "workspace": "/tmp/alpha",
+                "model": "server-local",
+                "agent": "reviewer",
+                "shared": true,
+                "metadata": {"parent_session_id": "session_alpha"}
+            })],
+        );
+        state.session_picker.as_mut().expect("session picker").mode = SessionPickerMode::Details;
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw details frame");
+        let details = format!("{:?}", terminal.backend().buffer());
+        assert!(details.contains("Details"));
+        assert!(details.contains("parent=session_alpha"));
+        assert!(details.contains("share=shared"));
+
+        let picker = state.session_picker.as_mut().expect("session picker");
+        picker.mode = SessionPickerMode::Actions;
+        picker.action_selected = 3;
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw actions frame");
+        let actions = format!("{:?}", terminal.backend().buffer());
+        assert!(actions.contains("Actions"));
+        assert!(actions.contains("Archive"));
+        assert!(actions.contains("confirm"));
+
+        state.session_picker.as_mut().expect("session picker").mode =
+            SessionPickerMode::Confirm(SessionPickerAction::Delete);
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw confirm frame");
+        let confirm = format!("{:?}", terminal.backend().buffer());
+        assert!(confirm.contains("Confirm"));
+        assert!(confirm.contains("Delete session_child"));
+    }
+
+    #[test]
     fn terminal_render_snapshot_contains_model_picker_overlay() {
         let backend = TestBackend::new(96, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -8584,6 +9415,7 @@ mod tests {
         agent_update_payloads: Vec<Value>,
         variant_update_payloads: Vec<Value>,
         thinking_update_payloads: Vec<Value>,
+        session_update_payloads: Vec<Value>,
     }
 
     struct FakeAppBridge {
@@ -8679,6 +9511,14 @@ mod tests {
                 .clone()
         }
 
+        fn session_update_payloads(&self) -> Vec<Value> {
+            self.state
+                .lock()
+                .expect("bridge state")
+                .session_update_payloads
+                .clone()
+        }
+
         fn stop(mut self) {
             self.shutdown.store(true, Ordering::Relaxed);
             let _ = TcpStream::connect(self.server_url.trim_start_matches("http://"));
@@ -8708,6 +9548,11 @@ mod tests {
             }
             ("PATCH", "/api/sessions/session_smoke") => {
                 let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({}));
+                state
+                    .lock()
+                    .expect("bridge state")
+                    .session_update_payloads
+                    .push(payload.clone());
                 if payload.get("agent").is_some() {
                     state
                         .lock()
@@ -8745,6 +9590,11 @@ mod tests {
                             "session_id": "session_smoke",
                             "id": "session_smoke",
                             "status": "idle",
+                            "title": payload.get("title").cloned().unwrap_or(json!("Smoke Session")),
+                            "archived": payload.get("archived").cloned().unwrap_or(json!(false)),
+                            "message_count": 3,
+                            "workspace": "/tmp/openagent-smoke",
+                            "child_count": 1,
                             "model": payload.get("model").cloned().unwrap_or(Value::Null),
                             "agent": payload.get("agent").cloned().unwrap_or(Value::Null),
                             "variant": payload.get("variant").cloned().unwrap_or(Value::Null),
@@ -8759,6 +9609,84 @@ mod tests {
                     }),
                 )
             }
+            ("DELETE", "/api/sessions/session_smoke") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "deleted": true
+                }),
+            ),
+            ("GET", "/api/sessions/session_smoke") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "session": {
+                        "session_id": "session_smoke",
+                        "title": "Smoke Session",
+                        "status": "idle",
+                        "metadata": {}
+                    }
+                }),
+            ),
+            ("GET", "/api/sessions/session_smoke/children") => write_json(
+                &mut stream,
+                json!({
+                    "children": [{
+                        "session_id": "session_child",
+                        "title": "Smoke Child",
+                        "status": "idle",
+                        "message_count": 1,
+                        "workspace": "/tmp/openagent-smoke",
+                        "metadata": {"parent_session_id": "session_smoke"}
+                    }]
+                }),
+            ),
+            ("POST", "/api/sessions/session_smoke/share") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "shared": true,
+                    "share_url": "https://share.example/session_smoke"
+                }),
+            ),
+            ("DELETE", "/api/sessions/session_smoke/share") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "shared": false
+                }),
+            ),
+            ("POST", "/api/sessions/session_smoke/compact") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "summary": {"content": "compacted smoke session"}
+                }),
+            ),
+            ("GET", "/api/sessions/session_smoke/diff") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "files": [],
+                    "summary": {"changed": 0}
+                }),
+            ),
+            ("POST", "/api/sessions/session_smoke/undo") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "status": "ok",
+                    "events": []
+                }),
+            ),
+            ("POST", "/api/sessions/session_smoke/redo") => write_json(
+                &mut stream,
+                json!({
+                    "session_id": "session_smoke",
+                    "status": "ok",
+                    "events": []
+                }),
+            ),
             ("GET", "/api/sessions/session_smoke/messages?limit=2") => {
                 write_json(&mut stream, fake_transcript_payload())
             }
@@ -8949,7 +9877,10 @@ mod tests {
                 "title": "Smoke Session",
                 "status": "idle",
                 "message_count": 3,
-                "workspace": "/tmp/openagent-smoke"
+                "workspace": "/tmp/openagent-smoke",
+                "child_count": 1,
+                "shared": false,
+                "archived": false
             }]
         })
     }
