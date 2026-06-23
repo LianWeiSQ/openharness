@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-23 TUI Color Scheme Slice
+
+- Added OpenCode-style color scheme command coverage for `system`, `light`, and `dark`.
+- Extended `TuiConfig` with `color_scheme`, including `.openagent/tui.jsonc` loading via `color_scheme` or `scheme` and `/config` visibility.
+- Added `/theme-scheme`, `/color-scheme`, and `/scheme` command aliases:
+  - no argument opens/lists available schemes depending on event-loop path
+  - `system|light|dark` sets the scheme
+  - `cycle`/`next` cycles through `system -> light -> dark`
+- Added a shared picker surface for color schemes with current marker, keyboard filter/select flow, and terminal render snapshot coverage.
+- Added App Bridge/TUI control aliases for `open-theme-schemes`, `select-theme-scheme`, `cycle-theme-scheme`, plus `color-scheme` aliases and OpenCode-style `theme.scheme.light` publish topics.
+- Updated the App Bridge TUI golden fixture for the expanded command/action contract.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui color_scheme
+cargo test -q -p openagent-tui control_requests_open_model_theme_and_palette_surfaces
+cargo test -q -p openagent-tui tui_config_loads_jsonc_and_theme_command_updates_state
+cargo test -q -p openagent-tui --test tui_control
+cargo test -q -p openagent-tui
+cargo check -q -p openagent-tui -p openagent-app-server-client
+git diff --check
+```
+
+Residual risk:
+
+- Color scheme is now selectable and persisted in TUI config state, but it does not yet preview or recolor every theme token the way OpenCode's browser UI does.
+- Theme preview-on-highlight remains a separate future slice.
+
 ## 2026-06-23 TUI Theme Picker Slice
 
 - Upgraded `/themes` and `/theme` with no argument from passive theme listing into an OpenCode-style keyboard theme picker.

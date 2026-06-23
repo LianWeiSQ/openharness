@@ -59,6 +59,10 @@ const BUILTIN_COMMANDS: &[(&str, &str)] = &[
     ("/agent <id>", "set the current agent profile"),
     ("/variant <name>", "set the current model variant"),
     ("/themes", "open theme picker"),
+    (
+        "/theme-scheme [system|light|dark]",
+        "open or set color scheme",
+    ),
     ("/thinking <level>", "set reasoning effort or visibility"),
     ("/config", "show loaded TUI configuration"),
     ("/keybinds", "show active key bindings"),
@@ -372,7 +376,10 @@ fn choice_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
     }
     for (index, choice) in picker.candidates.iter().enumerate().take(6) {
         let marker = if picker.selected == index { ">" } else { " " };
-        let suffix = if picker.kind == ChoicePickerKind::Theme && state.config.theme == *choice {
+        let suffix = if (picker.kind == ChoicePickerKind::Theme && state.config.theme == *choice)
+            || (picker.kind == ChoicePickerKind::ThemeScheme
+                && state.config.color_scheme == *choice)
+        {
             "  current"
         } else {
             ""
@@ -1084,6 +1091,14 @@ fn open_choice_picker_from_command<H: TerminalEventHandler>(
             state.open_choice_picker(ChoicePickerKind::Theme, "", default_theme_names());
             Ok(())
         }
+        ChoicePickerKind::ThemeScheme => {
+            state.open_choice_picker(
+                ChoicePickerKind::ThemeScheme,
+                "",
+                default_color_scheme_names(),
+            );
+            Ok(())
+        }
         ChoicePickerKind::Variant | ChoicePickerKind::Thinking => {
             open_choice_picker_from_handler(state, handler, kind)
         }
@@ -1101,6 +1116,10 @@ fn select_choice_picker_from_handler<H: TerminalEventHandler>(
     state.close_choice_picker();
     if kind == ChoicePickerKind::Theme {
         state.set_theme(&value);
+        return Ok(());
+    }
+    if kind == ChoicePickerKind::ThemeScheme {
+        state.set_color_scheme(&value);
         return Ok(());
     }
     let lines = handler.handle_command(&format!("/{} {value}", kind.command_name()))?;
@@ -1266,6 +1285,7 @@ fn agent_picker_command_query(command: &str) -> Option<&str> {
 fn choice_picker_command_kind(command: &str) -> Option<ChoicePickerKind> {
     match command {
         "/theme" | "/themes" => Some(ChoicePickerKind::Theme),
+        "/theme-scheme" | "/color-scheme" | "/scheme" => Some(ChoicePickerKind::ThemeScheme),
         "/variant" => Some(ChoicePickerKind::Variant),
         "/thinking" => Some(ChoicePickerKind::Thinking),
         _ => None,
@@ -1340,6 +1360,9 @@ fn is_local_state_command(submitted: &str) -> bool {
             | "stashes"
             | "themes"
             | "theme"
+            | "theme-scheme"
+            | "color-scheme"
+            | "scheme"
             | "config"
             | "keybinds"
             | "usage"
@@ -1518,6 +1541,7 @@ pub struct InteractionDockState {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct TuiConfig {
     pub theme: String,
+    pub color_scheme: String,
     pub keybinds: BTreeMap<String, String>,
     pub leader_key: String,
     pub mouse: bool,
@@ -1531,6 +1555,7 @@ impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             theme: "default".to_string(),
+            color_scheme: "system".to_string(),
             keybinds: BTreeMap::from([
                 ("editor".to_string(), "ctrl+e".to_string()),
                 ("stash".to_string(), "ctrl+s".to_string()),
@@ -1562,6 +1587,14 @@ impl TuiConfig {
             .unwrap_or_else(|| json!({}));
         if let Some(theme) = parsed.get("theme").and_then(Value::as_str) {
             config.theme = theme.to_string();
+        }
+        if let Some(color_scheme) = parsed
+            .get("color_scheme")
+            .or_else(|| parsed.get("scheme"))
+            .and_then(Value::as_str)
+            .filter(|value| is_valid_color_scheme(value))
+        {
+            config.color_scheme = color_scheme.to_string();
         }
         if let Some(keybinds) = parsed.get("keybinds").and_then(Value::as_object) {
             for (key, value) in keybinds {
@@ -1694,6 +1727,7 @@ pub struct TuiState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChoicePickerKind {
     Theme,
+    ThemeScheme,
     Variant,
     Thinking,
 }
@@ -1702,6 +1736,7 @@ impl ChoicePickerKind {
     fn command_name(self) -> &'static str {
         match self {
             Self::Theme => "theme",
+            Self::ThemeScheme => "theme-scheme",
             Self::Variant => "variant",
             Self::Thinking => "thinking",
         }
@@ -1710,6 +1745,7 @@ impl ChoicePickerKind {
     fn title(self) -> &'static str {
         match self {
             Self::Theme => "Themes",
+            Self::ThemeScheme => "Color Schemes",
             Self::Variant => "Variants",
             Self::Thinking => "Thinking",
         }
@@ -1718,6 +1754,7 @@ impl ChoicePickerKind {
     fn item_label(self) -> &'static str {
         match self {
             Self::Theme => "themes",
+            Self::ThemeScheme => "color schemes",
             Self::Variant => "variants",
             Self::Thinking => "thinking levels",
         }
@@ -2144,6 +2181,37 @@ impl TuiState {
             true,
         ));
         self.status = "theme updated".to_string();
+    }
+
+    pub fn set_color_scheme(&mut self, scheme: &str) -> bool {
+        let scheme = scheme.trim();
+        if !is_valid_color_scheme(scheme) {
+            self.timeline.push(TimelineLine::new(
+                "warning",
+                "usage: /theme-scheme <system|light|dark>",
+                true,
+            ));
+            self.status = "color scheme invalid".to_string();
+            return false;
+        }
+        self.config.color_scheme = scheme.to_string();
+        self.timeline.push(TimelineLine::new(
+            "status",
+            format!("color scheme set to {}", self.config.color_scheme),
+            true,
+        ));
+        self.status = "color scheme updated".to_string();
+        true
+    }
+
+    pub fn cycle_color_scheme(&mut self) {
+        let schemes = default_color_scheme_names();
+        let current = schemes
+            .iter()
+            .position(|scheme| scheme == &self.config.color_scheme)
+            .unwrap_or(0);
+        let next = schemes[(current + 1) % schemes.len()].clone();
+        self.set_color_scheme(&next);
     }
 
     pub fn open_choice_picker(
@@ -2685,6 +2753,11 @@ impl TuiState {
             }
             "theme.open" => self.open_theme_control(&params, &action),
             "theme.select" | "theme.set" => self.select_theme_control(&params, &action),
+            "theme.scheme.open" => self.open_color_scheme_control(&params, &action),
+            "theme.scheme.select" | "theme.scheme.set" => {
+                self.select_color_scheme_control(&params, &action)
+            }
+            "theme.scheme.cycle" => self.cycle_color_scheme_control(&action),
             "palette.open" => self.open_palette_control(&params, &action),
             "palette.execute" => self.execute_palette_control(&params, &action),
             "file.open" => self.open_file_control(&params, &action),
@@ -3321,6 +3394,29 @@ impl TuiState {
                 }
                 true
             }
+            "theme-scheme" | "color-scheme" | "scheme" => {
+                let requested = command_line
+                    .strip_prefix(name)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if requested.is_empty() {
+                    self.timeline.push(TimelineLine::new(
+                        "status",
+                        format!(
+                            "color schemes: {} (current: {})",
+                            default_color_scheme_names().join(", "),
+                            self.config.color_scheme
+                        ),
+                        false,
+                    ));
+                    self.status = "color scheme listed".to_string();
+                } else if requested == "cycle" || requested == "next" {
+                    self.cycle_color_scheme();
+                } else {
+                    self.set_color_scheme(requested);
+                }
+                true
+            }
             "config" => {
                 self.timeline.push(TimelineLine::new(
                     "status",
@@ -3609,6 +3705,48 @@ impl TuiState {
         json!({"applied": true, "action": action_name, "theme": theme})
     }
 
+    fn open_color_scheme_control(&mut self, params: &Value, action_name: &str) -> Value {
+        let schemes = params
+            .get("schemes")
+            .or_else(|| params.get("color_schemes"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                string_array(items)
+                    .into_iter()
+                    .filter(|scheme| is_valid_color_scheme(scheme))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|items| !items.is_empty())
+            .unwrap_or_else(default_color_scheme_names);
+        self.open_choice_picker(ChoicePickerKind::ThemeScheme, "", schemes.clone());
+        self.timeline.push(TimelineLine::new(
+            "status",
+            format!(
+                "color schemes: {} (current: {})",
+                schemes.join(", "),
+                self.config.color_scheme
+            ),
+            true,
+        ));
+        json!({"applied": true, "action": action_name, "schemes": schemes})
+    }
+
+    fn select_color_scheme_control(&mut self, params: &Value, action_name: &str) -> Value {
+        let scheme =
+            control_string_field(params, &["scheme", "color_scheme", "value", "id", "name"]);
+        if scheme.is_empty() {
+            self.status = "control invalid".to_string();
+            return json!({"applied": false, "action": action_name, "error": "scheme is required"});
+        }
+        let applied = self.set_color_scheme(&scheme);
+        json!({"applied": applied, "action": action_name, "scheme": scheme})
+    }
+
+    fn cycle_color_scheme_control(&mut self, action_name: &str) -> Value {
+        self.cycle_color_scheme();
+        json!({"applied": true, "action": action_name, "scheme": self.config.color_scheme})
+    }
+
     fn open_palette_control(&mut self, params: &Value, action_name: &str) -> Value {
         let query = params
             .get("query")
@@ -3740,6 +3878,9 @@ pub fn normalize_control_action(action: &str) -> String {
         "open-help" => "help.open",
         "open-sessions" => "sessions.open",
         "open-themes" => "theme.open",
+        "open-theme-schemes" | "open-theme-scheme" | "open-color-schemes" | "open-color-scheme" => {
+            "theme.scheme.open"
+        }
         "open-models" => "model.open",
         "open-agents" => "agent.open",
         "open-variants" => "variant.open",
@@ -3765,6 +3906,8 @@ pub fn normalize_control_action(action: &str) -> String {
         "select-variant" => "variant.select",
         "select-thinking" => "thinking.select",
         "select-theme" => "theme.select",
+        "select-theme-scheme" | "select-color-scheme" => "theme.scheme.select",
+        "cycle-theme-scheme" | "cycle-color-scheme" => "theme.scheme.cycle",
         "select-file" | "attach-file" => "file.select",
         "show-toast" => "toast.show",
         "execute-command" => "command.execute",
@@ -3782,6 +3925,17 @@ fn default_theme_names() -> Vec<String> {
         .into_iter()
         .map(ToString::to_string)
         .collect()
+}
+
+fn default_color_scheme_names() -> Vec<String> {
+    ["system", "light", "dark"]
+        .into_iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn is_valid_color_scheme(value: &str) -> bool {
+    matches!(value.trim(), "system" | "light" | "dark")
 }
 
 fn string_array(items: &[Value]) -> Vec<String> {
@@ -3826,6 +3980,17 @@ pub fn control_publish_to_action(params: &Value) -> (String, Value) {
         }
         Value::Object(object)
     };
+    if let Some(scheme) = topic
+        .strip_prefix("theme.scheme.")
+        .or_else(|| topic.strip_prefix("tui.theme.scheme."))
+        .filter(|scheme| is_valid_color_scheme(scheme))
+    {
+        let mut object = body.as_object().cloned().unwrap_or_default();
+        object
+            .entry("scheme".to_string())
+            .or_insert_with(|| json!(scheme));
+        return ("theme.scheme.select".to_string(), Value::Object(object));
+    }
     let action = match topic {
         "tui.prompt.append" => "prompt.append",
         "tui.command.execute" => "command.execute",
@@ -3852,6 +4017,14 @@ pub fn control_publish_to_action(params: &Value) -> (String, Value) {
         "tui.variant.select" => "variant.select",
         "tui.thinking.open" => "thinking.open",
         "tui.thinking.select" => "thinking.select",
+        "tui.theme.open" => "theme.open",
+        "tui.theme.select" => "theme.select",
+        "tui.theme.scheme.open" => "theme.scheme.open",
+        "tui.theme.scheme.select" => "theme.scheme.select",
+        "tui.theme.scheme.cycle" => "theme.scheme.cycle",
+        "theme.scheme.open" => "theme.scheme.open",
+        "theme.scheme.select" => "theme.scheme.select",
+        "theme.scheme.cycle" => "theme.scheme.cycle",
         "tui.file.open" => "file.open",
         "tui.file.select" | "tui.file.attach" => "file.select",
         other => other,
@@ -4778,7 +4951,7 @@ impl TerminalEventHandler for AppBridgeTerminalHandler {
         }
         Ok(vec![TimelineLine::new(
             "status",
-            "commands: /sessions [query], /resume <id>, /transcript [limit], /rename <title>, /new, /fork, /children, /parent, /archive, /delete, /share, /unshare, /compact, /status, /files [query], /attach <path[:range]>, /models [id], /agents, /agent <id>, /variant <name>, /thinking <level>, /themes [name], /config, /keybinds, /interrupt [turn_id], /allow, /deny, /answer, /dismiss, /exit",
+            "commands: /sessions [query], /resume <id>, /transcript [limit], /rename <title>, /new, /fork, /children, /parent, /archive, /delete, /share, /unshare, /compact, /status, /files [query], /attach <path[:range]>, /models [id], /agents, /agent <id>, /variant <name>, /thinking <level>, /themes [name], /theme-scheme [system|light|dark|cycle], /config, /keybinds, /interrupt [turn_id], /allow, /deny, /answer, /dismiss, /exit",
             false,
         )])
     }
@@ -4910,6 +5083,7 @@ fn model_picker_label(model: &Value) -> String {
 fn choice_picker_values_from_models(payload: &Value, kind: ChoicePickerKind) -> Vec<String> {
     let key = match kind {
         ChoicePickerKind::Theme => return default_theme_names(),
+        ChoicePickerKind::ThemeScheme => return default_color_scheme_names(),
         ChoicePickerKind::Variant => "variants",
         ChoicePickerKind::Thinking => "thinking",
     };
@@ -4924,6 +5098,7 @@ fn choice_picker_values_from_models(payload: &Value, kind: ChoicePickerKind) -> 
 fn default_choice_picker_values(kind: ChoicePickerKind) -> Vec<String> {
     match kind {
         ChoicePickerKind::Theme => default_theme_names(),
+        ChoicePickerKind::ThemeScheme => default_color_scheme_names(),
         ChoicePickerKind::Variant => ["default", "fast", "balanced", "deep"]
             .into_iter()
             .map(ToString::to_string)
@@ -5131,7 +5306,7 @@ fn initialize_openagent_project_files(workspace: &Path) -> Result<Vec<String>, S
     if !tui_config.exists() {
         fs::write(
             &tui_config,
-            "{\n  // OpenAgent TUI settings\n  \"theme\": \"default\",\n  \"leader_key\": \"\\\\\",\n  \"mouse\": true,\n  \"scroll\": 5,\n  \"diff_style\": \"unified\",\n  \"attention_notifications\": true,\n  \"sounds\": false,\n  \"keybinds\": {\n    \"editor\": \"ctrl+e\",\n    \"stash\": \"ctrl+s\",\n    \"unstash\": \"ctrl+y\"\n  }\n}\n",
+            "{\n  // OpenAgent TUI settings\n  \"theme\": \"default\",\n  \"color_scheme\": \"system\",\n  \"leader_key\": \"\\\\\",\n  \"mouse\": true,\n  \"scroll\": 5,\n  \"diff_style\": \"unified\",\n  \"attention_notifications\": true,\n  \"sounds\": false,\n  \"keybinds\": {\n    \"editor\": \"ctrl+e\",\n    \"stash\": \"ctrl+s\",\n    \"unstash\": \"ctrl+y\"\n  }\n}\n",
         )
         .map_err(|error| error.to_string())?;
         created.push(".openagent/tui.jsonc".to_string());
@@ -5638,6 +5813,8 @@ fn action_map_fixture() -> Value {
         "open-help",
         "open-sessions",
         "open-themes",
+        "open-theme-schemes",
+        "open-color-schemes",
         "open-models",
         "open-agents",
         "open-variants",
@@ -5663,6 +5840,10 @@ fn action_map_fixture() -> Value {
         "select-variant",
         "select-thinking",
         "select-theme",
+        "select-theme-scheme",
+        "select-color-scheme",
+        "cycle-theme-scheme",
+        "cycle-color-scheme",
         "select-file",
         "attach-file",
         "show-toast",
@@ -5964,6 +6145,37 @@ mod tests {
                 "high-contrast".to_string()
             ]
         );
+
+        let schemes = state.apply_control_request(&json!({
+            "path": "/tui/open-theme-schemes",
+            "body": {}
+        }));
+        assert_eq!(schemes["applied"], json!(true));
+        assert_eq!(state.status, "theme-scheme picker");
+        let picker = state.choice_picker.as_ref().expect("scheme picker");
+        assert_eq!(picker.kind, ChoicePickerKind::ThemeScheme);
+        assert_eq!(picker.candidates, default_color_scheme_names());
+
+        let selected_scheme = state.apply_control_request(&json!({
+            "path": "/tui/select-theme-scheme",
+            "body": {"scheme": "dark"}
+        }));
+        assert_eq!(selected_scheme["applied"], json!(true));
+        assert_eq!(state.config.color_scheme, "dark");
+
+        let cycled_scheme = state.apply_control_request(&json!({
+            "path": "/tui/cycle-theme-scheme",
+            "body": {}
+        }));
+        assert_eq!(cycled_scheme["applied"], json!(true));
+        assert_eq!(state.config.color_scheme, "system");
+
+        let published_scheme = state.apply_control_request(&json!({
+            "path": "/tui/publish",
+            "body": {"type": "theme.scheme.light"}
+        }));
+        assert_eq!(published_scheme["applied"], json!(true));
+        assert_eq!(state.config.color_scheme, "light");
 
         let palette = state.apply_control_request(&json!({
             "path": "/tui/open-palette",
@@ -6702,6 +6914,7 @@ mod tests {
             r#"{
                 // user theme
                 "theme": "midnight",
+                "color_scheme": "dark",
                 "keybinds": {"stash": "ctrl+g"},
                 "leader_key": ",",
                 "mouse": false,
@@ -6715,6 +6928,7 @@ mod tests {
 
         let config = TuiConfig::load_from_workspace(&root);
         assert_eq!(config.theme, "midnight");
+        assert_eq!(config.color_scheme, "dark");
         assert_eq!(config.keybinds["stash"], "ctrl+g");
         assert_eq!(config.leader_key, ",");
         assert!(!config.mouse);
@@ -6727,6 +6941,14 @@ mod tests {
         state.input_buffer = "/themes high-contrast".to_string();
         assert!(!state.submit());
         assert_eq!(state.config.theme, "high-contrast");
+
+        state.input_buffer = "/theme-scheme light".to_string();
+        assert!(!state.submit());
+        assert_eq!(state.config.color_scheme, "light");
+
+        state.input_buffer = "/theme-scheme cycle".to_string();
+        assert!(!state.submit());
+        assert_eq!(state.config.color_scheme, "dark");
 
         state.input_buffer = "/config".to_string();
         assert!(!state.submit());
@@ -7330,6 +7552,57 @@ mod tests {
                 .timeline
                 .iter()
                 .any(|line| line.text.contains("theme set to high-contrast"))
+        );
+    }
+
+    #[test]
+    fn key_event_flow_opens_color_scheme_picker_filters_and_selects() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            commands: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                Ok(Vec::new())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+
+        send_key_text("/theme-scheme", &mut state, &mut handler)
+            .expect("type color scheme command");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("open color scheme picker");
+
+        let picker = state.choice_picker.as_ref().expect("color scheme picker");
+        assert_eq!(picker.kind, ChoicePickerKind::ThemeScheme);
+        assert_eq!(picker.candidates, default_color_scheme_names());
+
+        send_key_text("da", &mut state, &mut handler).expect("filter color scheme picker");
+        assert_eq!(
+            state
+                .choice_picker
+                .as_ref()
+                .expect("color scheme picker")
+                .candidates,
+            vec!["dark".to_string()]
+        );
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("select color scheme");
+
+        assert!(state.choice_picker.is_none());
+        assert_eq!(state.config.color_scheme, "dark");
+        assert!(handler.commands.is_empty());
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("color scheme set to dark"))
         );
     }
 
@@ -8100,6 +8373,29 @@ mod tests {
         assert!(rendered.contains("Query"));
         assert!(rendered.contains("midnight  current"));
         assert!(rendered.contains("high-contrast"));
+    }
+
+    #[test]
+    fn terminal_render_snapshot_contains_color_scheme_picker_overlay() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.set_color_scheme("dark");
+        state.open_choice_picker(
+            ChoicePickerKind::ThemeScheme,
+            "",
+            default_color_scheme_names(),
+        );
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw frame");
+        let rendered = format!("{:?}", terminal.backend().buffer());
+
+        assert!(rendered.contains("Color Schemes"));
+        assert!(rendered.contains("Query"));
+        assert!(rendered.contains("dark  current"));
+        assert!(rendered.contains("system"));
     }
 
     #[test]
