@@ -4,6 +4,30 @@
 
 ---
 
+## 2026-06-23 TUI Theme Picker Slice
+
+- Upgraded `/themes` and `/theme` with no argument from passive theme listing into an OpenCode-style keyboard theme picker.
+- Reused the shared choice picker dock for themes, including query filtering, Up/Down/Tab selection, Enter-to-select, Esc-to-close, and a `current` marker for the active TUI theme.
+- Kept direct theme setting compatible: `/themes <name>`, `/theme <name>`, and `/tui/select-theme` still update `TuiConfig.theme` immediately.
+- Updated `/tui/open-themes` remote control to open the same picker path with direct theme payload support.
+- Added keyflow, remote control, and terminal render snapshot coverage for the theme picker.
+
+Verification:
+
+```bash
+cargo test -q -p openagent-tui theme_picker
+cargo test -q -p openagent-tui control_requests_open_model_theme_and_palette_surfaces
+cargo test -q -p openagent-tui tui_config_loads_jsonc_and_theme_command_updates_state
+cargo test -q -p openagent-tui
+cargo check -q -p openagent-tui -p openagent-app-server-client
+git diff --check
+```
+
+Residual risk:
+
+- This implements theme selection as a TUI picker; OpenCode-style theme preview-on-highlight and color-scheme cycle/set remain future slices.
+- Theme choices are still the local OpenAgent TUI theme list unless a remote control payload supplies a custom list.
+
 ## 2026-06-22 TUI Variant Thinking Picker Slice
 
 - Upgraded `/variant` and `/thinking` from passive command/help paths into OpenCode-style keyboard pickers.

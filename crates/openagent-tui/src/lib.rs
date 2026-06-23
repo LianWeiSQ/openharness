@@ -372,12 +372,17 @@ fn choice_picker_dock_lines(state: &TuiState) -> Vec<Line<'static>> {
     }
     for (index, choice) in picker.candidates.iter().enumerate().take(6) {
         let marker = if picker.selected == index { ">" } else { " " };
+        let suffix = if picker.kind == ChoicePickerKind::Theme && state.config.theme == *choice {
+            "  current"
+        } else {
+            ""
+        };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{marker} {}. ", index + 1),
                 Style::default().fg(Color::Yellow),
             ),
-            Span::raw(choice.clone()),
+            Span::raw(format!("{choice}{suffix}")),
         ]));
     }
     lines
@@ -808,11 +813,11 @@ fn handle_key_event<H: TerminalEventHandler>(
             }
             state.remember_history(&submitted);
             if submitted.starts_with('/') {
-                if handle_local_state_command(&submitted, state, handler)? {
+                if let Some(kind) = choice_picker_command_kind(&submitted) {
+                    open_choice_picker_from_command(state, handler, kind)?;
                     return Ok(false);
                 }
-                if let Some(kind) = choice_picker_command_kind(&submitted) {
-                    open_choice_picker_from_handler(state, handler, kind)?;
+                if handle_local_state_command(&submitted, state, handler)? {
                     return Ok(false);
                 }
                 if agent_picker_command_query(&submitted).is_some() {
@@ -1069,6 +1074,22 @@ fn open_choice_picker_from_handler<H: TerminalEventHandler>(
     Ok(())
 }
 
+fn open_choice_picker_from_command<H: TerminalEventHandler>(
+    state: &mut TuiState,
+    handler: &mut H,
+    kind: ChoicePickerKind,
+) -> Result<(), String> {
+    match kind {
+        ChoicePickerKind::Theme => {
+            state.open_choice_picker(ChoicePickerKind::Theme, "", default_theme_names());
+            Ok(())
+        }
+        ChoicePickerKind::Variant | ChoicePickerKind::Thinking => {
+            open_choice_picker_from_handler(state, handler, kind)
+        }
+    }
+}
+
 fn select_choice_picker_from_handler<H: TerminalEventHandler>(
     state: &mut TuiState,
     handler: &mut H,
@@ -1078,6 +1099,10 @@ fn select_choice_picker_from_handler<H: TerminalEventHandler>(
         return Ok(());
     };
     state.close_choice_picker();
+    if kind == ChoicePickerKind::Theme {
+        state.set_theme(&value);
+        return Ok(());
+    }
     let lines = handler.handle_command(&format!("/{} {value}", kind.command_name()))?;
     apply_handler_output(state, handler, lines);
     Ok(())
@@ -1240,6 +1265,7 @@ fn agent_picker_command_query(command: &str) -> Option<&str> {
 
 fn choice_picker_command_kind(command: &str) -> Option<ChoicePickerKind> {
     match command {
+        "/theme" | "/themes" => Some(ChoicePickerKind::Theme),
         "/variant" => Some(ChoicePickerKind::Variant),
         "/thinking" => Some(ChoicePickerKind::Thinking),
         _ => None,
@@ -1415,7 +1441,7 @@ fn handle_remote_control_request<H: TerminalEventHandler>(
         .filter(|value| !value.trim().is_empty())
     {
         if let Some(kind) = choice_picker_command_kind(command) {
-            if let Err(error) = open_choice_picker_from_handler(state, handler, kind) {
+            if let Err(error) = open_choice_picker_from_command(state, handler, kind) {
                 state.timeline.push(TimelineLine::new("error", error, true));
             }
         } else if agent_picker_command_query(command).is_some() {
@@ -1667,6 +1693,7 @@ pub struct TuiState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ChoicePickerKind {
+    Theme,
     Variant,
     Thinking,
 }
@@ -1674,6 +1701,7 @@ pub enum ChoicePickerKind {
 impl ChoicePickerKind {
     fn command_name(self) -> &'static str {
         match self {
+            Self::Theme => "theme",
             Self::Variant => "variant",
             Self::Thinking => "thinking",
         }
@@ -1681,6 +1709,7 @@ impl ChoicePickerKind {
 
     fn title(self) -> &'static str {
         match self {
+            Self::Theme => "Themes",
             Self::Variant => "Variants",
             Self::Thinking => "Thinking",
         }
@@ -1688,6 +1717,7 @@ impl ChoicePickerKind {
 
     fn item_label(self) -> &'static str {
         match self {
+            Self::Theme => "themes",
             Self::Variant => "variants",
             Self::Thinking => "thinking levels",
         }
@@ -2104,6 +2134,16 @@ impl TuiState {
             true,
         ));
         self.status = "attachment inserted".to_string();
+    }
+
+    pub fn set_theme(&mut self, theme: &str) {
+        self.config.theme = theme.to_string();
+        self.timeline.push(TimelineLine::new(
+            "status",
+            format!("theme set to {}", self.config.theme),
+            true,
+        ));
+        self.status = "theme updated".to_string();
     }
 
     pub fn open_choice_picker(
@@ -3275,15 +3315,10 @@ impl TuiState {
                         ),
                         false,
                     ));
+                    self.status = "theme updated".to_string();
                 } else {
-                    self.config.theme = requested.to_string();
-                    self.timeline.push(TimelineLine::new(
-                        "status",
-                        format!("theme set to {}", self.config.theme),
-                        true,
-                    ));
+                    self.set_theme(requested);
                 }
-                self.status = "theme updated".to_string();
                 true
             }
             "config" => {
@@ -3551,6 +3586,7 @@ impl TuiState {
             })
             .filter(|items| !items.is_empty())
             .unwrap_or_else(default_theme_names);
+        self.open_choice_picker(ChoicePickerKind::Theme, "", themes.clone());
         self.timeline.push(TimelineLine::new(
             "status",
             format!(
@@ -3560,7 +3596,6 @@ impl TuiState {
             ),
             true,
         ));
-        self.status = "theme picker".to_string();
         json!({"applied": true, "action": action_name, "themes": themes})
     }
 
@@ -3570,13 +3605,7 @@ impl TuiState {
             self.status = "control invalid".to_string();
             return json!({"applied": false, "action": action_name, "error": "theme is required"});
         }
-        self.config.theme = theme.clone();
-        self.timeline.push(TimelineLine::new(
-            "status",
-            format!("theme set to {theme}"),
-            true,
-        ));
-        self.status = "theme updated".to_string();
+        self.set_theme(&theme);
         json!({"applied": true, "action": action_name, "theme": theme})
     }
 
@@ -4880,6 +4909,7 @@ fn model_picker_label(model: &Value) -> String {
 
 fn choice_picker_values_from_models(payload: &Value, kind: ChoicePickerKind) -> Vec<String> {
     let key = match kind {
+        ChoicePickerKind::Theme => return default_theme_names(),
         ChoicePickerKind::Variant => "variants",
         ChoicePickerKind::Thinking => "thinking",
     };
@@ -4893,6 +4923,7 @@ fn choice_picker_values_from_models(payload: &Value, kind: ChoicePickerKind) -> 
 
 fn default_choice_picker_values(kind: ChoicePickerKind) -> Vec<String> {
     match kind {
+        ChoicePickerKind::Theme => default_theme_names(),
         ChoicePickerKind::Variant => ["default", "fast", "balanced", "deep"]
             .into_iter()
             .map(ToString::to_string)
@@ -5916,6 +5947,23 @@ mod tests {
         }));
         assert_eq!(theme["applied"], json!(true));
         assert_eq!(state.config.theme, "midnight");
+
+        let themes = state.apply_control_request(&json!({
+            "path": "/tui/open-themes",
+            "body": {"themes": ["default", "midnight", "high-contrast"]}
+        }));
+        assert_eq!(themes["applied"], json!(true));
+        assert_eq!(state.status, "theme picker");
+        let picker = state.choice_picker.as_ref().expect("theme picker");
+        assert_eq!(picker.kind, ChoicePickerKind::Theme);
+        assert_eq!(
+            picker.candidates,
+            vec![
+                "default".to_string(),
+                "midnight".to_string(),
+                "high-contrast".to_string()
+            ]
+        );
 
         let palette = state.apply_control_request(&json!({
             "path": "/tui/open-palette",
@@ -7236,6 +7284,56 @@ mod tests {
     }
 
     #[test]
+    fn key_event_flow_opens_theme_picker_filters_and_selects() {
+        #[derive(Default)]
+        struct CaptureHandler {
+            commands: Vec<String>,
+        }
+
+        impl TerminalEventHandler for CaptureHandler {
+            fn handle_submit(&mut self, _prompt: &str) -> Result<Vec<TimelineLine>, String> {
+                Ok(Vec::new())
+            }
+
+            fn handle_command(&mut self, command: &str) -> Result<Vec<TimelineLine>, String> {
+                self.commands.push(command.to_string());
+                Ok(Vec::new())
+            }
+        }
+
+        let mut state = TuiState::new();
+        let mut handler = CaptureHandler::default();
+
+        send_key_text("/themes", &mut state, &mut handler).expect("type themes command");
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("open theme picker");
+
+        let picker = state.choice_picker.as_ref().expect("theme picker");
+        assert_eq!(picker.kind, ChoicePickerKind::Theme);
+        assert_eq!(picker.candidates, default_theme_names());
+
+        send_key_text("high", &mut state, &mut handler).expect("filter theme picker");
+        assert_eq!(
+            state
+                .choice_picker
+                .as_ref()
+                .expect("theme picker")
+                .candidates,
+            vec!["high-contrast".to_string()]
+        );
+        press_key(KeyCode::Enter, &mut state, &mut handler).expect("select theme");
+
+        assert!(state.choice_picker.is_none());
+        assert_eq!(state.config.theme, "high-contrast");
+        assert!(handler.commands.is_empty());
+        assert!(
+            state
+                .timeline
+                .iter()
+                .any(|line| line.text.contains("theme set to high-contrast"))
+        );
+    }
+
+    #[test]
     fn key_event_flow_at_opens_file_picker_without_touching_commands() {
         #[derive(Default)]
         struct CaptureHandler {
@@ -7983,6 +8081,25 @@ mod tests {
         assert!(rendered.contains("Query"));
         assert!(rendered.contains("deep"));
         assert!(rendered.contains("Enter select"));
+    }
+
+    #[test]
+    fn terminal_render_snapshot_contains_theme_picker_overlay() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = TuiState::new();
+        state.set_theme("midnight");
+        state.open_choice_picker(ChoicePickerKind::Theme, "", default_theme_names());
+
+        terminal
+            .draw(|frame| draw_terminal_frame(frame, "OpenAgent", &state))
+            .expect("draw frame");
+        let rendered = format!("{:?}", terminal.backend().buffer());
+
+        assert!(rendered.contains("Themes"));
+        assert!(rendered.contains("Query"));
+        assert!(rendered.contains("midnight  current"));
+        assert!(rendered.contains("high-contrast"));
     }
 
     #[test]
