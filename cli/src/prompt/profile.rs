@@ -93,7 +93,7 @@ pub(crate) fn load_agent_profile_by_name(
     args: &[String],
     raw_name: &str,
 ) -> Result<RunAgentProfile, String> {
-    let agent_id = sanitize_identifier(&raw_name);
+    let agent_id = sanitize_identifier(raw_name);
     let path = agent_registry_dir(args).join(format!("{agent_id}.json"));
     let value = read_json_file(&path);
     if value.as_object().is_some_and(|object| !object.is_empty()) {

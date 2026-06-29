@@ -5,8 +5,13 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -14,6 +19,7 @@ use openagent_cli::cli_commands_fixture;
 use serde_json::{Value, json};
 
 type MockServer = thread::JoinHandle<Result<(), String>>;
+type DrippingSseProvider = (u16, MockServer, mpsc::Sender<()>, Arc<AtomicBool>);
 
 #[test]
 fn cli_commands_fixture_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
@@ -567,8 +573,7 @@ fn binary_run_streams_openai_chat_sse_provider_events() -> Result<(), Box<dyn Er
 
 #[test]
 fn binary_run_emits_provider_sse_delta_before_stream_closes() -> Result<(), Box<dyn Error>> {
-    let (port, server) = serve_dripping_sse_provider()?;
-    let start = Instant::now();
+    let (port, server, release_server, server_timed_out) = serve_dripping_sse_provider()?;
     let mut child = Command::new(env!("CARGO_BIN_EXE_openagent"))
         .args([
             "run",
@@ -594,9 +599,10 @@ fn binary_run_emits_provider_sse_delta_before_stream_closes() -> Result<(), Box<
     let mut first_line = String::new();
     reader.read_line(&mut first_line)?;
     assert!(
-        start.elapsed() < Duration::from_millis(900),
+        !server_timed_out.load(Ordering::SeqCst),
         "first stream event should arrive before the mock server closes"
     );
+    let _ = release_server.send(());
     let first_event: Value = serde_json::from_str(first_line.trim())?;
     assert_eq!(first_event["method"], "item/agentMessage/delta");
     assert_eq!(first_event["params"]["delta"], "hello ");
@@ -1491,9 +1497,12 @@ fn serve_http_once_with_listener(
     })
 }
 
-fn serve_dripping_sse_provider() -> Result<(u16, MockServer), Box<dyn Error>> {
+fn serve_dripping_sse_provider() -> Result<DrippingSseProvider, Box<dyn Error>> {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let port = listener.local_addr()?.port();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let server_timed_out = Arc::clone(&timed_out);
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
         let _ = read_http_request_body(&mut stream)?;
@@ -1509,7 +1518,9 @@ fn serve_dripping_sse_provider() -> Result<(u16, MockServer), Box<dyn Error>> {
             .map_err(|error| error.to_string())?;
         write_http_chunk(&mut stream, first)?;
         stream.flush().map_err(|error| error.to_string())?;
-        thread::sleep(Duration::from_millis(500));
+        if release_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+            server_timed_out.store(true, Ordering::SeqCst);
+        }
         write_http_chunk(&mut stream, second)?;
         write_http_chunk(&mut stream, done)?;
         stream
@@ -1517,7 +1528,7 @@ fn serve_dripping_sse_provider() -> Result<(u16, MockServer), Box<dyn Error>> {
             .map_err(|error| error.to_string())?;
         stream.flush().map_err(|error| error.to_string())
     });
-    Ok((port, server))
+    Ok((port, server, release_tx, timed_out))
 }
 
 fn write_http_chunk(stream: &mut std::net::TcpStream, chunk: &[u8]) -> Result<(), String> {
