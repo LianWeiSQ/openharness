@@ -1,24 +1,19 @@
 use super::*;
+use super::prompt::{
+    agent_profile_public_value, available_agent_profiles, load_agent_profile_by_name,
+};
 
 pub(super) fn agent_command(args: &[String]) -> CliRunResult {
     if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {
         return ok_text(
-            "Usage: openagent agent <list|create|show|delete|run> [name] [--model <id>] [--provider <id>] [--mode <primary|subagent>] [--permission <ruleset>] [--prompt <text>] [--tool <name>]",
+            "Usage: openagent agent <list|create|show|delete|run> [name] [--model <id>] [--provider <id>] [--mode <primary|subagent|all>] [--permission <ruleset>] [--prompt <text>] [--tool <name>]",
         );
     }
     match args[0].as_str() {
         "list" | "ls" => {
-            let dir = agent_registry_dir(args);
-            let agents = fs::read_dir(&dir)
-                .ok()
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    (path.extension().and_then(|value| value.to_str()) == Some("json"))
-                        .then(|| read_json_file(&path))
-                })
+            let agents = available_agent_profiles(args)
+                .iter()
+                .map(agent_profile_public_value)
                 .collect::<Vec<_>>();
             CliRunResult::ok_json(&json!({"agents": agents}))
         }
@@ -44,8 +39,8 @@ pub(super) fn agent_command(args: &[String]) -> CliRunResult {
             };
             let agent_id = sanitize_identifier(name);
             let mode = value_for(args, &["--mode"]).unwrap_or_else(|| "primary".to_string());
-            if !matches!(mode.as_str(), "primary" | "subagent") {
-                return err_text(2, "agent mode must be primary or subagent");
+            if !matches!(mode.as_str(), "primary" | "subagent" | "all") {
+                return err_text(2, "agent mode must be primary, subagent, or all");
             }
             let dir = agent_registry_dir(args);
             let path = dir.join(format!("{agent_id}.json"));
@@ -74,8 +69,10 @@ pub(super) fn agent_command(args: &[String]) -> CliRunResult {
             let Some(name) = positionals.get(1).or_else(|| positionals.first()) else {
                 return err_text(2, "agent show requires a name");
             };
-            let path = agent_registry_dir(args).join(format!("{}.json", sanitize_identifier(name)));
-            CliRunResult::ok_json(&read_json_file(&path))
+            match load_agent_profile_by_name(args, name) {
+                Ok(profile) => CliRunResult::ok_json(&agent_profile_public_value(&profile)),
+                Err(error) => err_text(1, error),
+            }
         }
         "delete" | "rm" => {
             let positionals = positional_args(args, &["--workspace", "--dir", "--format"]);

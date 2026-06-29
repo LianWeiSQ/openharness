@@ -204,7 +204,7 @@ fn call_openai_compatible_provider(
         });
         Ok(ProviderRunResult {
             answer: if answer.is_empty() && tool_calls.is_empty() {
-                python_json_dumps(&value)
+                stable_json_dumps(&value)
             } else {
                 answer
             },
@@ -368,7 +368,7 @@ fn provider_events_to_run_result(
         && tool_calls.is_empty()
         && let Some(value) = fallback_json
     {
-        answer = python_json_dumps(value);
+        answer = stable_json_dumps(value);
     }
     ProviderRunResult {
         answer,

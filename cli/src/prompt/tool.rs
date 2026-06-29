@@ -63,7 +63,7 @@ fn openai_tool_call_value(call: &ToolCall) -> Value {
         "type": "function",
         "function": {
             "name": call.name.clone(),
-            "arguments": python_json_dumps(&call.input),
+            "arguments": stable_json_dumps(&call.input),
         },
         "name": call.name.clone(),
         "input": call.input.clone(),

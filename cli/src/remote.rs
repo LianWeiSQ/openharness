@@ -220,7 +220,7 @@ fn app_event_dedupe_key(event: &Value) -> Option<String> {
         "{}:{}:{}",
         app_event_sequence(event),
         event.get("method").and_then(Value::as_str).unwrap_or(""),
-        python_json_dumps(event.get("params").unwrap_or(&Value::Null))
+        stable_json_dumps(event.get("params").unwrap_or(&Value::Null))
     ))
 }
 
@@ -650,7 +650,7 @@ fn interactive_remote_loop(args: &[String], url: &str, auth: &RemoteAuth) -> Cli
                         stdout.push_str(&text_from_app_events(events));
                         stdout.push('\n');
                     } else {
-                        stdout.push_str(&python_json_dumps(&payload));
+                        stdout.push_str(&stable_json_dumps(&payload));
                         stdout.push('\n');
                     }
                 }
@@ -680,7 +680,7 @@ fn interactive_remote_loop(args: &[String], url: &str, auth: &RemoteAuth) -> Cli
                         stdout.push('\n');
                     }
                     Ok(_) => {
-                        stdout.push_str(&python_json_dumps(&payload));
+                        stdout.push_str(&stable_json_dumps(&payload));
                         stdout.push('\n');
                     }
                     Err(error) => return err_text(1, error),
@@ -813,7 +813,7 @@ impl openagent_tui::TerminalEventHandler for RemoteTerminalHandler {
         self.last_turn_id = remote_turn_id(&payload).or_else(|| self.last_turn_id.clone());
         let events = remote_events_for_payload(&self.url, &self.auth, &payload)?;
         if events.is_empty() {
-            return Ok(tui_lines("assistant", python_json_dumps(&payload), false));
+            return Ok(tui_lines("assistant", stable_json_dumps(&payload), false));
         }
         let events = self.filter_new_events(events);
         self.pending_events.extend(events);

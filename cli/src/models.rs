@@ -94,7 +94,7 @@ pub(super) fn models_command(args: &[String]) -> CliRunResult {
                         context,
                         output,
                         capabilities,
-                        python_json_dumps(model),
+                        stable_json_dumps(model),
                     ]
                 } else {
                     vec![id.to_string(), context, output, capabilities]
@@ -595,7 +595,7 @@ fn models_catalog_text(payload: &Value, verbose: bool) -> String {
         if verbose {
             lines.push(format!(
                 "{id} ({label}) models={count} {}",
-                python_json_dumps(provider)
+                stable_json_dumps(provider)
             ));
         } else {
             lines.push(format!("{id} ({label}) models={count}"));

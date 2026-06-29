@@ -136,7 +136,7 @@ fn mcp_json_rpc(
             .map_err(|error| format!("MCP response was not JSON: {error}"))?
     };
     if let Some(error) = value.get("error") {
-        return Err(format!("MCP JSON-RPC error: {}", python_json_dumps(error)));
+        return Err(format!("MCP JSON-RPC error: {}", stable_json_dumps(error)));
     }
     Ok(value.get("result").cloned().unwrap_or(value))
 }

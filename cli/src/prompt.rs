@@ -9,10 +9,14 @@ mod tool;
 use agent_loop::{AgentLoopRequest, pending_resume_from_session, run_agent_loop};
 pub(crate) use mcp_runtime::discover_mcp_server_tools;
 use mcp_runtime::{McpRuntime, execute_mcp_tool, load_mcp_runtime};
+pub(super) use profile::{
+    agent_profile_public_value, available_agent_profiles, load_agent_profile_by_name,
+};
 use profile::{
-    RunAgentProfile, agent_profile_public_value, bind_agent_profile_system_prompt,
-    filter_tools_for_agent, load_agent_profile_from_args, permission_ruleset_from_args,
-    provider_and_model_from_args,
+    RunAgentProfile, available_subagent_profiles, bind_agent_profile_system_prompt,
+    filter_tools_for_agent, load_agent_profile_from_args, permission_ruleset_for_profile,
+    permission_ruleset_from_args, provider_and_model_for_subagent, provider_and_model_from_args,
+    task_subagent_descriptors,
 };
 use provider::{add_usage, call_provider_for_run, parse_sse_json_values};
 pub(crate) use tool::split_answer_items;
@@ -278,7 +282,7 @@ pub(super) fn run_prompt_command_with_events(
         return ok_text(
             events
                 .iter()
-                .map(python_json_dumps)
+                .map(stable_json_dumps)
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -347,7 +351,7 @@ fn run_attached_command(
             return ok_text(
                 events
                     .iter()
-                    .map(python_json_dumps)
+                    .map(stable_json_dumps)
                     .collect::<Vec<_>>()
                     .join("\n"),
             );
@@ -357,7 +361,7 @@ fn run_attached_command(
     if !events.is_empty() {
         ok_text(text_from_app_events(&events))
     } else {
-        ok_text(python_json_dumps(&payload))
+        ok_text(stable_json_dumps(&payload))
     }
 }
 
@@ -444,7 +448,7 @@ fn err_json_events(
         stdout: ensure_trailing_newline(
             events
                 .iter()
-                .map(python_json_dumps)
+                .map(stable_json_dumps)
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 type MockServer = thread::JoinHandle<Result<(), String>>;
 
 #[test]
-fn cli_commands_fixture_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn cli_commands_fixture_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     assert_eq!(cli_commands_fixture(), fixture);
     Ok(())
@@ -1240,7 +1240,7 @@ fn binary_attach_and_tui_attach_use_remote_bridge_events() -> Result<(), Box<dyn
 
 fn read_fixture() -> Result<Value, Box<dyn Error>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/golden/rust_rewrite/cli_commands.json");
+        .join("../tests/golden/rust_rewrite/cli_commands.json");
     let raw = fs::read_to_string(path)?;
     Ok(serde_json::from_str(&raw)?)
 }

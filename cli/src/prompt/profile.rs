@@ -4,15 +4,21 @@ use super::*;
 pub(super) struct RunAgentProfile {
     pub(super) id: String,
     pub(super) name: String,
+    pub(super) description: Option<String>,
     pub(super) mode: String,
     pub(super) model: Option<String>,
     pub(super) provider: Option<String>,
     pub(super) permission: Option<String>,
     pub(super) prompt: Option<String>,
     pub(super) tools: Vec<String>,
+    pub(super) hidden: bool,
     pub(super) source_path: Option<PathBuf>,
     pub(super) loaded: bool,
 }
+
+const BUILD_AGENT_PROMPT: &str = include_str!("../../../skill/prompts/build.txt");
+const EXPLORE_AGENT_PROMPT: &str = include_str!("../../../skill/prompts/explore.txt");
+const PLAN_AGENT_PROMPT: &str = include_str!("../../../skill/prompts/plan.txt");
 
 pub(super) fn provider_and_model_from_args(
     args: &[String],
@@ -46,6 +52,32 @@ pub(super) fn provider_and_model_from_args(
     (provider, model)
 }
 
+pub(super) fn provider_and_model_for_subagent(
+    parent_provider: &str,
+    parent_model: &str,
+    agent_profile: &RunAgentProfile,
+) -> (String, String) {
+    if let Some(raw) = agent_profile.model.as_deref()
+        && let Some((provider, model)) = raw.split_once('/')
+        && !provider.is_empty()
+        && !model.is_empty()
+    {
+        let provider = normalize_provider(Some(provider)).unwrap_or_else(|_| provider.to_string());
+        return (provider, model.to_string());
+    }
+    let provider = agent_profile
+        .provider
+        .as_deref()
+        .map(str::to_string)
+        .unwrap_or_else(|| parent_provider.to_string());
+    let provider = normalize_provider(Some(&provider)).unwrap_or(provider);
+    let model = agent_profile
+        .model
+        .clone()
+        .unwrap_or_else(|| parent_model.to_string());
+    (provider, model)
+}
+
 pub(super) fn load_agent_profile_from_args(
     args: &[String],
     _workspace: &Path,
@@ -53,36 +85,117 @@ pub(super) fn load_agent_profile_from_args(
     let Some(raw_name) = value_for(args, &["--agent"]) else {
         return Ok(None);
     };
+    Ok(Some(load_agent_profile_by_name(args, &raw_name)?))
+}
+
+pub(super) fn load_agent_profile_by_name(
+    args: &[String],
+    raw_name: &str,
+) -> Result<RunAgentProfile, String> {
     let agent_id = sanitize_identifier(&raw_name);
     let path = agent_registry_dir(args).join(format!("{agent_id}.json"));
     let value = read_json_file(&path);
-    if value.as_object().is_none_or(Map::is_empty) {
-        return Err(format!(
-            "agent profile not found: {raw_name} ({})",
-            path.display()
-        ));
+    if value.as_object().is_some_and(|object| !object.is_empty()) {
+        return agent_profile_from_value(&value, Some(path), &agent_id, raw_name, true);
     }
+    available_agent_profiles(args)
+        .into_iter()
+        .find(|profile| {
+            profile.id == agent_id
+                || sanitize_identifier(&profile.name) == agent_id
+                || profile.name.eq_ignore_ascii_case(raw_name)
+        })
+        .ok_or_else(|| format!("agent profile not found: {raw_name} ({})", path.display()))
+}
+
+pub(super) fn available_agent_profiles(args: &[String]) -> Vec<RunAgentProfile> {
+    let mut profiles = builtin_agent_profiles()
+        .into_iter()
+        .map(|profile| (profile.id.clone(), profile))
+        .collect::<BTreeMap<_, _>>();
+    let dir = agent_registry_dir(args);
+    let mut paths = fs::read_dir(&dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let value = read_json_file(&path);
+        if value.as_object().is_none_or(Map::is_empty) {
+            continue;
+        }
+        let fallback_id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .map(sanitize_identifier)
+            .unwrap_or_else(|| "agent".to_string());
+        if let Ok(profile) =
+            agent_profile_from_value(&value, Some(path), &fallback_id, &fallback_id, true)
+        {
+            profiles.insert(profile.id.clone(), profile);
+        }
+    }
+    profiles.into_values().collect()
+}
+
+pub(super) fn available_subagent_profiles(
+    args: &[String],
+    include_hidden: bool,
+) -> Vec<RunAgentProfile> {
+    available_agent_profiles(args)
+        .into_iter()
+        .filter(|profile| is_subagent_mode(&profile.mode))
+        .filter(|profile| include_hidden || !profile.hidden)
+        .collect()
+}
+
+pub(super) fn task_subagent_descriptors(args: &[String]) -> Vec<TaskSubagentDescriptor> {
+    available_subagent_profiles(args, false)
+        .into_iter()
+        .map(|profile| TaskSubagentDescriptor {
+            id: profile.id,
+            name: profile.name,
+            description: profile.description.unwrap_or_default(),
+        })
+        .collect()
+}
+
+fn agent_profile_from_value(
+    value: &Value,
+    source_path: Option<PathBuf>,
+    fallback_id: &str,
+    fallback_name: &str,
+    loaded: bool,
+) -> Result<RunAgentProfile, String> {
     let mode = value
         .get("mode")
         .and_then(Value::as_str)
         .unwrap_or("primary")
         .to_ascii_lowercase();
-    if !matches!(mode.as_str(), "primary" | "subagent") {
+    if !matches!(mode.as_str(), "primary" | "subagent" | "all") {
         return Err(format!(
-            "agent profile {agent_id} has invalid mode '{mode}'; expected primary or subagent"
+            "agent profile {fallback_id} has invalid mode '{mode}'; expected primary, subagent, or all"
         ));
     }
-    Ok(Some(RunAgentProfile {
+    Ok(RunAgentProfile {
         id: value
             .get("id")
             .and_then(Value::as_str)
             .map(sanitize_identifier)
-            .unwrap_or(agent_id),
+            .unwrap_or_else(|| sanitize_identifier(fallback_id)),
         name: value
             .get("name")
             .and_then(Value::as_str)
-            .unwrap_or(&raw_name)
+            .unwrap_or(fallback_name)
             .to_string(),
+        description: value
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         mode,
         model: value
             .get("model")
@@ -108,20 +221,102 @@ pub(super) fn load_agent_profile_from_args(
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect(),
-        source_path: Some(path),
+        hidden: value
+            .get("hidden")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        source_path,
+        loaded,
+    })
+}
+
+fn builtin_agent_profiles() -> Vec<RunAgentProfile> {
+    vec![
+        builtin_agent_profile(
+            "build",
+            "Build",
+            "Primary implementation agent for coding, testing, and general project work.",
+            "primary",
+            Some("PLAN_ONLY"),
+            BUILD_AGENT_PROMPT,
+            &[],
+        ),
+        builtin_agent_profile(
+            "general",
+            "General",
+            "General-purpose subagent for complex multi-step implementation, debugging, and research tasks.",
+            "subagent",
+            Some("PLAN_ONLY"),
+            BUILD_AGENT_PROMPT,
+            &[],
+        ),
+        builtin_agent_profile(
+            "explore",
+            "Explore",
+            "Read-only code exploration subagent for fast search, mapping, and evidence gathering.",
+            "subagent",
+            Some("READONLY"),
+            EXPLORE_AGENT_PROMPT,
+            &["read", "glob", "grep", "ls", "code_search", "skill", "todoread"],
+        ),
+        builtin_agent_profile(
+            "plan",
+            "Plan",
+            "Planning subagent for architecture analysis, implementation strategy, and task breakdowns.",
+            "subagent",
+            Some("PLAN_ONLY"),
+            PLAN_AGENT_PROMPT,
+            &[
+                "read",
+                "glob",
+                "grep",
+                "ls",
+                "code_search",
+                "skill",
+                "todoread",
+                "todowrite",
+                "question",
+            ],
+        ),
+    ]
+}
+
+fn builtin_agent_profile(
+    id: &str,
+    name: &str,
+    description: &str,
+    mode: &str,
+    permission: Option<&str>,
+    prompt: &str,
+    tools: &[&str],
+) -> RunAgentProfile {
+    RunAgentProfile {
+        id: id.to_string(),
+        name: name.to_string(),
+        description: Some(description.to_string()),
+        mode: mode.to_string(),
+        model: None,
+        provider: None,
+        permission: permission.map(str::to_string),
+        prompt: Some(prompt.trim_start_matches('\u{feff}').to_string()),
+        tools: tools.iter().map(|item| (*item).to_string()).collect(),
+        hidden: false,
+        source_path: None,
         loaded: true,
-    }))
+    }
 }
 
 pub(super) fn agent_profile_public_value(profile: &RunAgentProfile) -> Value {
     json!({
         "id": profile.id.clone(),
         "name": profile.name.clone(),
+        "description": profile.description.clone(),
         "mode": profile.mode.clone(),
         "model": profile.model.clone(),
         "provider": profile.provider.clone(),
         "permission": profile.permission.clone(),
         "tools": profile.tools.clone(),
+        "hidden": profile.hidden,
         "loaded": profile.loaded,
         "source_path": profile.source_path.as_ref().map(|path| path.to_string_lossy().to_string()),
     })
@@ -217,7 +412,23 @@ pub(super) fn permission_ruleset_from_args(
     parse_permission_ruleset(&raw)
 }
 
-fn parse_permission_ruleset(raw: &str) -> Result<PermissionRuleset, String> {
+pub(super) fn permission_ruleset_for_profile(
+    agent_profile: &RunAgentProfile,
+    fallback: PermissionRuleset,
+) -> Result<PermissionRuleset, String> {
+    agent_profile
+        .permission
+        .as_deref()
+        .map(parse_permission_ruleset)
+        .transpose()
+        .map(|value| value.unwrap_or(fallback))
+}
+
+pub(super) fn is_subagent_mode(mode: &str) -> bool {
+    matches!(mode, "subagent" | "all")
+}
+
+pub(super) fn parse_permission_ruleset(raw: &str) -> Result<PermissionRuleset, String> {
     match raw.trim().to_ascii_uppercase().replace('-', "_").as_str() {
         "FULL" | "ALLOW" | "AUTO" => Ok(PermissionRuleset::Full),
         "READONLY" | "READ_ONLY" => Ok(PermissionRuleset::Readonly),
