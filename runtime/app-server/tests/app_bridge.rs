@@ -4,14 +4,14 @@ use openagent_app_server::{app_bridge_protocol_fixture, app_bridge_server_fixtur
 use serde_json::Value;
 
 #[test]
-fn app_bridge_protocol_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn app_bridge_protocol_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     assert_eq!(app_bridge_protocol_fixture(), section(&fixture, "protocol"));
     Ok(())
 }
 
 #[test]
-fn app_bridge_server_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn app_bridge_server_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     assert_eq!(app_bridge_server_fixture(), section(&fixture, "server"));
     Ok(())

@@ -7,7 +7,7 @@ use openagent_eval::{
 use serde_json::Value;
 
 #[test]
-fn eval_integrations_fixture_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn eval_integrations_fixture_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     assert_eq!(eval_integrations_fixture(), fixture);
     Ok(())
@@ -34,7 +34,7 @@ fn benchmark_adapter_helpers_cover_edge_cases() {
 
 fn read_fixture() -> Result<Value, Box<dyn Error>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/golden/rust_rewrite/eval_integrations.json");
+        .join("../tests/golden/rust_rewrite/eval_integrations.json");
     let raw = fs::read_to_string(path)?;
     Ok(serde_json::from_str(&raw)?)
 }

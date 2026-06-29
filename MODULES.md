@@ -1,20 +1,21 @@
-# OpenAgent Rust Crates
+# OpenHarness Rust Modules
 
-Goal 1 establishes the Rust workspace boundary. These crates are intentionally
-small until later goals migrate behavior from Python.
+The Rust workspace is grouped by product boundary. `src/` owns the core engine
+and internal library crates; user-facing or operational surfaces stay as clear
+top-level modules.
 
-| Crate | Future owner |
+| Directory | Crate |
 | --- | --- |
-| `openagent-protocol` | Shared protocol types and serde contracts |
-| `openagent-core` | Agent loop, context, permission, and policy |
-| `openagent-tools` | Tool registry, built-in tools, workspace runtime |
-| `openagent-provider` | Model provider adapters |
-| `openagent-session` | Session store, trace, observability records |
-| `openagent-swarm` | Agent-agnostic swarm kernel |
-| `openagent-mcp` | MCP config, auth, discovery, and tool bridge |
-| `openagent-eval` | Eval runner, CI gate, benchmark integrations |
-| `openagent-cli` | `openagent` CLI binary |
-| `openagent-app-server` | App Bridge server |
-| `openagent-app-server-client` | App Bridge client SDK |
-| `openagent-tui` | Local and remote terminal UI |
-| `openagent-http-runtime` | HTTP runtime service replacing FastAPI |
+| `src` | `openagent-core` |
+| `src/protocol` | `openagent-protocol` |
+| `src/tools` | `openagent-tools` |
+| `src/provider` | `openagent-provider` |
+| `src/session` | `openagent-session` |
+| `src/mcp` | `openagent-mcp` |
+| `swarm` | `openagent-swarm` |
+| `eval` | `openagent-eval` |
+| `cli` | `openagent-cli` |
+| `runtime/app-server` | `openagent-app-server` |
+| `runtime/app-server-client` | `openagent-app-server-client` |
+| `runtime/tui` | `openagent-tui` |
+| `runtime/http` | `openagent-http-runtime` |

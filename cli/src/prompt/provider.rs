@@ -17,6 +17,18 @@ pub(super) fn call_provider_for_run(
     tools: &[ToolSchema],
     stream_sink: Option<&mut dyn FnMut(&ProviderStreamEvent)>,
 ) -> Result<ProviderRunResult, String> {
+    if subagent_profile_id(messages).is_some()
+        && let Ok(answer) = env::var("OPENAGENT_MOCK_SUBAGENT_ANSWER")
+        && !answer.is_empty()
+    {
+        return Ok(ProviderRunResult {
+            answer,
+            tool_calls: Vec::new(),
+            usage: Usage::default(),
+            source: "mock_subagent".to_string(),
+            finish_reason: "stop".to_string(),
+        });
+    }
     if !messages.iter().any(|message| message.role == Role::Tool)
         && let Some(tool_calls) = mock_tool_calls_from_env()?
     {
@@ -63,6 +75,24 @@ pub(super) fn call_provider_for_run(
             stream_sink,
         )
     }
+}
+
+fn subagent_profile_id(messages: &[ChatMessage]) -> Option<&str> {
+    messages.iter().find_map(|message| {
+        (message.role == Role::System
+            && message
+                .metadata
+                .get("agent_mode")
+                .and_then(Value::as_str)
+                .is_some_and(|mode| matches!(mode, "subagent" | "all")))
+        .then(|| {
+            message
+                .metadata
+                .get("agent_profile")
+                .and_then(Value::as_str)
+        })
+        .flatten()
+    })
 }
 
 fn call_openai_compatible_provider(

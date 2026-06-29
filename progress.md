@@ -449,9 +449,9 @@ cargo test -q -p openagent-http-runtime
 cargo test -q -p openagent-app-server-client -p openagent-http-runtime -p openagent-tui
 cargo check -q -p openagent-cli
 rg -n "OPENAGENT_MOCK|hello from server|echo:|TUI control unsupported|unsupported.*model|unsupported.*theme|unsupported.*palette" \
-  crates/openagent-http-runtime/src/lib.rs \
-  crates/openagent-http-runtime/tests/http_runtime.rs \
-  crates/openagent-tui/src/lib.rs \
+  runtime/http/src/http_runtime.rs \
+  runtime/http/tests/http_runtime.rs \
+  runtime/tui/src/terminal_ui.rs \
   tests/golden/rust_rewrite/app_bridge_tui.json \
   tests/golden/rust_rewrite/http_runtime.json
 ```

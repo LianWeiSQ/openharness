@@ -29,7 +29,7 @@ use openagent_session::{
     FileSessionStore, Session, SessionEventOptions, SessionPartOptions, SessionStatus,
     StartRunOptions,
 };
-use openagent_tools::{TASK_TOOL_ID, TaskSubagentDescriptor, ToolContext, Toolkit, register_task_tool};
+use openagent_tools::{TaskSubagentDescriptor, ToolContext, Toolkit, register_task_tool};
 use serde_json::{Map, Value, json};
 
 mod agents;

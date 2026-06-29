@@ -41,7 +41,7 @@ receipts has been removed from `main`; compatibility is guarded by Rust crates,
 compiled binary smoke tests, and the golden JSON fixtures under
 `tests/golden/rust_rewrite/`.
 
-- CLI entry: `crates/openagent-cli` exposes the legacy OpenAgent command
+- CLI entry: `cli` exposes the legacy OpenAgent command
   surface: `tui`, `serve`, `web`, `client`, `attach`, `run`, `session`,
   `models`, `stats`, `command`, `config`, `auth`, `providers`, `mcp`, and
   `doctor`.
@@ -49,8 +49,8 @@ compiled binary smoke tests, and the golden JSON fixtures under
   OpenCode-aligned `run` flags, JSON `run` events, `models`, `config`,
   `auth`/`providers`, and `mcp` file flows.
 - TUI/App Bridge protocol/state contracts are owned by
-  `crates/openagent-tui`, `crates/openagent-app-server`, and
-  `crates/openagent-app-server-client`.
+  `tui`, `app-server`, and
+  `app-server-client`.
 - Baseline tests: `cargo test --workspace`,
   `cargo clippy --workspace --all-targets -- -D warnings`, and focused
   `openagent-cli` binary smoke tests.
@@ -60,7 +60,7 @@ compiled binary smoke tests, and the golden JSON fixtures under
 The Rust-only verification pass found a real regression: the compiled
 `openagent` binary only supported `doctor`; all other user-facing commands
 returned `unsupported Rust CLI command`. This has been fixed in
-`crates/openagent-cli` by restoring the legacy command surface, adding machine
+`cli` by restoring the legacy command surface, adding machine
 readable local command flows, and exposing OpenCode backlog commands as explicit
 parity boundaries instead of silent unknown commands.
 

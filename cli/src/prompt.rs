@@ -9,14 +9,13 @@ mod tool;
 use agent_loop::{AgentLoopRequest, pending_resume_from_session, run_agent_loop};
 pub(crate) use mcp_runtime::discover_mcp_server_tools;
 use mcp_runtime::{McpRuntime, execute_mcp_tool, load_mcp_runtime};
-pub(super) use profile::{
-    agent_profile_public_value, available_agent_profiles, load_agent_profile_by_name,
-};
 use profile::{
-    RunAgentProfile, available_subagent_profiles, bind_agent_profile_system_prompt,
-    filter_tools_for_agent, load_agent_profile_from_args, permission_ruleset_for_profile,
-    permission_ruleset_from_args, provider_and_model_for_subagent, provider_and_model_from_args,
-    task_subagent_descriptors,
+    RunAgentProfile, bind_agent_profile_system_prompt, filter_tools_for_agent, is_subagent_mode,
+    load_agent_profile_from_args, permission_ruleset_for_profile, permission_ruleset_from_args,
+    provider_and_model_for_subagent, provider_and_model_from_args, task_subagent_descriptors,
+};
+pub(crate) use profile::{
+    agent_profile_public_value, available_agent_profiles, load_agent_profile_by_name,
 };
 use provider::{add_usage, call_provider_for_run, parse_sse_json_values};
 pub(crate) use tool::split_answer_items;

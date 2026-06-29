@@ -33,12 +33,12 @@ fn approval_events_render_diff_preview_and_support_allow_always() {
                 "turn_id": "turn_1",
                 "session_id": "session_1",
                 "tool_name": "write",
-                "tool_input": {"file_path": "src/lib.rs"},
+                "tool_input": {"file_path": "src/core.rs"},
                 "preview": {
                     "kind": "file",
-                    "path": "src/lib.rs",
+                    "path": "src/core.rs",
                     "status": "modified",
-                    "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n+hello"
+                    "diff": "--- a/src/core.rs\n+++ b/src/core.rs\n+hello"
                 }
             }
         }
@@ -75,9 +75,9 @@ fn patch_events_render_structured_diff_and_undo_redo_markers() {
             "turn_id": "turn_1",
             "patch": {
                 "id": "patch_1",
-                "path": "src/lib.rs",
+                "path": "src/core.rs",
                 "status": "modified",
-                "diff": "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-old\n+new"
+                "diff": "--- a/src/core.rs\n+++ b/src/core.rs\n@@ -1,1 +1,1 @@\n-old\n+new"
             }
         }
     }));
@@ -106,7 +106,7 @@ fn patch_events_render_structured_diff_and_undo_redo_markers() {
         "redo_count": 1,
         "latest": {
             "id": "patch_1",
-            "path": "src/lib.rs",
+            "path": "src/core.rs",
             "status": "modified",
             "diff": "+new"
         }
@@ -654,7 +654,7 @@ fn remote_control_file_picker_dispatches_and_selects_into_composer() {
             self.searches.push(query.to_string());
             Ok(vec![
                 ComposerFileCandidate {
-                    reference: "@src/lib.rs".to_string(),
+                    reference: "@src/core.rs".to_string(),
                     kind: "file".to_string(),
                 },
                 ComposerFileCandidate {
@@ -1220,7 +1220,7 @@ fn key_event_flow_opens_file_picker_filters_and_attaches() {
                 }],
                 _ => vec![
                     ComposerFileCandidate {
-                        reference: "@src/lib.rs".to_string(),
+                        reference: "@src/core.rs".to_string(),
                         kind: "file".to_string(),
                     },
                     ComposerFileCandidate {
@@ -2520,10 +2520,10 @@ fn terminal_render_snapshot_contains_permission_overlay() {
                 "request_id": "approval_overlay",
                 "turn_id": "turn_1",
                 "tool_name": "write",
-                "tool_input": {"file_path": "src/lib.rs"},
+                "tool_input": {"file_path": "src/core.rs"},
                 "preview": {
                     "kind": "file",
-                    "path": "src/lib.rs",
+                    "path": "src/core.rs",
                     "diff": "+changed"
                 }
             }

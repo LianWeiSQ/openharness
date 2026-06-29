@@ -20,7 +20,7 @@ use serde_json::Value;
 type FakeProviderServer = (u16, thread::JoinHandle<()>, Arc<Mutex<Vec<String>>>);
 
 #[test]
-fn http_runtime_fixture_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn http_runtime_fixture_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     assert_eq!(http_runtime_fixture(), fixture);
     Ok(())

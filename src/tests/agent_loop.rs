@@ -4,7 +4,7 @@ use openagent_core::{ScriptedLoopInput, run_scripted_agent_loop};
 use serde_json::{Value, json};
 
 #[test]
-fn agent_loop_fixture_matches_python_oracle() {
+fn agent_loop_fixture_matches_legacy_oracle() {
     let fixture = read_fixture();
     let scenarios = fixture["scenarios"]
         .as_object()
@@ -87,7 +87,7 @@ fn agent_loop_reports_model_error_after_retry_budget() {
 
 fn read_fixture() -> Value {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/golden/rust_rewrite/agent_loop.json");
+        .join("../tests/golden/rust_rewrite/agent_loop.json");
     let raw = fs::read_to_string(path).expect("read agent loop fixture");
     serde_json::from_str(&raw).expect("parse agent loop fixture")
 }

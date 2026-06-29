@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 #[test]
-fn mcp_runtime_fixture_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn mcp_runtime_fixture_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     let raw_config = raw_config();
     let parsed = load_mcp_config_from_value(&raw_config)?;

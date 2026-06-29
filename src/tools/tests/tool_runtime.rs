@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 #[test]
-fn tool_runtime_fixture_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn tool_runtime_fixture_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../tests/golden/rust_rewrite/tool_runtime.json"
     ))?;

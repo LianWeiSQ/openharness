@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 #[test]
-fn provider_adapters_fixture_matches_python_oracle() {
+fn provider_adapters_fixture_matches_legacy_oracle() {
     let fixture = read_fixture();
 
     assert_eq!(

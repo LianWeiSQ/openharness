@@ -18,9 +18,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 #[test]
-fn core_context_policy_fixture_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn core_context_policy_fixture_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture: Value = serde_json::from_str(include_str!(
-        "../../../tests/golden/rust_rewrite/core_context_policy.json"
+        "../../tests/golden/rust_rewrite/core_context_policy.json"
     ))?;
     assert_eq!(fixture, core_context_policy_fixture()?);
     Ok(())
@@ -293,7 +293,7 @@ fn permission_decisions() -> Result<Value, Box<dyn Error>> {
         "readonly_todowrite": readonly.decide(&json!({"name": "todowrite", "input": {"todos": []}})),
         "plan_only_todowrite": plan_only.decide(&json!({"name": "todowrite", "input": {"todos": []}})),
         "custom_skill": custom.decide(&json!({"name": "skill", "input": {"name": "code-review"}})),
-        "pattern_for_file": pattern_for(&json!({"file_path": "src/lib.rs", "command": "ignored"})),
+        "pattern_for_file": pattern_for(&json!({"file_path": "src/core.rs", "command": "ignored"})),
         "pattern_for_name": pattern_for(&json!({"name": "code-review"})),
         "pattern_for_json": pattern_for(&json!({"b": 2, "a": 1})),
     }))

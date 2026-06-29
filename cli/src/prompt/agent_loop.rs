@@ -4,6 +4,7 @@ use super::tool::{
     question_answers_from_json, value_to_answer_string,
 };
 use super::*;
+use openagent_tools::TASK_TOOL_ID;
 
 #[derive(Debug)]
 pub(super) struct AgentLoopOutcome {
@@ -75,10 +76,11 @@ pub(super) fn run_agent_loop(
         finish_reason: Some("mcp_discovery_error".to_string()),
         paused: false,
     })?;
+    register_task_tool(&mut toolkit.registry, &task_subagent_descriptors(args));
     let tools = filter_tools_for_agent(toolkit.get_all_tools("local"), agent_profile);
     let mut ctx = ToolContext::new(workspace)
         .with_session_id(session.id.clone())
-        .with_permission_ruleset(permission_ruleset)
+        .with_permission_ruleset(permission_ruleset.clone())
         .with_dangerously_skip_permissions(skip_permissions);
     if let Some(answers) = configured_question_answers(args) {
         ctx.set_question_answers(answers);
@@ -109,12 +111,19 @@ pub(super) fn run_agent_loop(
     if let Some(pending) = pending_resume_from_session(session) {
         total_tool_calls += 1;
         let mut resume_context = PendingResumeContext {
+            args,
+            workspace,
+            provider,
+            model_id,
             toolkit: &toolkit,
             mcp_runtime: mcp_runtime.as_ref(),
             ctx: &mut ctx,
             session,
             store,
             run_id,
+            max_steps,
+            permission_ruleset: permission_ruleset.clone(),
+            skip_permissions,
             events: &mut events,
             event_sink,
         };
@@ -377,8 +386,24 @@ pub(super) fn run_agent_loop(
                 });
             }
 
-            let mut tool_result =
-                execute_agent_tool(&toolkit, mcp_runtime.as_ref(), &tool_call, &mut ctx);
+            let mut tool_result = execute_loop_tool_call(
+                &toolkit,
+                mcp_runtime.as_ref(),
+                &tool_call,
+                &mut ctx,
+                TaskExecutionContext {
+                    args,
+                    workspace,
+                    provider,
+                    model_id,
+                    session,
+                    store,
+                    run_id,
+                    max_steps,
+                    permission_ruleset: permission_ruleset.clone(),
+                    skip_permissions,
+                },
+            );
             if tool_result
                 .metadata
                 .get("requires_approval")
@@ -394,8 +419,24 @@ pub(super) fn run_agent_loop(
                 if approval_always.iter().any(|item| item == &pattern) {
                     let previous = ctx.dangerously_skip_permissions;
                     ctx.dangerously_skip_permissions = true;
-                    tool_result =
-                        execute_agent_tool(&toolkit, mcp_runtime.as_ref(), &tool_call, &mut ctx);
+                    tool_result = execute_loop_tool_call(
+                        &toolkit,
+                        mcp_runtime.as_ref(),
+                        &tool_call,
+                        &mut ctx,
+                        TaskExecutionContext {
+                            args,
+                            workspace,
+                            provider,
+                            model_id,
+                            session,
+                            store,
+                            run_id,
+                            max_steps,
+                            permission_ruleset: permission_ruleset.clone(),
+                            skip_permissions,
+                        },
+                    );
                     ctx.dangerously_skip_permissions = previous;
                 }
             }
@@ -606,6 +647,380 @@ pub(super) fn run_agent_loop(
     })
 }
 
+struct TaskExecutionContext<'a> {
+    args: &'a [String],
+    workspace: &'a Path,
+    provider: &'a str,
+    model_id: &'a str,
+    session: &'a Session,
+    store: &'a FileSessionStore,
+    run_id: &'a str,
+    max_steps: u64,
+    permission_ruleset: PermissionRuleset,
+    skip_permissions: bool,
+}
+
+fn execute_loop_tool_call(
+    toolkit: &Toolkit,
+    mcp_runtime: Option<&McpRuntime>,
+    tool_call: &ToolCall,
+    ctx: &mut ToolContext,
+    task_context: TaskExecutionContext<'_>,
+) -> ToolResult {
+    if tool_call.name == TASK_TOOL_ID {
+        execute_task_tool_call(toolkit, tool_call, ctx, task_context)
+    } else {
+        execute_agent_tool(toolkit, mcp_runtime, tool_call, ctx)
+    }
+}
+
+fn execute_task_tool_call(
+    toolkit: &Toolkit,
+    tool_call: &ToolCall,
+    ctx: &mut ToolContext,
+    task_context: TaskExecutionContext<'_>,
+) -> ToolResult {
+    if let Some(result) =
+        toolkit.permission_result_for_tool(TASK_TOOL_ID, &tool_call.input, &tool_call.call_id, ctx)
+    {
+        return result;
+    }
+    let input = &tool_call.input;
+    if input
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return task_tool_error(
+            tool_call,
+            "background subagent tasks are not implemented yet; omit background or set it to false",
+            BTreeMap::new(),
+        );
+    }
+    let subagent_type = match task_input_string(input, "subagent_type")
+        .or_else(|_| task_input_string(input, "agent_type"))
+        .or_else(|_| task_input_string(input, "agent"))
+    {
+        Ok(value) => value,
+        Err(error) => return task_tool_error(tool_call, &error, BTreeMap::new()),
+    };
+    let prompt = match task_input_string(input, "prompt") {
+        Ok(value) => value,
+        Err(error) => return task_tool_error(tool_call, &error, BTreeMap::new()),
+    };
+    let description =
+        task_input_string(input, "description").unwrap_or_else(|_| subagent_type.clone());
+    let task_id = input
+        .get("task_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let command = input
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let child_profile = match load_agent_profile_by_name(task_context.args, &subagent_type) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return task_tool_error(
+                tool_call,
+                &error,
+                BTreeMap::from([("subagent_type".to_string(), json!(subagent_type))]),
+            );
+        }
+    };
+    if !is_subagent_mode(&child_profile.mode) {
+        return task_tool_error(
+            tool_call,
+            &format!(
+                "agent profile {} has mode {}; task can only launch subagent or all profiles",
+                child_profile.id, child_profile.mode
+            ),
+            BTreeMap::from([("subagent_type".to_string(), json!(subagent_type))]),
+        );
+    }
+    let child_permission = match permission_ruleset_for_profile(
+        &child_profile,
+        task_context.permission_ruleset.clone(),
+    ) {
+        Ok(value) => value,
+        Err(error) => return task_tool_error(tool_call, &error, BTreeMap::new()),
+    };
+    let (child_provider, child_model) = provider_and_model_for_subagent(
+        task_context.provider,
+        task_context.model_id,
+        &child_profile,
+    );
+    let mut child_session = match task_id.as_deref() {
+        Some(existing) => match task_context.store.load_session(existing) {
+            Ok(session) => session,
+            Err(error) => {
+                return task_tool_error(
+                    tool_call,
+                    &format!("failed to resume task session {existing}: {error}"),
+                    BTreeMap::from([
+                        ("subagent_type".to_string(), json!(subagent_type)),
+                        ("task_id".to_string(), json!(existing)),
+                    ]),
+                );
+            }
+        },
+        None => Session::new(new_cli_id("subtask"), task_context.workspace),
+    };
+    let child_run_id = new_cli_id("run");
+    let trace_id = new_cli_id("trace");
+    child_session.status = SessionStatus::Running;
+    child_session
+        .metadata
+        .insert("agent".to_string(), json!(child_profile.id.clone()));
+    child_session
+        .metadata
+        .insert("provider".to_string(), json!(child_provider.clone()));
+    child_session
+        .metadata
+        .insert("model".to_string(), json!(child_model.clone()));
+    child_session
+        .metadata
+        .insert("subagent".to_string(), json!(true));
+    child_session.metadata.insert(
+        "agent_profile".to_string(),
+        agent_profile_public_value(&child_profile),
+    );
+    child_session.metadata.insert(
+        "parent_session_id".to_string(),
+        json!(task_context.session.id.clone()),
+    );
+    child_session
+        .metadata
+        .insert("parent_run_id".to_string(), json!(task_context.run_id));
+    child_session.metadata.insert(
+        "parent_tool_call_id".to_string(),
+        json!(tool_call.call_id.clone()),
+    );
+    child_session
+        .metadata
+        .insert("task_description".to_string(), json!(description.clone()));
+    child_session.metadata.insert(
+        "task_subagent_type".to_string(),
+        json!(subagent_type.clone()),
+    );
+    if let Some(command) = command.as_deref() {
+        child_session
+            .metadata
+            .insert("task_command".to_string(), json!(command));
+    }
+    child_session
+        .metadata
+        .insert("permission".to_string(), json!(child_permission.as_str()));
+    let child_max_steps = child_profile.max_steps.unwrap_or(task_context.max_steps);
+    if let Err(error) = task_context.store.start_run(
+        &mut child_session,
+        StartRunOptions {
+            run_id: child_run_id.clone(),
+            trace_id,
+            agent_name: child_profile.id.clone(),
+            model_id: Some(child_model.clone()),
+            provider_id: Some(child_provider.clone()),
+            permission: if task_context.skip_permissions {
+                format!("auto_allow:{}", child_permission.as_str())
+            } else {
+                child_permission.as_str().to_string()
+            },
+            max_steps: child_max_steps,
+            started_at_ms: None,
+        },
+    ) {
+        return task_tool_error(
+            tool_call,
+            &format!("failed to start subagent session: {error}"),
+            BTreeMap::from([("subagent_type".to_string(), json!(subagent_type))]),
+        );
+    }
+    if let Err(error) = bind_agent_profile_system_prompt(
+        &mut child_session,
+        task_context.store,
+        &child_run_id,
+        Some(&child_profile),
+    ) {
+        return task_tool_error(tool_call, &error, BTreeMap::new());
+    }
+    let user_message = chat_message(Role::User, prompt.clone());
+    let user_index = child_session.messages.len() as u64;
+    child_session.add(user_message.clone());
+    if let Err(error) =
+        task_context
+            .store
+            .append_message(&child_session, &user_message, &child_run_id, user_index)
+    {
+        return task_tool_error(
+            tool_call,
+            &format!("failed to record subagent prompt: {error}"),
+            BTreeMap::new(),
+        );
+    }
+
+    let mut child_event_sink: Option<&mut dyn FnMut(&Value)> = None;
+    let child_loop_result = run_agent_loop(
+        AgentLoopRequest {
+            args: task_context.args,
+            workspace: task_context.workspace,
+            provider: &child_provider,
+            model_id: &child_model,
+            session: &mut child_session,
+            store: task_context.store,
+            run_id: &child_run_id,
+            max_steps: child_max_steps,
+            prompt: &prompt,
+            agent_profile: Some(&child_profile),
+            permission_ruleset: child_permission.clone(),
+            skip_permissions: task_context.skip_permissions,
+        },
+        &mut child_event_sink,
+    );
+
+    match child_loop_result {
+        Ok(result) => {
+            child_session.status = SessionStatus::Idle;
+            let _ = task_context.store.record_event(
+                &child_session.id,
+                &child_run_id,
+                "model.usage",
+                SessionEventOptions {
+                    kind: "model".to_string(),
+                    attributes: BTreeMap::from([
+                        ("input_tokens".to_string(), json!(result.usage.input_tokens)),
+                        (
+                            "output_tokens".to_string(),
+                            json!(result.usage.output_tokens),
+                        ),
+                        ("cost".to_string(), json!(result.usage.cost)),
+                        ("source".to_string(), json!(result.source.clone())),
+                        ("tool_calls".to_string(), json!(result.tool_calls)),
+                    ]),
+                    ..SessionEventOptions::default()
+                },
+            );
+            let _ = task_context.store.finish_run(
+                &child_session,
+                &child_run_id,
+                "completed",
+                result.steps.max(1),
+                Some(&result.finish_reason),
+                None,
+            );
+            let output = render_task_output(&child_session.id, "completed", &result.answer);
+            ToolResult {
+                call_id: tool_call.call_id.clone(),
+                output,
+                error: None,
+                metadata: BTreeMap::from([
+                    ("tool".to_string(), json!(TASK_TOOL_ID)),
+                    ("title".to_string(), json!(description)),
+                    ("subagent_type".to_string(), json!(subagent_type)),
+                    ("task_id".to_string(), json!(child_session.id.clone())),
+                    ("session_id".to_string(), json!(child_session.id.clone())),
+                    ("run_id".to_string(), json!(child_run_id)),
+                    ("status".to_string(), json!("completed")),
+                    ("provider".to_string(), json!(child_provider)),
+                    ("model".to_string(), json!(child_model)),
+                    ("steps".to_string(), json!(result.steps)),
+                    ("tool_calls".to_string(), json!(result.tool_calls)),
+                    (
+                        "agent_profile".to_string(),
+                        agent_profile_public_value(&child_profile),
+                    ),
+                ]),
+            }
+        }
+        Err(error) => {
+            child_session.status = if error.paused {
+                SessionStatus::Paused
+            } else {
+                SessionStatus::Stop
+            };
+            let finish_reason = error.finish_reason.as_deref().unwrap_or(if error.paused {
+                "paused"
+            } else {
+                "error"
+            });
+            let _ = task_context.store.finish_run(
+                &child_session,
+                &child_run_id,
+                "failed",
+                error.steps.max(1),
+                Some(finish_reason),
+                Some(&error.message),
+            );
+            task_tool_error(
+                tool_call,
+                &format!("subagent {subagent_type} failed: {}", error.message),
+                BTreeMap::from([
+                    ("tool".to_string(), json!(TASK_TOOL_ID)),
+                    ("title".to_string(), json!(description)),
+                    ("subagent_type".to_string(), json!(subagent_type)),
+                    ("task_id".to_string(), json!(child_session.id.clone())),
+                    ("session_id".to_string(), json!(child_session.id.clone())),
+                    ("run_id".to_string(), json!(child_run_id)),
+                    (
+                        "status".to_string(),
+                        json!(if error.paused { "paused" } else { "failed" }),
+                    ),
+                    ("provider".to_string(), json!(child_provider)),
+                    ("model".to_string(), json!(child_model)),
+                    ("paused".to_string(), json!(error.paused)),
+                ]),
+            )
+        }
+    }
+}
+
+fn task_input_string(input: &Value, key: &str) -> Result<String, String> {
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| format!("task tool requires non-empty {key}"))
+}
+
+fn task_tool_error(
+    tool_call: &ToolCall,
+    error: &str,
+    mut metadata: BTreeMap<String, Value>,
+) -> ToolResult {
+    metadata
+        .entry("tool".to_string())
+        .or_insert_with(|| json!(TASK_TOOL_ID));
+    ToolResult {
+        call_id: tool_call.call_id.clone(),
+        output: String::new(),
+        error: Some(error.to_string()),
+        metadata,
+    }
+}
+
+fn render_task_output(task_id: &str, state: &str, text: &str) -> String {
+    format!(
+        "<task id=\"{}\" state=\"{}\">\n<task_result>\n{}\n</task_result>\n</task>",
+        escape_task_text(task_id),
+        escape_task_text(state),
+        escape_task_text(text),
+    )
+}
+
+fn escape_task_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 pub(super) fn pending_resume_from_session(session: &Session) -> Option<PendingResume> {
     if let Some(response) = session.metadata.get("pending_question_response")
         && let Some(pending) = session.metadata.get("pending_question")
@@ -656,12 +1071,19 @@ fn pending_resume_from_values(
 }
 
 pub(super) struct PendingResumeContext<'a, 'sink> {
+    pub(super) args: &'a [String],
+    pub(super) workspace: &'a Path,
+    pub(super) provider: &'a str,
+    pub(super) model_id: &'a str,
     pub(super) toolkit: &'a Toolkit,
     pub(super) mcp_runtime: Option<&'a McpRuntime>,
     pub(super) ctx: &'a mut ToolContext,
     pub(super) session: &'a mut Session,
     pub(super) store: &'a FileSessionStore,
     pub(super) run_id: &'a str,
+    pub(super) max_steps: u64,
+    pub(super) permission_ruleset: PermissionRuleset,
+    pub(super) skip_permissions: bool,
     pub(super) events: &'a mut Vec<Value>,
     pub(super) event_sink: &'a mut Option<&'sink mut dyn FnMut(&Value)>,
 }
@@ -741,11 +1163,23 @@ fn process_pending_resume(
             }
             let previous = context.ctx.dangerously_skip_permissions;
             context.ctx.dangerously_skip_permissions = true;
-            let result = execute_agent_tool(
+            let result = execute_loop_tool_call(
                 context.toolkit,
                 context.mcp_runtime,
                 &pending.call,
                 context.ctx,
+                TaskExecutionContext {
+                    args: context.args,
+                    workspace: context.workspace,
+                    provider: context.provider,
+                    model_id: context.model_id,
+                    session: context.session,
+                    store: context.store,
+                    run_id: context.run_id,
+                    max_steps: context.max_steps,
+                    permission_ruleset: context.permission_ruleset.clone(),
+                    skip_permissions: context.skip_permissions,
+                },
             );
             context.ctx.dangerously_skip_permissions = previous;
             result

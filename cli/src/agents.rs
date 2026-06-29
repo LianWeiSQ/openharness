@@ -1,7 +1,7 @@
-use super::*;
 use super::prompt::{
     agent_profile_public_value, available_agent_profiles, load_agent_profile_by_name,
 };
+use super::*;
 
 pub(super) fn agent_command(args: &[String]) -> CliRunResult {
     if args.is_empty() || args.iter().any(|arg| is_help_flag(arg)) {

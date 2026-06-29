@@ -12,12 +12,12 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 #[test]
-fn core_protocol_fixture_matches_python_oracle() {
+fn core_protocol_fixture_matches_legacy_oracle() {
     assert_fixture_eq("core_protocol.json", core_protocol_fixture());
 }
 
 #[test]
-fn permission_rulesets_fixture_matches_python_oracle() {
+fn permission_rulesets_fixture_matches_legacy_oracle() {
     let rulesets = [
         PermissionRuleset::Full,
         PermissionRuleset::None,
@@ -38,12 +38,12 @@ fn permission_rulesets_fixture_matches_python_oracle() {
 }
 
 #[test]
-fn swarm_protocol_fixture_matches_python_oracle() {
+fn swarm_protocol_fixture_matches_legacy_oracle() {
     assert_fixture_eq("swarm_protocol.json", swarm_protocol_fixture());
 }
 
 #[test]
-fn tool_definition_schema_fixture_matches_python_oracle() {
+fn tool_definition_schema_fixture_matches_legacy_oracle() {
     assert_fixture_eq(
         "tool_definition_schema.json",
         tool_definition_schema_fixture(),
@@ -51,7 +51,7 @@ fn tool_definition_schema_fixture_matches_python_oracle() {
 }
 
 #[test]
-fn context_state_fixture_matches_python_oracle() {
+fn context_state_fixture_matches_legacy_oracle() {
     assert_fixture_eq("context_state.json", context_state_fixture());
 }
 
@@ -380,7 +380,7 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
-        .expect("crate lives under crates/openagent-protocol")
+        .expect("crate lives under src/protocol")
         .to_path_buf()
 }
 

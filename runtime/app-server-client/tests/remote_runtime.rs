@@ -4,7 +4,7 @@ use openagent_app_server_client::app_bridge_client_fixture;
 use serde_json::Value;
 
 #[test]
-fn app_bridge_client_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn app_bridge_client_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     assert_eq!(app_bridge_client_fixture(), section(&fixture, "client"));
     Ok(())

@@ -54,7 +54,7 @@
       "level": "WARNING",
       "logger_name": "openagent.runtime",
       "max_records": 500,
-      "python_logging": false
+      "structured_logging": false
     },
     "record": {
       "attributes": {

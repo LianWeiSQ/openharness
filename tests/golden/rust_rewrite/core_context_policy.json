@@ -382,7 +382,7 @@
   },
   "permission": {
     "custom_skill": "allow",
-    "pattern_for_file": "src/lib.rs",
+    "pattern_for_file": "src/core.rs",
     "pattern_for_json": "{\"a\": 1, \"b\": 2}",
     "pattern_for_name": "code-review",
     "plan_only_todowrite": "allow",

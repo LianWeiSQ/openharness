@@ -18,23 +18,24 @@ User task
   -> CLI / TUI / HTTP runtime / App Bridge
 ```
 
-## Workspace Crates
+## Workspace Modules
 
-| Crate | Responsibility |
+| Directory | Responsibility |
 | --- | --- |
-| `crates/openagent-protocol` | Shared serde protocol types and runtime contracts |
-| `crates/openagent-core` | Agent loop, context, permission, policy, and skills |
-| `crates/openagent-tools` | Tool registry, built-in tools, and workspace runtime |
-| `crates/openagent-provider` | Provider metadata and stream normalization |
-| `crates/openagent-session` | Session store, trace, observability, and replay evidence |
-| `crates/openagent-mcp` | MCP config, discovery, auth, and tool bridge contracts |
-| `crates/openagent-swarm` | Agent-agnostic swarm runner orchestration |
-| `crates/openagent-eval` | Eval runner, CI gate, and benchmark integrations |
-| `crates/openagent-cli` | `openagent` command-line binary |
-| `crates/openagent-tui` | Local and remote terminal UI state |
-| `crates/openagent-app-server` | App Bridge server protocol and state |
-| `crates/openagent-app-server-client` | App Bridge client helpers |
-| `crates/openagent-http-runtime` | HTTP runtime binary and API contracts |
+| `src` | Core agent loop, context, permission, policy, and skills |
+| `src/protocol` | Shared serde protocol types and runtime contracts |
+| `src/tools` | Tool registry, built-in tools, and workspace runtime |
+| `src/provider` | Provider metadata and stream normalization |
+| `src/session` | Session store, trace, observability, and replay evidence |
+| `src/mcp` | MCP config, discovery, auth, and tool bridge contracts |
+| `swarm` | Agent-agnostic swarm runner orchestration |
+| `eval` | Eval runner, CI gate, and benchmark integrations |
+| `cli` | `openagent` command-line binary |
+| `skill` | Built-in prompts, tool descriptions, and skill libraries |
+| `runtime/tui` | Local and remote terminal UI state |
+| `runtime/app-server` | App Bridge server protocol and state |
+| `runtime/app-server-client` | App Bridge client helpers |
+| `runtime/http` | HTTP runtime binary and API contracts |
 
 ## Tool Flow
 

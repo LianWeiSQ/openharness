@@ -21,7 +21,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 #[test]
-fn session_trace_observability_fixture_matches_python_oracle() {
+fn session_trace_observability_fixture_matches_legacy_oracle() {
     let fixture = fixture();
 
     assert_eq!(fixture["session"]["todo"], value(fixture_todo()));
@@ -732,7 +732,7 @@ fn fixture_logging_config() -> RuntimeLoggingConfig {
         jsonl: true,
         jsonl_dir: "logs".to_string(),
         level: "WARNING".to_string(),
-        python_logging: false,
+        structured_logging: false,
         ..RuntimeLoggingConfig::default()
     }
 }

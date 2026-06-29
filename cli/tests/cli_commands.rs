@@ -681,6 +681,152 @@ fn binary_run_executes_mock_tool_loop() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn binary_agent_registry_exposes_builtin_subagents() -> Result<(), Box<dyn Error>> {
+    let temp = temp_dir("openagent-cli-builtin-agents")?;
+    let list = run_openagent(
+        [
+            "agent",
+            "list",
+            "--workspace",
+            path_str(&temp),
+            "--format",
+            "json",
+        ],
+        None,
+    )?;
+    assert!(
+        list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&list.stdout)?;
+    let agents = payload["agents"].as_array().ok_or("missing agents")?;
+    for id in ["build", "general", "explore", "plan"] {
+        assert!(agents.iter().any(|agent| agent["id"] == id), "missing {id}");
+    }
+
+    let show = run_openagent(
+        [
+            "agent",
+            "show",
+            "explore",
+            "--workspace",
+            path_str(&temp),
+            "--format",
+            "json",
+        ],
+        None,
+    )?;
+    assert!(
+        show.status.success(),
+        "{}",
+        String::from_utf8_lossy(&show.stderr)
+    );
+    let explore: Value = serde_json::from_slice(&show.stdout)?;
+    assert_eq!(explore["id"], "explore");
+    assert_eq!(explore["mode"], "subagent");
+    assert_eq!(explore["permission"], "READONLY");
+    assert!(
+        explore["description"]
+            .as_str()
+            .is_some_and(|value| value.contains("Read-only"))
+    );
+
+    let _ = fs::remove_dir_all(temp);
+    Ok(())
+}
+
+#[test]
+fn binary_run_executes_task_subagent_tool() -> Result<(), Box<dyn Error>> {
+    let temp = temp_dir("openagent-cli-task-subagent")?;
+    let session_root = temp.join("sessions");
+    let output = Command::new(env!("CARGO_BIN_EXE_openagent"))
+        .args([
+            "run",
+            "--skip-doctor",
+            "--workspace",
+            path_str(&temp),
+            "--session-root",
+            path_str(&session_root),
+            "--permission",
+            "FULL",
+            "--format",
+            "json",
+            "delegate",
+            "this",
+        ])
+        .env_clear()
+        .env(
+            "OPENAGENT_MOCK_TOOL_CALLS",
+            r#"[{"call_id":"call_task","name":"task","input":{"description":"Explore fixture","prompt":"Find the important files and summarize them.","subagent_type":"explore"}}]"#,
+        )
+        .env("OPENAGENT_MOCK_SUBAGENT_ANSWER", "child answer")
+        .env("OPENAGENT_MOCK_ANSWER", "parent final")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8(output.stdout)?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let tool_completed = events
+        .iter()
+        .find(|event| {
+            event["method"] == "item/toolCall/completed" && event["params"]["name"] == "task"
+        })
+        .ok_or("missing task completion")?;
+    assert_eq!(
+        tool_completed["params"]["metadata"]["subagent_type"],
+        "explore"
+    );
+    assert!(
+        tool_completed["params"]["output"]
+            .as_str()
+            .is_some_and(|output| output.contains("<task id=") && output.contains("child answer"))
+    );
+    let child_session_id = tool_completed["params"]["metadata"]["session_id"]
+        .as_str()
+        .ok_or("missing child session id")?;
+    let completed = events
+        .iter()
+        .find(|event| event["method"] == "turn/completed")
+        .ok_or("missing completion event")?;
+    assert_eq!(completed["params"]["final_answer"], "parent final");
+    assert_eq!(completed["params"]["steps"], 2);
+    assert_eq!(completed["params"]["tool_calls"], 1);
+    let parent_session_id = completed["params"]["session_id"]
+        .as_str()
+        .ok_or("missing parent session id")?;
+
+    let child_state: Value = serde_json::from_str(&fs::read_to_string(
+        session_root
+            .join(child_session_id)
+            .join("state.latest.json"),
+    )?)?;
+    assert_eq!(child_state["metadata"]["subagent"], true);
+    assert_eq!(
+        child_state["metadata"]["parent_session_id"],
+        parent_session_id
+    );
+    assert_eq!(child_state["metadata"]["parent_tool_call_id"], "call_task");
+    assert_eq!(child_state["metadata"]["agent_profile"]["id"], "explore");
+    assert!(child_state["messages"].as_array().is_some_and(|messages| {
+        messages.iter().any(|message| {
+            message["role"] == "system" && message["metadata"]["agent_profile"] == "explore"
+        }) && messages.iter().any(|message| {
+            message["role"] == "user"
+                && message["content"] == "Find the important files and summarize them."
+        })
+    }));
+
+    let _ = fs::remove_dir_all(temp);
+    Ok(())
+}
+
+#[test]
 fn binary_run_discovers_and_executes_remote_mcp_tool() -> Result<(), Box<dyn Error>> {
     let temp = temp_dir("openagent-cli-mcp-loop")?;
     let session_root = temp.join("sessions");

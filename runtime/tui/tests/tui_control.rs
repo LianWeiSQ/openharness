@@ -4,7 +4,7 @@ use openagent_tui::tui_control_fixture;
 use serde_json::Value;
 
 #[test]
-fn tui_control_matches_python_oracle() -> Result<(), Box<dyn Error>> {
+fn tui_control_matches_legacy_oracle() -> Result<(), Box<dyn Error>> {
     let fixture = read_fixture()?;
     assert_eq!(tui_control_fixture(), section(&fixture, "tui"));
     Ok(())

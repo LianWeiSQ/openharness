@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct RunAgentProfile {
+pub(crate) struct RunAgentProfile {
     pub(super) id: String,
     pub(super) name: String,
     pub(super) description: Option<String>,
@@ -11,6 +11,7 @@ pub(super) struct RunAgentProfile {
     pub(super) permission: Option<String>,
     pub(super) prompt: Option<String>,
     pub(super) tools: Vec<String>,
+    pub(super) max_steps: Option<u64>,
     pub(super) hidden: bool,
     pub(super) source_path: Option<PathBuf>,
     pub(super) loaded: bool,
@@ -88,7 +89,7 @@ pub(super) fn load_agent_profile_from_args(
     Ok(Some(load_agent_profile_by_name(args, &raw_name)?))
 }
 
-pub(super) fn load_agent_profile_by_name(
+pub(crate) fn load_agent_profile_by_name(
     args: &[String],
     raw_name: &str,
 ) -> Result<RunAgentProfile, String> {
@@ -108,7 +109,7 @@ pub(super) fn load_agent_profile_by_name(
         .ok_or_else(|| format!("agent profile not found: {raw_name} ({})", path.display()))
 }
 
-pub(super) fn available_agent_profiles(args: &[String]) -> Vec<RunAgentProfile> {
+pub(crate) fn available_agent_profiles(args: &[String]) -> Vec<RunAgentProfile> {
     let mut profiles = builtin_agent_profiles()
         .into_iter()
         .map(|profile| (profile.id.clone(), profile))
@@ -221,6 +222,10 @@ fn agent_profile_from_value(
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect(),
+        max_steps: value
+            .get("max_steps")
+            .or_else(|| value.get("steps"))
+            .and_then(Value::as_u64),
         hidden: value
             .get("hidden")
             .and_then(Value::as_bool)
@@ -257,7 +262,15 @@ fn builtin_agent_profiles() -> Vec<RunAgentProfile> {
             "subagent",
             Some("READONLY"),
             EXPLORE_AGENT_PROMPT,
-            &["read", "glob", "grep", "ls", "code_search", "skill", "todoread"],
+            &[
+                "read",
+                "glob",
+                "grep",
+                "ls",
+                "code_search",
+                "skill",
+                "todoread",
+            ],
         ),
         builtin_agent_profile(
             "plan",
@@ -300,13 +313,14 @@ fn builtin_agent_profile(
         permission: permission.map(str::to_string),
         prompt: Some(prompt.trim_start_matches('\u{feff}').to_string()),
         tools: tools.iter().map(|item| (*item).to_string()).collect(),
+        max_steps: None,
         hidden: false,
         source_path: None,
         loaded: true,
     }
 }
 
-pub(super) fn agent_profile_public_value(profile: &RunAgentProfile) -> Value {
+pub(crate) fn agent_profile_public_value(profile: &RunAgentProfile) -> Value {
     json!({
         "id": profile.id.clone(),
         "name": profile.name.clone(),
@@ -316,6 +330,7 @@ pub(super) fn agent_profile_public_value(profile: &RunAgentProfile) -> Value {
         "provider": profile.provider.clone(),
         "permission": profile.permission.clone(),
         "tools": profile.tools.clone(),
+        "max_steps": profile.max_steps,
         "hidden": profile.hidden,
         "loaded": profile.loaded,
         "source_path": profile.source_path.as_ref().map(|path| path.to_string_lossy().to_string()),
