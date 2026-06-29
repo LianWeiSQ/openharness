@@ -5,7 +5,13 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "crates/**"
+      - "cli/**"
+      - "eval/**"
+      - "runtime/**"
+      - "skill/**"
+      - "src/**"
+      - "swarm/**"
+      - "tests/**"
       - ".github/workflows/rust.yml"
   push:
     branches:
@@ -13,7 +19,13 @@ on:
     paths:
       - "Cargo.toml"
       - "Cargo.lock"
-      - "crates/**"
+      - "cli/**"
+      - "eval/**"
+      - "runtime/**"
+      - "skill/**"
+      - "src/**"
+      - "swarm/**"
+      - "tests/**"
       - ".github/workflows/rust.yml"
 
 jobs:

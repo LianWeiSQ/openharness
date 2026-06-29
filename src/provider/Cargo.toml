@@ -11,5 +11,8 @@ openagent-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[lib]
+path = "src/provider.rs"
+
 [lints]
 workspace = true

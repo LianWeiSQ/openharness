@@ -13,5 +13,8 @@ openagent-session.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+[lib]
+path = "src/app_bridge.rs"
+
 [lints]
 workspace = true

@@ -1,18 +1,18 @@
 [workspace]
 members = [
-    "crates/openagent-app-server",
-    "crates/openagent-app-server-client",
-    "crates/openagent-cli",
-    "crates/openagent-core",
-    "crates/openagent-eval",
-    "crates/openagent-http-runtime",
-    "crates/openagent-mcp",
-    "crates/openagent-protocol",
-    "crates/openagent-provider",
-    "crates/openagent-session",
-    "crates/openagent-swarm",
-    "crates/openagent-tools",
-    "crates/openagent-tui",
+    "cli",
+    "eval",
+    "runtime/app-server",
+    "runtime/app-server-client",
+    "runtime/http",
+    "runtime/tui",
+    "src",
+    "src/mcp",
+    "src/protocol",
+    "src/provider",
+    "src/session",
+    "src/tools",
+    "swarm",
 ]
 resolver = "2"
 
@@ -24,15 +24,15 @@ repository = "https://github.com/LianWeiSQ/openagent-ai"
 rust-version = "1.85"
 
 [workspace.dependencies]
-openagent-app-server = { path = "crates/openagent-app-server" }
-openagent-app-server-client = { path = "crates/openagent-app-server-client" }
-openagent-core = { path = "crates/openagent-core" }
-openagent-protocol = { path = "crates/openagent-protocol" }
-openagent-provider = { path = "crates/openagent-provider" }
-openagent-session = { path = "crates/openagent-session" }
-openagent-swarm = { path = "crates/openagent-swarm" }
-openagent-tools = { path = "crates/openagent-tools" }
-openagent-tui = { path = "crates/openagent-tui" }
+openagent-app-server = { path = "runtime/app-server" }
+openagent-app-server-client = { path = "runtime/app-server-client" }
+openagent-core = { path = "src" }
+openagent-protocol = { path = "src/protocol" }
+openagent-provider = { path = "src/provider" }
+openagent-session = { path = "src/session" }
+openagent-swarm = { path = "swarm" }
+openagent-tools = { path = "src/tools" }
+openagent-tui = { path = "runtime/tui" }
 async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 regex = "1"

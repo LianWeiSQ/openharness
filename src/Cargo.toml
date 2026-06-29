@@ -14,5 +14,8 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 sha1.workspace = true
 
+[lib]
+path = "core.rs"
+
 [lints]
 workspace = true
