@@ -139,6 +139,9 @@ pub fn pattern_for(payload: &Value) -> String {
             "path",
             "pattern",
             "command",
+            "subagent_type",
+            "agent_type",
+            "agent",
             "name",
         ] {
             if let Some(value) = object.get(key).and_then(Value::as_str)
@@ -148,7 +151,7 @@ pub fn pattern_for(payload: &Value) -> String {
             }
         }
     }
-    python_json_dumps(payload)
+    stable_json_dumps(payload)
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -1488,7 +1491,7 @@ impl<'a> ScriptedAgentLoopRunner<'a> {
                             "Detected repeated tool-call loop (threshold={}): {} {}",
                             self.input.doom_loop_threshold,
                             name,
-                            python_json_dumps(&input_value)
+                            stable_json_dumps(&input_value)
                         ),
                     }));
                     self.final_session_status = "stop".to_string();
@@ -1617,7 +1620,7 @@ impl<'a> ScriptedAgentLoopRunner<'a> {
     fn record_doom_loop(&mut self, call: &Value) -> bool {
         let name = call.get("name").and_then(Value::as_str).unwrap_or_default();
         let input_value = call.get("input").cloned().unwrap_or_else(|| json!({}));
-        let key = format!("{name}:{}", python_json_dumps(&input_value));
+        let key = format!("{name}:{}", stable_json_dumps(&input_value));
         self.doom_history.push(key);
         let threshold = self.input.doom_loop_threshold as usize;
         if self.doom_history.len() > threshold {
@@ -2131,7 +2134,7 @@ fn sandbox_item(execution: &Value) -> Option<ContextItem> {
         "session.metadata.execution",
         format!(
             "[Sandbox context]\n{}",
-            python_json_dumps(&json!(safe_payload))
+            stable_json_dumps(&json!(safe_payload))
         ),
         85,
     );
@@ -2412,7 +2415,7 @@ fn glob_to_regex(pattern: &str) -> String {
     regex
 }
 
-fn python_json_dumps(value: &Value) -> String {
+fn stable_json_dumps(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(value) => value.to_string(),
@@ -2422,7 +2425,7 @@ fn python_json_dumps(value: &Value) -> String {
             "[{}]",
             items
                 .iter()
-                .map(python_json_dumps)
+                .map(stable_json_dumps)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -2437,7 +2440,7 @@ fn python_json_dumps(value: &Value) -> String {
                         format!(
                             "{}: {}",
                             serde_json::to_string(key).unwrap_or_default(),
-                            python_json_dumps(value)
+                            stable_json_dumps(value)
                         )
                     })
                     .collect::<Vec<_>>()

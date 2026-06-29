@@ -2020,7 +2020,7 @@ pub struct RuntimeLoggingConfig {
     pub max_records: u64,
     pub input_preview_chars: usize,
     pub level: String,
-    pub python_logging: bool,
+    pub structured_logging: bool,
     pub logger_name: String,
     pub include_context: bool,
 }
@@ -2035,7 +2035,7 @@ impl Default for RuntimeLoggingConfig {
             max_records: DEFAULT_MAX_EVENTS,
             input_preview_chars: DEFAULT_INPUT_PREVIEW_CHARS,
             level: "INFO".to_string(),
-            python_logging: false,
+            structured_logging: false,
             logger_name: "openagent.runtime".to_string(),
             include_context: true,
         }
@@ -2361,7 +2361,7 @@ pub fn sanitize_observation_value(value: Value) -> Value {
 #[must_use]
 pub fn input_preview(value: Value, max_chars: usize) -> String {
     truncate_text(
-        &python_json_dumps(&sanitize_value(value, max_chars)),
+        &stable_json_dumps(&sanitize_value(value, max_chars)),
         max_chars,
     )
 }
@@ -2841,7 +2841,7 @@ fn truncate_text(value: &str, max_chars: usize) -> String {
     )
 }
 
-fn python_json_dumps(value: &Value) -> String {
+fn stable_json_dumps(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(value) => {
@@ -2858,7 +2858,7 @@ fn python_json_dumps(value: &Value) -> String {
             "[{}]",
             items
                 .iter()
-                .map(python_json_dumps)
+                .map(stable_json_dumps)
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -2869,7 +2869,7 @@ fn python_json_dumps(value: &Value) -> String {
                 .map(|(key, value)| format!(
                     "{}: {}",
                     serde_json::to_string(key).unwrap_or_default(),
-                    python_json_dumps(value)
+                    stable_json_dumps(value)
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")

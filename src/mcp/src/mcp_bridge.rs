@@ -347,7 +347,7 @@ pub fn load_mcp_config_from_value(raw: &Value) -> McpResult<McpConfig> {
 fn parse_server_config(name: &str, raw: &Map<String, Value>) -> McpResult<RemoteMcpServerConfig> {
     let type_value = raw
         .get("type")
-        .map_or_else(|| "remote".to_string(), value_to_python_string)
+        .map_or_else(|| "remote".to_string(), value_to_legacy_string)
         .trim()
         .to_ascii_lowercase();
     let default_transport = if matches!(
@@ -367,19 +367,19 @@ fn parse_server_config(name: &str, raw: &Map<String, Value>) -> McpResult<Remote
 
     let url = raw
         .get("url")
-        .filter(|value| python_truthy(value))
-        .map_or_else(String::new, value_to_python_string)
+        .filter(|value| legacy_truthy(value))
+        .map_or_else(String::new, value_to_legacy_string)
         .trim()
         .to_string();
     if url.is_empty() {
         return Err(format!("MCP server '{name}' is missing a non-empty url."));
     }
 
-    let transport_raw = raw.get("transport").filter(|value| python_truthy(value));
+    let transport_raw = raw.get("transport").filter(|value| legacy_truthy(value));
     let transport_text = transport_raw
         .map_or_else(
             || default_transport.as_str().to_string(),
-            value_to_python_string,
+            value_to_legacy_string,
         )
         .trim()
         .to_ascii_lowercase();
@@ -398,7 +398,7 @@ fn parse_server_config(name: &str, raw: &Map<String, Value>) -> McpResult<Remote
         name: name.to_string(),
         url,
         transport,
-        enabled: raw.get("enabled").is_none_or(python_truthy),
+        enabled: raw.get("enabled").is_none_or(legacy_truthy),
         headers: normalize_headers(raw.get("headers"))?,
         timeout_ms: parse_int(raw.get("timeout_ms"), DEFAULT_TIMEOUT_MS, MIN_TIMEOUT_MS),
         tools: parse_tool_filter(raw.get("tools"))?,
@@ -427,7 +427,7 @@ fn normalize_pattern_list(raw: Option<&Value>, default: &[&str]) -> McpResult<Ve
     };
     let values = items
         .iter()
-        .map(value_to_python_string)
+        .map(value_to_legacy_string)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
@@ -451,7 +451,7 @@ fn normalize_headers(raw: Option<&Value>) -> McpResult<BTreeMap<String, String>>
         if header.is_empty() {
             continue;
         }
-        headers.insert(header.to_string(), value_to_python_string(value));
+        headers.insert(header.to_string(), value_to_legacy_string(value));
     }
     Ok(headers)
 }
@@ -467,8 +467,8 @@ pub fn build_tool_descriptors_from_values(
     for tool in tools {
         let original_name = tool
             .get("name")
-            .filter(|value| python_truthy(value))
-            .map_or_else(String::new, value_to_python_string)
+            .filter(|value| legacy_truthy(value))
+            .map_or_else(String::new, value_to_legacy_string)
             .trim()
             .to_string();
         if original_name.is_empty() || !tool_allowed(&original_name, &server.tools) {
@@ -487,17 +487,17 @@ pub fn build_tool_descriptors_from_values(
 
         let title = tool
             .get("title")
-            .filter(|value| python_truthy(value))
-            .map_or_else(|| original_name.clone(), value_to_python_string);
+            .filter(|value| legacy_truthy(value))
+            .map_or_else(|| original_name.clone(), value_to_legacy_string);
         let raw_description = tool
             .get("description")
-            .filter(|value| python_truthy(value))
-            .map_or_else(String::new, value_to_python_string);
+            .filter(|value| legacy_truthy(value))
+            .map_or_else(String::new, value_to_legacy_string);
         let description = tool_description(&server.name, &original_name, &raw_description);
         let input_schema = normalize_input_schema(tool.get("inputSchema"));
         let annotations_safe = tool
             .get("annotations")
-            .filter(|value| python_truthy(value))
+            .filter(|value| legacy_truthy(value))
             .cloned()
             .unwrap_or_else(|| json!({}));
         let annotations = if annotations_safe.is_object() {
@@ -596,7 +596,7 @@ pub fn normalize_tool_call_result(
     result: &Value,
 ) -> RemoteMcpToolCallResult {
     let (mut output, non_text_blocks) = render_tool_result_output(result);
-    let is_error = result.get("isError").is_some_and(python_truthy);
+    let is_error = result.get("isError").is_some_and(legacy_truthy);
     let metadata = build_result_metadata(descriptor, transport, is_error, &non_text_blocks);
     let mut error = None;
     if is_error {
@@ -646,15 +646,15 @@ pub fn render_tool_result_output(result: &Value) -> (String, Vec<String>) {
     for item in content {
         let item_type = item
             .get("type")
-            .filter(|value| python_truthy(value))
-            .map_or_else(String::new, value_to_python_string)
+            .filter(|value| legacy_truthy(value))
+            .map_or_else(String::new, value_to_legacy_string)
             .trim()
             .to_ascii_lowercase();
         if item_type == "text" {
             let text = item
                 .get("text")
-                .filter(|value| python_truthy(value))
-                .map_or_else(String::new, value_to_python_string)
+                .filter(|value| legacy_truthy(value))
+                .map_or_else(String::new, value_to_legacy_string)
                 .trim()
                 .to_string();
             if !text.is_empty() {
@@ -936,7 +936,7 @@ fn parse_float(value: Option<&Value>, default: f64, minimum: f64) -> f64 {
     parsed.unwrap_or(default).max(minimum)
 }
 
-fn value_to_python_string(value: &Value) -> String {
+fn value_to_legacy_string(value: &Value) -> String {
     match value {
         Value::Null => "None".to_string(),
         Value::Bool(flag) => {
@@ -953,7 +953,7 @@ fn value_to_python_string(value: &Value) -> String {
     }
 }
 
-fn python_truthy(value: &Value) -> bool {
+fn legacy_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(flag) => *flag,

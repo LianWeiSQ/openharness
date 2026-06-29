@@ -1318,7 +1318,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_command_quoting_matches_python_shape() {
+    fn terminal_command_quoting_matches_legacy_shape() {
         assert_eq!(
             terminal_bench_wrap_command(
                 "printf 'hello world'",

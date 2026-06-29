@@ -34,9 +34,9 @@ use serde_json::{Map, Value, json};
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8787;
-const INDEX_HTML: &str = include_str!("../../../src/openagent/app_server/static/index.html");
-const APP_JS: &str = include_str!("../../../src/openagent/app_server/static/app.js");
-const APP_CSS: &str = include_str!("../../../src/openagent/app_server/static/app.css");
+const INDEX_HTML: &str = include_str!("../../static/app-server/static/index.html");
+const APP_JS: &str = include_str!("../../static/app-server/static/app.js");
+const APP_CSS: &str = include_str!("../../static/app-server/static/app.css");
 const APP_EVENTS_FILE: &str = "app_events.jsonl";
 const TUI_CONTROL_QUEUE_FILE: &str = "tui_control_queue.json";
 const TUI_CONTROL_RESPONSES_FILE: &str = "tui_control_responses.jsonl";
@@ -281,7 +281,7 @@ pub fn emit_app_bridge_events(
 
     for event in events {
         if output_format == "json" {
-            result.stdout.push_str(&python_json_dumps(event));
+            result.stdout.push_str(&stable_json_dumps(event));
             result.stdout.push('\n');
         } else if emit_text_event(event, verbose, &mut result.stdout, &mut result.stderr) {
             printed_answer = true;
@@ -484,7 +484,7 @@ pub fn run_cli(args: &[String]) -> CliRunResult {
         };
         return CliRunResult {
             exit_code: 0,
-            stdout: format!("{}\n", python_json_dumps(&health_payload(&smoke_config))),
+            stdout: format!("{}\n", stable_json_dumps(&health_payload(&smoke_config))),
             stderr: String::new(),
         };
     }
@@ -986,7 +986,7 @@ fn write_http_response(stream: &mut TcpStream, response: HttpResponseSpec) -> Re
         response
             .body
             .as_ref()
-            .map(python_json_dumps)
+            .map(stable_json_dumps)
             .unwrap_or_default()
     });
     let content_type = response
@@ -2726,7 +2726,7 @@ fn openai_chat_response_to_runtime_result(value: &Value, source: String) -> Runt
     let usage = usage_from_provider_json(value.get("usage"));
     RuntimeProviderResult {
         answer: if answer.is_empty() && tool_calls.is_empty() {
-            python_json_dumps(value)
+            stable_json_dumps(value)
         } else {
             answer
         },
@@ -2779,7 +2779,7 @@ fn provider_events_to_runtime_result(
         && tool_calls.is_empty()
         && let Some(value) = fallback
     {
-        answer = python_json_dumps(value);
+        answer = stable_json_dumps(value);
     }
     RuntimeProviderResult {
         answer,
@@ -2988,7 +2988,7 @@ fn openai_tool_call_value(call: &ToolCall) -> Value {
         "type": "function",
         "function": {
             "name": call.name.clone(),
-            "arguments": python_json_dumps(&call.input),
+            "arguments": stable_json_dumps(&call.input),
         },
         "name": call.name.clone(),
         "input": call.input.clone(),
@@ -4608,7 +4608,7 @@ fn sse_frame(id: u64, event: &Value) -> String {
         .unwrap_or("message");
     format!(
         "id: {id}\nevent: {event_name}\ndata: {}\n\n",
-        python_json_dumps(event)
+        stable_json_dumps(event)
     )
 }
 
@@ -4723,7 +4723,7 @@ fn write_json_value(path: &Path, value: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    fs::write(path, python_json_dumps(value)).map_err(|error| error.to_string())
+    fs::write(path, stable_json_dumps(value)).map_err(|error| error.to_string())
 }
 
 fn append_json_line(path: &Path, value: &Value) {
@@ -4731,7 +4731,7 @@ fn append_json_line(path: &Path, value: &Value) {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{}", python_json_dumps(value));
+        let _ = writeln!(file, "{}", stable_json_dumps(value));
     }
 }
 
@@ -4972,7 +4972,7 @@ fn event_params(event: &Value) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-pub fn python_json_dumps(value: &Value) -> String {
+pub fn stable_json_dumps(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(value) => {
@@ -4987,7 +4987,7 @@ pub fn python_json_dumps(value: &Value) -> String {
         Value::Array(items) => {
             let inner = items
                 .iter()
-                .map(python_json_dumps)
+                .map(stable_json_dumps)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("[{inner}]")
@@ -5000,7 +5000,7 @@ pub fn python_json_dumps(value: &Value) -> String {
                 .map(|key| {
                     let rendered_key =
                         serde_json::to_string(key).unwrap_or_else(|_| "\"\"".to_string());
-                    let value = python_json_dumps(&items[key]);
+                    let value = stable_json_dumps(&items[key]);
                     format!("{rendered_key}: {value}")
                 })
                 .collect::<Vec<_>>()
@@ -5035,7 +5035,7 @@ mod tests {
         };
         let created = create_session_payload(
             &config,
-            &python_json_dumps(&json!({"cwd": workspace.to_string_lossy()})),
+            &stable_json_dumps(&json!({"cwd": workspace.to_string_lossy()})),
         );
         let session_id = created
             .get("session_id")
@@ -5044,7 +5044,7 @@ mod tests {
         let started = start_turn_payload(
             &config,
             session_id,
-            &python_json_dumps(&json!({
+            &stable_json_dumps(&json!({
                 "input": "run approved command",
                 "permission": "PLAN_ONLY",
                 "tool_call": {
@@ -5075,7 +5075,7 @@ mod tests {
         let resolved = respond_approval_payload(
             &config,
             &format!("/api/turns/{turn_id}/approvals/{request_id}"),
-            &python_json_dumps(&json!({"action": "allow", "scope": "once"})),
+            &stable_json_dumps(&json!({"action": "allow", "scope": "once"})),
         )
         .expect("resolve approval");
         let events = resolved["events"].as_array().expect("resolved events");

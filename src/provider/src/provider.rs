@@ -1640,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_metadata_normalizes_like_python() {
+    fn provider_metadata_normalizes_like_legacy() {
         assert_eq!(
             default_env_mapping("custom.gateway").expect("env mapping"),
             BTreeMap::from([

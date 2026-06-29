@@ -191,7 +191,7 @@ pub struct ToolCall {
 impl ToolCall {
     #[must_use]
     pub fn key(&self) -> String {
-        format!("{}:{}", self.name, python_json_dumps(&self.input))
+        format!("{}:{}", self.name, stable_json_dumps(&self.input))
     }
 }
 
@@ -548,7 +548,7 @@ impl ToolPartProjection {
                 "function",
                 json_object([
                     ("name", Value::String(self.name.clone())),
-                    ("arguments", Value::String(python_json_dumps(&self.input))),
+                    ("arguments", Value::String(stable_json_dumps(&self.input))),
                 ]),
             ),
             ("name", Value::String(self.name.clone())),
@@ -691,7 +691,7 @@ fn string_from_part(part: &MessagePart, key: &str) -> Option<String> {
     value_from_part(part, key).and_then(|value| match value {
         Value::String(value) => Some(value),
         Value::Null => None,
-        other => Some(python_json_dumps(&other)),
+        other => Some(stable_json_dumps(&other)),
     })
 }
 
@@ -1051,7 +1051,7 @@ fn json_object(items: impl IntoIterator<Item = (&'static str, Value)>) -> Value 
     ))
 }
 
-fn python_json_dumps(value: &Value) -> String {
+fn stable_json_dumps(value: &Value) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(value) => {
@@ -1066,7 +1066,7 @@ fn python_json_dumps(value: &Value) -> String {
         Value::Array(items) => {
             let inner = items
                 .iter()
-                .map(python_json_dumps)
+                .map(stable_json_dumps)
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("[{inner}]")
@@ -1076,7 +1076,7 @@ fn python_json_dumps(value: &Value) -> String {
                 .iter()
                 .map(|(key, value)| {
                     let key = serde_json::to_string(key).expect("key serializes");
-                    let value = python_json_dumps(value);
+                    let value = stable_json_dumps(value);
                     format!("{key}: {value}")
                 })
                 .collect::<Vec<_>>()
@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_key_matches_python_json_format() {
+    fn tool_call_key_matches_stable_json_format() {
         let call = ToolCall {
             name: "read".to_string(),
             input: json!({"path": "README.md"}),

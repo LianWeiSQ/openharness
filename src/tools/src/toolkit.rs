@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub const CRATE_NAME: &str = env!("CARGO_PKG_NAME");
+pub const TASK_TOOL_ID: &str = "task";
 
 const DEFAULT_READ_LIMIT: usize = 2000;
 const MAX_LINE_LENGTH: usize = 2000;
@@ -158,6 +159,94 @@ pub fn qualify_tool_id(namespace: &str, tool_id: &str) -> String {
     } else {
         format!("{namespace}_{tool_id}")
     }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct TaskSubagentDescriptor {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+}
+
+#[must_use]
+pub fn task_tool_description(subagents: &[TaskSubagentDescriptor]) -> String {
+    let mut description = [
+        "Launch a subagent in an independent context window for complex, multi-step work.",
+        "Use this when the task is best handled by a specialized agent whose intermediate tool calls should not enter the parent context.",
+        "Pass a compact description, the full prompt for the subagent, and subagent_type.",
+        "Do not use this for simple one-shot file reads or searches that local tools can handle directly.",
+        "The parent agent must summarize the returned result for the user when needed.",
+    ]
+    .join("\n");
+    if subagents.is_empty() {
+        description.push_str("\n\nAvailable subagents: none.");
+    } else {
+        description.push_str("\n\nAvailable subagents:");
+        for agent in subagents {
+            let summary = if agent.description.trim().is_empty() {
+                "No description provided."
+            } else {
+                agent.description.trim()
+            };
+            description.push_str(&format!("\n- {}: {}", agent.id, summary));
+        }
+    }
+    description
+}
+
+#[must_use]
+pub fn task_tool_definition(subagents: &[TaskSubagentDescriptor]) -> ToolDefinition {
+    ToolDefinition {
+        id: TASK_TOOL_ID.to_string(),
+        description: task_tool_description(subagents),
+        parameter_schema: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "A short title for the delegated task."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The complete instructions for the subagent."
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "The subagent id to run."
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional existing subagent session id to resume."
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Optional command label for the subagent task."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Reserved for background execution; current runtime executes foreground tasks."
+                }
+            },
+            "required": ["description", "prompt", "subagent_type"]
+        }),
+        dangerous: true,
+        group: "agent".to_string(),
+        execution_scope: ToolExecutionScope::Agnostic,
+        execution_schema: exclusive_schema(
+            "agent",
+            false,
+            true,
+            false,
+            false,
+            false,
+            Some("task:{subagent_type}"),
+        ),
+    }
+}
+
+pub fn register_task_tool(registry: &mut ToolRegistry, subagents: &[TaskSubagentDescriptor]) {
+    registry.register(task_tool_definition(subagents));
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -685,6 +774,43 @@ impl Toolkit {
                 metadata: BTreeMap::from([("tool".to_string(), json!(tool.id))]),
             },
         }
+    }
+
+    #[must_use]
+    pub fn permission_result_for_tool(
+        &self,
+        name: &str,
+        input: &Value,
+        call_id: &str,
+        ctx: &ToolContext,
+    ) -> Option<ToolResult> {
+        let Some(tool) = self.registry.get(name) else {
+            return Some(ToolResult {
+                call_id: call_id.to_string(),
+                output: String::new(),
+                error: Some(format!("Tool not found: {name}")),
+                metadata: BTreeMap::from([("tool".to_string(), json!(name))]),
+            });
+        };
+        if !tool_available(tool, &ctx.execution_mode) {
+            return Some(ToolResult {
+                call_id: call_id.to_string(),
+                output: String::new(),
+                error: Some(format!(
+                    "Tool \"{name}\" is not available in {} mode.",
+                    ctx.execution_mode
+                )),
+                metadata: BTreeMap::from([
+                    ("tool".to_string(), json!(tool.id)),
+                    ("execution_mode".to_string(), json!(ctx.execution_mode)),
+                    (
+                        "error_kind".to_string(),
+                        json!("execution_scope_unavailable"),
+                    ),
+                ]),
+            });
+        }
+        permission_gate(tool, input, call_id, ctx)
     }
 
     fn finish_tool_result(
