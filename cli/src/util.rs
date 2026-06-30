@@ -237,9 +237,7 @@ pub(super) fn parse_headers(headers: &[String]) -> Map<String, Value> {
 }
 
 pub(super) fn mcp_public_servers(config: &Value) -> Vec<Value> {
-    config
-        .get("mcp")
-        .and_then(Value::as_object)
+    mcp_servers_object(config)
         .map(|servers| {
             servers
                 .iter()
@@ -250,10 +248,25 @@ pub(super) fn mcp_public_servers(config: &Value) -> Vec<Value> {
 }
 
 pub(super) fn mcp_public_server(name: &str, server: &Value) -> Value {
-    let transport = server
-        .get("transport")
+    let server_type = server
+        .get("type")
         .and_then(Value::as_str)
-        .unwrap_or("auto");
+        .unwrap_or_else(|| {
+            if server.get("command").is_some() {
+                "local"
+            } else {
+                "remote"
+            }
+        });
+    let transport =
+        server
+            .get("transport")
+            .and_then(Value::as_str)
+            .unwrap_or(if server_type == "local" {
+                "stdio"
+            } else {
+                "auto"
+            });
     let headers = server
         .get("headers")
         .and_then(Value::as_object)
@@ -264,17 +277,60 @@ pub(super) fn mcp_public_server(name: &str, server: &Value) -> Value {
                 .collect::<Map<_, _>>()
         })
         .unwrap_or_default();
+    let command = public_mcp_command(server);
+    let url = redact_url(server.get("url").and_then(Value::as_str).unwrap_or(""));
+    let endpoint = if command.is_empty() {
+        url.clone()
+    } else {
+        command.join(" ")
+    };
     json!({
         "name": name,
-        "url": redact_url(server.get("url").and_then(Value::as_str).unwrap_or("")),
+        "type": server_type,
+        "url": url,
+        "command": command,
+        "endpoint": endpoint,
         "enabled": server.get("enabled").and_then(Value::as_bool).unwrap_or(true),
         "transport": transport,
         "configured_transport": transport,
         "selected_transport": null,
-        "timeout_ms": server.get("timeout_ms").and_then(Value::as_u64).unwrap_or(30_000),
+        "timeout_ms": server
+            .get("timeout_ms")
+            .or_else(|| server.get("timeout"))
+            .and_then(Value::as_u64)
+            .unwrap_or(30_000),
         "header_names": headers.keys().cloned().collect::<Vec<_>>(),
         "headers": headers,
     })
+}
+
+fn mcp_servers_object(config: &Value) -> Option<&Map<String, Value>> {
+    config
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .or_else(|| {
+            config
+                .get("mcp")
+                .and_then(|mcp| mcp.get("servers"))
+                .and_then(Value::as_object)
+        })
+        .or_else(|| config.get("mcp").and_then(Value::as_object))
+}
+
+fn public_mcp_command(server: &Value) -> Vec<String> {
+    let mut command = match server.get("command") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        Some(Value::String(value)) => vec![value.clone()],
+        _ => Vec::new(),
+    };
+    if let Some(args) = server.get("args").and_then(Value::as_array) {
+        command.extend(args.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    command
 }
 
 pub(super) fn redact_url(url: &str) -> String {

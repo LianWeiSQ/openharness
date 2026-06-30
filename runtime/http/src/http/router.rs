@@ -1,3 +1,15 @@
+fn handle_http_stream(stream: &mut TcpStream, config: &HttpRuntimeConfig) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| error.to_string())?;
+    let request = read_http_request(stream)?;
+    if should_live_sse(&request, config) {
+        return write_live_sse_response(stream, config, &request);
+    }
+    let response = route_http_request(&request, config);
+    write_http_response(stream, with_runtime_headers(response, config))
+}
+
 #[derive(Clone, Debug)]
 struct HttpRequest {
     method: String,
@@ -71,7 +83,7 @@ fn route_http_request(request: &HttpRequest, config: &HttpRuntimeConfig) -> Http
     match (request.method.as_str(), path) {
         ("GET", "/api/health") => json_response(200, health_payload(config)),
         ("GET", "/api/models") => json_response(200, models_payload()),
-        ("GET", "/api/agents") => json_response(200, agents_payload()),
+        ("GET", "/api/agents") => json_response(200, agents_payload(config)),
         ("GET", "/api/mdns") => json_response(200, mdns_payload(config)),
         ("GET", "/api/events") => sse_response(global_sse_frames(config, &request.path)),
         ("GET", "/api/sessions") => {
@@ -134,6 +146,38 @@ fn route_dynamic_request(
         && request.method == "GET"
     {
         return json_response(200, session_children_payload(config, parts[2]));
+    }
+    if parts.len() == 4
+        && parts[0] == "api"
+        && parts[1] == "sessions"
+        && parts[3] == "tasks"
+        && request.method == "GET"
+    {
+        return json_response(200, session_tasks_payload(config, parts[2]));
+    }
+    if parts.len() == 6
+        && parts[0] == "api"
+        && parts[1] == "sessions"
+        && parts[3] == "tasks"
+        && parts[5] == "run"
+        && request.method == "POST"
+    {
+        return match run_session_task_payload(config, parts[2], parts[4], &request.body) {
+            Ok(payload) => json_response(200, payload),
+            Err(error) => json_response(400, json!({"error": error})),
+        };
+    }
+    if parts.len() == 6
+        && parts[0] == "api"
+        && parts[1] == "sessions"
+        && parts[3] == "tasks"
+        && parts[5] == "cancel"
+        && request.method == "POST"
+    {
+        return match cancel_session_task_payload(config, parts[2], parts[4]) {
+            Ok(payload) => json_response(200, payload),
+            Err(error) => json_response(400, json!({"error": error})),
+        };
     }
     if parts.len() == 4 && parts[0] == "api" && parts[1] == "sessions" && parts[3] == "share" {
         return match request.method.as_str() {

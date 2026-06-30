@@ -1,3 +1,17 @@
+pub(super) fn pending_resume_from_session(session: &Session) -> Option<PendingResume> {
+    if let Some(response) = session.metadata.get("pending_question_response")
+        && let Some(pending) = session.metadata.get("pending_question")
+    {
+        return pending_resume_from_values("question", pending, response);
+    }
+    if let Some(response) = session.metadata.get("pending_approval_response")
+        && let Some(pending) = session.metadata.get("pending_approval")
+    {
+        return pending_resume_from_values("approval", pending, response);
+    }
+    None
+}
+
 fn pending_resume_from_values(
     kind: &str,
     pending: &Value,
@@ -31,22 +45,4 @@ fn pending_resume_from_values(
         response: response.clone(),
         step: pending.get("step").and_then(Value::as_u64).unwrap_or(0),
     })
-}
-
-pub(super) struct PendingResumeContext<'a, 'sink> {
-    pub(super) args: &'a [String],
-    pub(super) workspace: &'a Path,
-    pub(super) provider: &'a str,
-    pub(super) model_id: &'a str,
-    pub(super) toolkit: &'a Toolkit,
-    pub(super) mcp_runtime: Option<&'a McpRuntime>,
-    pub(super) ctx: &'a mut ToolContext,
-    pub(super) session: &'a mut Session,
-    pub(super) store: &'a FileSessionStore,
-    pub(super) run_id: &'a str,
-    pub(super) max_steps: u64,
-    pub(super) permission_ruleset: PermissionRuleset,
-    pub(super) skip_permissions: bool,
-    pub(super) events: &'a mut Vec<Value>,
-    pub(super) event_sink: &'a mut Option<&'sink mut dyn FnMut(&Value)>,
 }

@@ -16,6 +16,7 @@ pub(super) fn call_provider_for_run(
     messages: &[ChatMessage],
     tools: &[ToolSchema],
     stream_sink: Option<&mut dyn FnMut(&ProviderStreamEvent)>,
+    agent_profile: Option<&RunAgentProfile>,
 ) -> Result<ProviderRunResult, String> {
     if subagent_profile_id(messages).is_some()
         && let Ok(answer) = env::var("OPENAGENT_MOCK_SUBAGENT_ANSWER")
@@ -73,8 +74,36 @@ pub(super) fn call_provider_for_run(
             messages,
             tools,
             stream_sink,
+            agent_profile,
         )
     }
+}
+
+fn apply_agent_model_options_to_payload(payload: &mut Value, profile: Option<&RunAgentProfile>) {
+    let Some(profile) = profile else {
+        return;
+    };
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    for (key, value) in &profile.model_options {
+        if provider_payload_option_allowed(key) {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(temperature) = profile.temperature {
+        object.insert("temperature".to_string(), json!(temperature));
+    }
+    if let Some(top_p) = profile.top_p {
+        object.insert("top_p".to_string(), json!(top_p));
+    }
+}
+
+fn provider_payload_option_allowed(key: &str) -> bool {
+    !matches!(
+        key,
+        "model" | "messages" | "input" | "tools" | "tool_choice" | "stream"
+    )
 }
 
 fn subagent_profile_id(messages: &[ChatMessage]) -> Option<&str> {
@@ -103,6 +132,7 @@ fn call_openai_compatible_provider(
     messages: &[ChatMessage],
     tools: &[ToolSchema],
     mut stream_sink: Option<&mut dyn FnMut(&ProviderStreamEvent)>,
+    agent_profile: Option<&RunAgentProfile>,
 ) -> Result<ProviderRunResult, String> {
     let base_url = provider_base_url(provider, args);
     if is_synthetic_endpoint(&base_url) {
@@ -145,6 +175,7 @@ fn call_openai_compatible_provider(
         }
         (join_url(&base_url, "responses"), payload)
     };
+    apply_agent_model_options_to_payload(&mut payload, agent_profile);
     if let Some(max_tokens) =
         value_for(args, &["--max-output-tokens"]).and_then(|value| value.parse::<u64>().ok())
         && let Some(object) = payload.as_object_mut()

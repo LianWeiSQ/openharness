@@ -107,6 +107,48 @@ pub struct TaskSubagentDescriptor {
     pub description: String,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct TaskPermissionRule {
+    pub pattern: String,
+    pub action: PermissionAction,
+}
+
+#[must_use]
+pub fn task_subagent_permission_action(
+    rules: &[TaskPermissionRule],
+    subagent_id: &str,
+) -> Option<PermissionAction> {
+    let mut matched = None;
+    for rule in rules {
+        if task_permission_pattern_matches(&rule.pattern, subagent_id) {
+            matched = Some(rule.action.clone());
+        }
+    }
+    matched
+}
+
+#[must_use]
+pub fn task_subagent_is_visible(rules: &[TaskPermissionRule], subagent_id: &str) -> bool {
+    !matches!(
+        task_subagent_permission_action(rules, subagent_id),
+        Some(PermissionAction::Deny)
+    )
+}
+
+fn task_permission_pattern_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.trim();
+    if pattern == "*" || pattern == value {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return value.starts_with(prefix);
+    }
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return value.ends_with(suffix);
+    }
+    false
+}
+
 #[must_use]
 pub fn task_tool_description(subagents: &[TaskSubagentDescriptor]) -> String {
     let mut description = [

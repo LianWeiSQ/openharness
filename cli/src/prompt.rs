@@ -10,9 +10,11 @@ use agent_loop::{AgentLoopRequest, pending_resume_from_session, run_agent_loop};
 pub(crate) use mcp_runtime::discover_mcp_server_tools;
 use mcp_runtime::{McpRuntime, execute_mcp_tool, load_mcp_runtime};
 use profile::{
-    RunAgentProfile, bind_agent_profile_system_prompt, filter_tools_for_agent, is_subagent_mode,
-    load_agent_profile_from_args, permission_ruleset_for_profile, permission_ruleset_from_args,
-    provider_and_model_for_subagent, provider_and_model_from_args, task_subagent_descriptors,
+    RunAgentProfile, bind_agent_profile_system_prompt, child_task_depth, child_task_lineage,
+    filter_tools_for_agent, is_subagent_mode, load_agent_profile_from_args, max_subagent_depth_cli,
+    parent_task_lineage, permission_manager_for_agent, permission_ruleset_for_profile,
+    permission_ruleset_from_args, provider_and_model_for_subagent, provider_and_model_from_args,
+    subagent_task_governance_error, task_root_session_id, task_subagent_descriptors,
 };
 pub(crate) use profile::{
     agent_profile_public_value, available_agent_profiles, load_agent_profile_by_name,

@@ -10,10 +10,20 @@ fn run_provider_loop(input: RuntimeProviderLoopInput<'_>) -> Result<Value, Strin
         mut carry,
     } = input;
     let max_steps = provider_max_steps(payload);
-    let toolkit = Toolkit::with_builtins();
+    let agent_profile = runtime_agent_profile_for_session(session);
+    let toolkit = toolkit_with_runtime_task_tool(session, agent_profile.as_ref());
+    let visible_tools =
+        filter_runtime_tools_for_profile(toolkit.get_all_tools("local"), agent_profile.as_ref());
+    let visible_tool_names = visible_tools
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect::<BTreeSet<_>>();
     let mut ctx = ToolContext::new(&session.directory)
         .with_session_id(session.id.clone())
-        .with_permission_ruleset(permission_ruleset.clone())
+        .with_permission_manager(runtime_permission_manager_for_agent(
+            permission_ruleset.clone(),
+            agent_profile.as_ref(),
+        ))
         .with_dangerously_skip_permissions(skip_permissions);
     if let Some(answers) = payload
         .get("question_answers")
@@ -62,8 +72,13 @@ fn run_provider_loop(input: RuntimeProviderLoopInput<'_>) -> Result<Value, Strin
                 );
             }
         };
-        let provider_result =
-            provider_turn_result(store, session, payload, Some(&mut on_provider_stream))?;
+        let provider_result = provider_turn_result(
+            store,
+            session,
+            payload,
+            &visible_tools,
+            Some(&mut on_provider_stream),
+        )?;
         add_usage(&mut carry.usage, &provider_result.usage);
         if provider_result.source == "provider_missing_api_key" {
             events.push(json!({
@@ -154,6 +169,7 @@ fn run_provider_loop(input: RuntimeProviderLoopInput<'_>) -> Result<Value, Strin
                 step,
                 tool_call,
                 &toolkit,
+                &visible_tool_names,
                 &mut ctx,
                 &permission_ruleset,
                 skip_permissions,

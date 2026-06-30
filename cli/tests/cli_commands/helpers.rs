@@ -205,6 +205,82 @@ fn serve_mcp_json_rpc(expected_requests: usize) -> Result<(u16, MockServer), Box
     Ok((port, server))
 }
 
+fn stdio_mcp_server_script() -> &'static str {
+    r#"import json
+import sys
+
+
+def read_message():
+    headers = {}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.decode("utf-8").strip()
+        if not line:
+            break
+        key, _, value = line.partition(":")
+        headers[key.lower()] = value.strip()
+    length = int(headers["content-length"])
+    return json.loads(sys.stdin.buffer.read(length).decode("utf-8"))
+
+
+def write_message(value):
+    raw = json.dumps(value).encode("utf-8")
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(raw))
+    sys.stdout.buffer.write(raw)
+    sys.stdout.buffer.flush()
+
+
+while True:
+    message = read_message()
+    if message is None:
+        break
+    method = message.get("method")
+    if method == "initialize":
+        write_message({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "stdio-test", "version": "0.0.0"},
+            },
+        })
+    elif method == "tools/list":
+        write_message({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "tools": [{
+                    "name": "arbor_review",
+                    "title": "Arbor Review",
+                    "description": "Review text",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                }],
+            },
+        })
+    elif method == "tools/call":
+        text = message.get("params", {}).get("arguments", {}).get("text", "")
+        write_message({
+            "jsonrpc": "2.0",
+            "id": message.get("id"),
+            "result": {
+                "content": [{"type": "text", "text": "stdio MCP echo " + text}],
+                "isError": False,
+            },
+        })
+    elif method == "shutdown":
+        write_message({"jsonrpc": "2.0", "id": message.get("id"), "result": {}})
+    elif method == "exit":
+        break
+"#
+}
+
 fn read_http_request_body(stream: &mut std::net::TcpStream) -> Result<String, String> {
     let mut buffer = [0_u8; 8192];
     let read = stream

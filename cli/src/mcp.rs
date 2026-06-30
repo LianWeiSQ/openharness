@@ -26,6 +26,10 @@ fn mcp_add(args: &[String]) -> CliRunResult {
             "--workspace",
             "--dir",
             "--url",
+            "--command",
+            "--arg",
+            "--env",
+            "--cwd",
             "--transport",
             "--header",
             "--timeout-ms",
@@ -35,21 +39,42 @@ fn mcp_add(args: &[String]) -> CliRunResult {
     let Some(name) = positionals.first() else {
         return err_text(2, "mcp add requires a server name");
     };
-    let Some(url) = value_for(args, &["--url"]) else {
-        return err_text(2, "mcp add requires --url");
-    };
+    let url = value_for(args, &["--url"]);
+    let command = value_for(args, &["--command"]);
+    if url.is_none() && command.is_none() {
+        return err_text(2, "mcp add requires --url or --command");
+    }
     let config_path = mcp_config_path(args);
     let mut config = read_json_file(&config_path);
     let servers = ensure_object_field(&mut config, "mcp");
     let headers = parse_headers(&values_for(args, &["--header"]));
-    let server = json!({
-        "type": "remote",
-        "url": url,
-        "transport": value_for(args, &["--transport"]).unwrap_or_else(|| "auto".to_string()),
-        "enabled": !has_flag(args, &["--disabled"]),
-        "timeout_ms": value_for(args, &["--timeout-ms"]).and_then(|value| value.parse::<u64>().ok()).unwrap_or(30_000),
-        "headers": headers,
-    });
+    let server = if let Some(command) = command {
+        let mut command_parts = vec![command];
+        command_parts.extend(values_for(args, &["--arg"]));
+        let mut server = json!({
+            "type": "local",
+            "command": command_parts,
+            "transport": "stdio",
+            "enabled": !has_flag(args, &["--disabled"]),
+            "timeout_ms": value_for(args, &["--timeout-ms"]).and_then(|value| value.parse::<u64>().ok()).unwrap_or(30_000),
+            "environment": parse_headers(&values_for(args, &["--env"])),
+        });
+        if let Some(cwd) = value_for(args, &["--cwd"])
+            && let Some(object) = server.as_object_mut()
+        {
+            object.insert("cwd".to_string(), json!(cwd));
+        }
+        server
+    } else {
+        json!({
+            "type": "remote",
+            "url": url.unwrap_or_default(),
+            "transport": value_for(args, &["--transport"]).unwrap_or_else(|| "auto".to_string()),
+            "enabled": !has_flag(args, &["--disabled"]),
+            "timeout_ms": value_for(args, &["--timeout-ms"]).and_then(|value| value.parse::<u64>().ok()).unwrap_or(30_000),
+            "headers": headers,
+        })
+    };
     servers.insert(name.clone(), server);
     let public_server = mcp_public_server(name, servers.get(name).unwrap_or(&Value::Null));
     if let Err(error) = write_json_file(&config_path, &config) {
@@ -101,14 +126,21 @@ fn mcp_list(args: &[String]) -> CliRunResult {
                     } else {
                         headers
                     },
-                    server["url"].as_str().unwrap_or("").to_string(),
+                    server["endpoint"].as_str().unwrap_or("").to_string(),
                 ]
             })
             .collect::<Vec<_>>();
         ok_text(format!(
             "MCP Servers\n{}",
             render_table(
-                &["Name", "Enabled", "Transport", "Timeout", "Headers", "URL"],
+                &[
+                    "Name",
+                    "Enabled",
+                    "Transport",
+                    "Timeout",
+                    "Headers",
+                    "Endpoint"
+                ],
                 &rows
             )
         ))
@@ -122,10 +154,7 @@ fn mcp_show(args: &[String]) -> CliRunResult {
     };
     let config_path = mcp_config_path(args);
     let config = read_json_file(&config_path);
-    let server = config
-        .get("mcp")
-        .and_then(Value::as_object)
-        .and_then(|servers| servers.get(name));
+    let server = mcp_server_from_config(&config, name);
     let Some(server) = server else {
         return err_text(1, format!("MCP server not found: {name}"));
     };
@@ -136,7 +165,7 @@ fn mcp_show(args: &[String]) -> CliRunResult {
         ok_text(format!(
             "{} {}",
             name,
-            payload["server"]["url"].as_str().unwrap_or("")
+            payload["server"]["endpoint"].as_str().unwrap_or("")
         ))
     }
 }
@@ -401,11 +430,12 @@ fn mcp_doctor(args: &[String]) -> CliRunResult {
         openagent_mcp::McpConfig::default()
     };
     let refresh = has_flag(args, &["--refresh"]);
+    let workspace = workspace_from_args(args);
     let mut manager = RemoteMcpManager::new(config.clone());
     let mut refresh_error = None::<String>;
     if refresh {
         for server in config.servers.iter().filter(|server| server.enabled) {
-            match discover_mcp_server_tools(server) {
+            match discover_mcp_server_tools(server, &workspace) {
                 Ok((transport, tools)) => {
                     let descriptors = build_tool_descriptors_from_values(server, &tools);
                     let _ = manager.set_server_tools(
@@ -454,12 +484,29 @@ fn mcp_debug(args: &[String]) -> CliRunResult {
     };
     let config_path = mcp_config_path(args);
     let config = read_json_file(&config_path);
-    let server = config
-        .get("mcp")
-        .and_then(Value::as_object)
-        .and_then(|servers| servers.get(name));
+    let server = mcp_server_from_config(&config, name);
     let Some(server) = server else {
         return err_text(1, format!("MCP server not found: {name}"));
     };
     CliRunResult::ok_json(&json!({"server": mcp_public_server(name, server)}))
+}
+
+fn mcp_server_from_config<'a>(config: &'a Value, name: &str) -> Option<&'a Value> {
+    config
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .and_then(|servers| servers.get(name))
+        .or_else(|| {
+            config
+                .get("mcp")
+                .and_then(|mcp| mcp.get("servers"))
+                .and_then(Value::as_object)
+                .and_then(|servers| servers.get(name))
+        })
+        .or_else(|| {
+            config
+                .get("mcp")
+                .and_then(Value::as_object)
+                .and_then(|servers| servers.get(name))
+        })
 }

@@ -7,6 +7,7 @@ fn execute_provider_tool_call(
     step: u64,
     tool_call: &ToolCall,
     toolkit: &Toolkit,
+    visible_tool_names: &BTreeSet<String>,
     ctx: &mut ToolContext,
     permission_ruleset: &PermissionRuleset,
     skip_permissions: bool,
@@ -42,6 +43,33 @@ fn execute_provider_tool_call(
             ..SessionEventOptions::default()
         },
     );
+
+    if !visible_tool_names.contains(&tool_call.name) {
+        let mut tool_result = ToolResult {
+            call_id: tool_call.call_id.clone(),
+            output: String::new(),
+            error: Some(format!(
+                "tool `{}` is not available to this agent profile",
+                tool_call.name
+            )),
+            metadata: BTreeMap::from([
+                ("tool".to_string(), json!(tool_call.name.clone())),
+                ("denied_by_agent_profile".to_string(), json!(true)),
+            ]),
+        };
+        append_completed_tool_result(
+            store,
+            session,
+            run_id,
+            step,
+            tool_call,
+            None,
+            &mut tool_result,
+            events,
+        )?;
+        append_unpersisted_app_events(&store.root, &session.id, run_id, events, persisted_events);
+        return Ok(None);
+    }
 
     if tool_call.name == "question" && ctx.question_answers.is_none() {
         let question = question_payload_for_tool_call(session, run_id, step, tool_call);
@@ -120,11 +148,17 @@ fn execute_provider_tool_call(
     }
 
     let change_before = capture_file_change_before(session, tool_call);
-    let mut tool_result = toolkit.execute(
-        &tool_call.name,
-        tool_call.input.clone(),
-        &tool_call.call_id,
+    let mut tool_result = execute_runtime_tool_call(
+        toolkit,
+        tool_call,
         ctx,
+        RuntimeTaskExecutionContext {
+            store,
+            parent_session: session,
+            parent_run_id: run_id,
+            payload,
+            skip_permissions,
+        },
     );
     if tool_result
         .metadata

@@ -2,6 +2,7 @@ fn provider_turn_result(
     store: &FileSessionStore,
     session: &Session,
     payload: &Value,
+    tools: &[ToolSchema],
     stream_sink: Option<&mut dyn FnMut(&ProviderStreamEvent)>,
 ) -> Result<RuntimeProviderResult, String> {
     let provider_raw = payload
@@ -72,10 +73,10 @@ fn provider_turn_result(
         .and_then(Value::as_u64)
         .unwrap_or(60);
     let stream = provider_streaming_enabled_for_turn(payload);
-    let tools = Toolkit::with_builtins().get_all_tools("local");
     let provider_messages = store
         .materialized_chat_messages(session)
         .unwrap_or_else(|_| session.messages.clone());
+    let model_options = runtime_provider_model_options(session, payload);
     call_openai_compatible_provider_for_runtime(
         OpenAiRuntimeProviderRequest {
             provider: &provider,
@@ -86,9 +87,89 @@ fn provider_turn_result(
             timeout_s: timeout,
             stream,
             messages: &provider_messages,
-            tools: &tools,
+            tools,
+            model_options,
         },
         stream_sink,
+    )
+}
+
+fn runtime_provider_model_options(session: &Session, payload: &Value) -> BTreeMap<String, Value> {
+    let mut options = BTreeMap::new();
+    merge_model_options_from_value(session.metadata.get("model_options"), &mut options);
+    merge_temperature_top_p_from_value(
+        &serde_json::to_value(&session.metadata).unwrap_or_default(),
+        &mut options,
+    );
+    merge_explicit_model_options_from_value(payload, &mut options);
+    merge_temperature_top_p_from_value(payload, &mut options);
+    options
+}
+
+fn merge_model_options_from_value(value: Option<&Value>, options: &mut BTreeMap<String, Value>) {
+    let Some(value) = value else {
+        return;
+    };
+    if let Some(object) = value.as_object() {
+        for (key, item) in object {
+            if key == "model_options" || key == "options" {
+                if let Some(nested) = item.as_object() {
+                    for (nested_key, nested_value) in nested {
+                        if runtime_provider_option_allowed(nested_key) {
+                            options.insert(nested_key.clone(), nested_value.clone());
+                        }
+                    }
+                }
+            } else if runtime_provider_option_allowed(key) {
+                options.insert(key.clone(), item.clone());
+            }
+        }
+    }
+}
+
+fn merge_explicit_model_options_from_value(value: &Value, options: &mut BTreeMap<String, Value>) {
+    for key in ["model_options", "options"] {
+        if let Some(object) = value.get(key).and_then(Value::as_object) {
+            for (option_key, option_value) in object {
+                if runtime_provider_option_allowed(option_key) {
+                    options.insert(option_key.clone(), option_value.clone());
+                }
+            }
+        }
+    }
+}
+
+fn merge_temperature_top_p_from_value(value: &Value, options: &mut BTreeMap<String, Value>) {
+    if let Some(temperature) = value.get("temperature").and_then(Value::as_f64) {
+        options.insert("temperature".to_string(), json!(temperature));
+    }
+    if let Some(top_p) = value
+        .get("top_p")
+        .or_else(|| value.get("topP"))
+        .and_then(Value::as_f64)
+    {
+        options.insert("top_p".to_string(), json!(top_p));
+    }
+}
+
+fn apply_runtime_model_options_to_payload(
+    payload: &mut Value,
+    model_options: &BTreeMap<String, Value>,
+) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    for (key, value) in model_options {
+        if runtime_provider_option_allowed(key) {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn runtime_provider_option_allowed(key: &str) -> bool {
+    !matches!(
+        key,
+        "model" | "messages" | "input" | "tools" | "tool_choice" | "stream"
     )
 }
 
@@ -106,6 +187,7 @@ fn call_openai_compatible_provider_for_runtime(
         stream,
         messages,
         tools,
+        model_options,
     } = request;
     let client = reqwest::blocking::Client::builder()
         .no_proxy()
@@ -116,7 +198,7 @@ fn call_openai_compatible_provider_for_runtime(
     config.provider_id = provider.to_string();
     config.base_url = base_url.to_string();
     config.wire_api = wire_api.to_string();
-    let (endpoint, payload) = if wire_api == "chat" {
+    let (endpoint, mut payload) = if wire_api == "chat" {
         let mut payload =
             build_openai_chat_payload(&config, None, messages, tools, None, None, None);
         if let Some(object) = payload.as_object_mut() {
@@ -131,6 +213,7 @@ fn call_openai_compatible_provider_for_runtime(
         }
         (join_url(base_url, "responses"), payload)
     };
+    apply_runtime_model_options_to_payload(&mut payload, &model_options);
     let mut request = client
         .post(endpoint)
         .bearer_auth(api_key)

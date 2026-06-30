@@ -1,3 +1,21 @@
+pub(super) struct PendingResumeContext<'a, 'sink> {
+    pub(super) args: &'a [String],
+    pub(super) workspace: &'a Path,
+    pub(super) provider: &'a str,
+    pub(super) model_id: &'a str,
+    pub(super) toolkit: &'a Toolkit,
+    pub(super) mcp_runtime: Option<&'a McpRuntime>,
+    pub(super) ctx: &'a mut ToolContext,
+    pub(super) session: &'a mut Session,
+    pub(super) store: &'a FileSessionStore,
+    pub(super) run_id: &'a str,
+    pub(super) max_steps: u64,
+    pub(super) permission_ruleset: PermissionRuleset,
+    pub(super) skip_permissions: bool,
+    pub(super) events: &'a mut Vec<Value>,
+    pub(super) event_sink: &'a mut Option<&'sink mut dyn FnMut(&Value)>,
+}
+
 fn process_pending_resume(
     pending: PendingResume,
     context: &mut PendingResumeContext<'_, '_>,

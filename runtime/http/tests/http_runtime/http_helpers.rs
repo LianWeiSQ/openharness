@@ -8,6 +8,24 @@ fn wait_for_server(port: u16) -> Result<(), Box<dyn Error>> {
     Err("server did not start".into())
 }
 
+fn wait_for_task_status(
+    client: &RemoteRuntimeClient,
+    session_id: &str,
+    task_id: &str,
+    expected: &str,
+) -> Result<Value, Box<dyn Error>> {
+    for _ in 0..100 {
+        let tasks = client.tasks(session_id)?;
+        if let Some(task) = tasks.iter().find(|task| task["session_id"] == task_id)
+            && task["status"] == expected
+        {
+            return Ok(task.clone());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err(format!("task {task_id} did not reach status {expected}").into())
+}
+
 fn authorized_request(
     port: u16,
     method: &str,

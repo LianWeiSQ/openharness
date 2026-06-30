@@ -9,6 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use openagent_core::{PermissionManager, permission_rule};
 use openagent_mcp::{
     McpTransport, RemoteMcpManager, RemoteMcpServerConfig, RemoteMcpToolDescriptor,
     bridge_tool_output, build_tool_descriptors_from_values, load_mcp_config, mcp_tool_definition,
@@ -16,7 +17,9 @@ use openagent_mcp::{
     unavailable_tool_result,
 };
 use openagent_protocol::ToolResult;
-use openagent_protocol::{ChatMessage, PermissionRuleset, Role, ToolCall, ToolSchema, Usage};
+use openagent_protocol::{
+    ChatMessage, PermissionAction, PermissionRuleset, Role, ToolCall, ToolSchema, Usage,
+};
 use openagent_provider::{
     AnthropicLanguageModelConfig, OpenAiLanguageModelConfig, ProviderStreamEvent, anthropic_model,
     build_anthropic_payload, build_openai_chat_payload, build_openai_responses_payload,
@@ -29,7 +32,10 @@ use openagent_session::{
     FileSessionStore, Session, SessionEventOptions, SessionPartOptions, SessionStatus,
     StartRunOptions,
 };
-use openagent_tools::{TaskSubagentDescriptor, ToolContext, Toolkit, register_task_tool};
+use openagent_tools::{
+    TASK_TOOL_ID, TaskPermissionRule, TaskSubagentDescriptor, ToolContext, Toolkit,
+    register_task_tool, task_subagent_is_visible,
+};
 use serde_json::{Map, Value, json};
 
 mod agents;

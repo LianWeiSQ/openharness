@@ -153,6 +153,7 @@ fn serve_blocking(config: HttpRuntimeConfig) -> CliRunResult {
         .map(|addr| addr.to_string())
         .unwrap_or_else(|_| format!("{}:{}", config.host, config.port));
     println!("openagent HTTP runtime listening on http://{local}");
+    start_background_task_worker(config.clone());
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
@@ -169,16 +170,4 @@ fn serve_blocking(config: HttpRuntimeConfig) -> CliRunResult {
         stdout: String::new(),
         stderr: String::new(),
     }
-}
-
-fn handle_http_stream(stream: &mut TcpStream, config: &HttpRuntimeConfig) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .map_err(|error| error.to_string())?;
-    let request = read_http_request(stream)?;
-    if should_live_sse(&request, config) {
-        return write_live_sse_response(stream, config, &request);
-    }
-    let response = route_http_request(&request, config);
-    write_http_response(stream, with_runtime_headers(response, config))
 }

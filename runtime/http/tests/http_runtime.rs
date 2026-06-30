@@ -22,6 +22,11 @@ type FakeProviderServer = (u16, thread::JoinHandle<()>, Arc<Mutex<Vec<String>>>)
 include!("http_runtime/smoke_routes.rs");
 include!("http_runtime/client_sessions.rs");
 include!("http_runtime/provider_turns.rs");
+include!("http_runtime/task_subagents_basic.rs");
+include!("http_runtime/task_subagents_governance.rs");
+include!("http_runtime/task_subagents_background.rs");
+include!("http_runtime/task_subagents_locks.rs");
+include!("http_runtime/interactions.rs");
 include!("http_runtime/live_sse.rs");
 include!("http_runtime/fixtures.rs");
 include!("http_runtime/providers.rs");

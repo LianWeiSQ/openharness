@@ -1,10 +1,18 @@
 use super::*;
+use std::{
+    io::{BufRead, BufReader},
+    path::Path,
+    process::{Child, ChildStdin, Command as ProcessCommand, Stdio},
+    sync::mpsc::{self, Receiver},
+    thread,
+};
 
 #[derive(Clone, Debug)]
 pub(super) struct McpRuntime {
     pub(super) manager: RemoteMcpManager,
     pub(super) descriptors: BTreeMap<String, RemoteMcpToolDescriptor>,
     pub(super) snapshot: Value,
+    pub(super) workspace: PathBuf,
 }
 
 pub(super) fn load_mcp_runtime(
@@ -15,17 +23,19 @@ pub(super) fn load_mcp_runtime(
         return Ok(None);
     };
     let config = load_mcp_config(&source)?;
+    let workspace = workspace_from_args(args);
     if !config.enabled() {
         return Ok(Some(McpRuntime {
             manager: RemoteMcpManager::new(config),
             descriptors: BTreeMap::new(),
             snapshot: json!({}),
+            workspace,
         }));
     }
     let mut manager = RemoteMcpManager::new(config.clone());
     let mut descriptors_by_name = BTreeMap::new();
     for server in config.servers.iter().filter(|server| server.enabled) {
-        let (transport, tools) = discover_mcp_server_tools(server)?;
+        let (transport, tools) = discover_mcp_server_tools(server, &workspace)?;
         let descriptors = build_tool_descriptors_from_values(server, &tools);
         for descriptor in &descriptors {
             toolkit
@@ -46,6 +56,7 @@ pub(super) fn load_mcp_runtime(
         manager,
         descriptors: descriptors_by_name,
         snapshot,
+        workspace,
     }))
 }
 
@@ -60,10 +71,11 @@ fn mcp_runtime_source(args: &[String]) -> Option<String> {
 
 pub(crate) fn discover_mcp_server_tools(
     server: &RemoteMcpServerConfig,
+    workspace: &Path,
 ) -> Result<(McpTransport, Vec<Value>), String> {
     let mut errors = Vec::new();
     for transport in transport_candidates(server.transport) {
-        match mcp_json_rpc(server, transport, "tools/list", json!({})) {
+        match mcp_json_rpc(server, transport, "tools/list", json!({}), workspace) {
             Ok(value) => {
                 let tools = value
                     .get("tools")
@@ -87,7 +99,11 @@ fn mcp_json_rpc(
     transport: McpTransport,
     method: &str,
     params: Value,
+    workspace: &Path,
 ) -> Result<Value, String> {
+    if transport == McpTransport::Stdio {
+        return stdio_mcp_json_rpc(server, method, params, workspace);
+    }
     let timeout = Duration::from_millis(server.timeout_ms);
     let client = reqwest::blocking::Client::builder()
         .timeout(timeout)
@@ -161,6 +177,7 @@ pub(super) fn execute_mcp_tool(
             "name": descriptor.original_name,
             "arguments": tool_call.input.clone(),
         }),
+        &runtime.workspace,
     ) {
         Ok(value) => normalize_tool_call_result(descriptor, Some(transport), &value),
         Err(error) => {
@@ -173,6 +190,212 @@ pub(super) fn execute_mcp_tool(
         tool_call,
         bridge_tool_output(descriptor, result),
     ))
+}
+
+struct StdioMcpSession {
+    child: Child,
+    stdin: ChildStdin,
+    rx: Receiver<Result<Value, String>>,
+    timeout: Duration,
+}
+
+impl StdioMcpSession {
+    fn spawn(server: &RemoteMcpServerConfig, workspace: &Path) -> Result<Self, String> {
+        let Some((program, args)) = server.command.split_first() else {
+            return Err(format!(
+                "MCP server '{}' is missing a command.",
+                server.name
+            ));
+        };
+        let mut command = ProcessCommand::new(program);
+        command.args(args);
+        command.current_dir(resolve_stdio_cwd(server, workspace));
+        command.envs(&server.environment);
+        command.stdin(Stdio::piped());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::null());
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("failed to start MCP server '{}': {error}", server.name))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| format!("MCP server '{}' stdout was not captured", server.name))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("MCP server '{}' stdin was not captured", server.name))?;
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                match read_stdio_message(&mut reader) {
+                    Ok(value) => {
+                        if tx.send(Ok(value)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
+        Ok(Self {
+            child,
+            stdin,
+            rx,
+            timeout: Duration::from_millis(server.timeout_ms),
+        })
+    }
+
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let id = format!("openagent-{}", now_ms_cli());
+        self.write(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }))?;
+        self.read_response(&id)
+    }
+
+    fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
+        self.write(json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        }))
+    }
+
+    fn write(&mut self, message: Value) -> Result<(), String> {
+        let raw = serde_json::to_vec(&message).map_err(|error| error.to_string())?;
+        self.stdin
+            .write_all(format!("Content-Length: {}\r\n\r\n", raw.len()).as_bytes())
+            .map_err(|error| format!("failed to write MCP frame header: {error}"))?;
+        self.stdin
+            .write_all(&raw)
+            .map_err(|error| format!("failed to write MCP frame body: {error}"))?;
+        self.stdin
+            .flush()
+            .map_err(|error| format!("failed to flush MCP frame: {error}"))
+    }
+
+    fn read_response(&mut self, id: &str) -> Result<Value, String> {
+        loop {
+            let value = match self.rx.recv_timeout(self.timeout) {
+                Ok(Ok(value)) => value,
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    return Err(format!(
+                        "MCP stdio request timed out after {:?}",
+                        self.timeout
+                    ));
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("MCP stdio server closed stdout".to_string());
+                }
+            };
+            if value.get("id").and_then(Value::as_str) != Some(id) {
+                continue;
+            }
+            if let Some(error) = value.get("error") {
+                return Err(format!("MCP JSON-RPC error: {}", stable_json_dumps(error)));
+            }
+            return Ok(value.get("result").cloned().unwrap_or(value));
+        }
+    }
+
+    fn close(mut self) {
+        let _ = self.write(json!({
+            "jsonrpc": "2.0",
+            "id": format!("openagent-shutdown-{}", now_ms_cli()),
+            "method": "shutdown",
+            "params": {},
+        }));
+        let _ = self.notify("exit", json!({}));
+        for _ in 0..10 {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => thread::sleep(Duration::from_millis(10)),
+                Err(_) => break,
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn stdio_mcp_json_rpc(
+    server: &RemoteMcpServerConfig,
+    method: &str,
+    params: Value,
+    workspace: &Path,
+) -> Result<Value, String> {
+    let mut session = StdioMcpSession::spawn(server, workspace)?;
+    session.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"roots": {}},
+            "clientInfo": {"name": "openagent", "version": env!("CARGO_PKG_VERSION")},
+        }),
+    )?;
+    session.notify("notifications/initialized", json!({}))?;
+    let result = session.request(method, params);
+    session.close();
+    result
+}
+
+fn resolve_stdio_cwd(server: &RemoteMcpServerConfig, workspace: &Path) -> PathBuf {
+    let Some(cwd) = server
+        .cwd
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return workspace.to_path_buf();
+    };
+    let path = PathBuf::from(cwd);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    }
+}
+
+fn read_stdio_message<R: BufRead>(reader: &mut R) -> Result<Value, String> {
+    let mut content_length = None::<usize>;
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|error| format!("failed to read MCP frame header: {error}"))?;
+        if read == 0 {
+            return Err("MCP stdio server closed before sending a frame".to_string());
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|error| format!("invalid MCP content-length: {error}"))?,
+            );
+        }
+    }
+    let length = content_length.ok_or_else(|| "MCP frame missing content-length".to_string())?;
+    let mut body = vec![0_u8; length];
+    reader
+        .read_exact(&mut body)
+        .map_err(|error| format!("failed to read MCP frame body: {error}"))?;
+    serde_json::from_slice::<Value>(&body)
+        .map_err(|error| format!("MCP frame body was not JSON: {error}"))
 }
 
 fn mcp_bridge_to_tool_result(

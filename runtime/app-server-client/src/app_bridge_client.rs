@@ -361,6 +361,31 @@ impl RemoteRuntimeClient {
             .unwrap_or_default())
     }
 
+    pub fn tasks(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        let payload = self.json("GET", &format!("/api/sessions/{session_id}/tasks"), None)?;
+        Ok(payload
+            .get("tasks")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn run_task(&self, session_id: &str, task_id: &str, extra: Value) -> Result<Value, String> {
+        self.json(
+            "POST",
+            &format!("/api/sessions/{session_id}/tasks/{task_id}/run"),
+            Some(extra),
+        )
+    }
+
+    pub fn cancel_task(&self, session_id: &str, task_id: &str) -> Result<Value, String> {
+        self.json(
+            "POST",
+            &format!("/api/sessions/{session_id}/tasks/{task_id}/cancel"),
+            None,
+        )
+    }
+
     pub fn share_session(&self, session_id: &str) -> Result<Value, String> {
         self.json("POST", &format!("/api/sessions/{session_id}/share"), None)
     }

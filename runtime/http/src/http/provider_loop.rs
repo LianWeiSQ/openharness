@@ -6,5 +6,6 @@ include!("provider_loop/resume.rs");
 include!("provider_loop/usage.rs");
 include!("provider_loop/messages.rs");
 include!("provider_loop/loop.rs");
+include!("provider_loop/task_tool.rs");
 include!("provider_loop/tool_execution.rs");
 include!("provider_loop/finish.rs");

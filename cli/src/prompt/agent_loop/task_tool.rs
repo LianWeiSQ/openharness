@@ -95,6 +95,50 @@ fn execute_task_tool_call(
         },
         None => Session::new(new_cli_id("subtask"), task_context.workspace),
     };
+    if let Some(existing) = task_id.as_deref() {
+        if let Err(error) = validate_task_resume_session(
+            &child_session,
+            task_context.session,
+            &child_profile,
+            &subagent_type,
+            existing,
+        ) {
+            return task_tool_error(
+                tool_call,
+                &error,
+                BTreeMap::from([
+                    ("subagent_type".to_string(), json!(subagent_type)),
+                    ("task_id".to_string(), json!(existing)),
+                ]),
+            );
+        }
+    }
+    if let Some(error) = subagent_task_governance_error(task_context.session, &child_profile) {
+        return task_tool_error(
+            tool_call,
+            &error,
+            BTreeMap::from([
+                ("tool".to_string(), json!(TASK_TOOL_ID)),
+                ("subagent_type".to_string(), json!(subagent_type)),
+                ("status".to_string(), json!("failed")),
+                (
+                    "task_depth".to_string(),
+                    json!(child_task_depth(task_context.session)),
+                ),
+                (
+                    "max_task_depth".to_string(),
+                    json!(max_subagent_depth_cli()),
+                ),
+                (
+                    "task_lineage_subagents".to_string(),
+                    json!(parent_task_lineage(task_context.session)),
+                ),
+            ]),
+        );
+    }
+    let task_depth = child_task_depth(task_context.session);
+    let task_root_id = task_root_session_id(task_context.session);
+    let task_lineage_subagents = child_task_lineage(task_context.session, &child_profile.id);
     let child_run_id = new_cli_id("run");
     let trace_id = new_cli_id("trace");
     child_session.status = SessionStatus::Running;
@@ -107,6 +151,25 @@ fn execute_task_tool_call(
     child_session
         .metadata
         .insert("model".to_string(), json!(child_model.clone()));
+    child_session.metadata.insert(
+        "model_options".to_string(),
+        json!(child_profile.model_options.clone()),
+    );
+    if let Some(temperature) = child_profile.temperature {
+        child_session
+            .metadata
+            .insert("temperature".to_string(), json!(temperature));
+    }
+    if let Some(top_p) = child_profile.top_p {
+        child_session
+            .metadata
+            .insert("top_p".to_string(), json!(top_p));
+    }
+    if let Some(color) = child_profile.color.as_deref() {
+        child_session
+            .metadata
+            .insert("color".to_string(), json!(color));
+    }
     child_session
         .metadata
         .insert("subagent".to_string(), json!(true));
@@ -117,6 +180,21 @@ fn execute_task_tool_call(
     child_session.metadata.insert(
         "parent_session_id".to_string(),
         json!(task_context.session.id.clone()),
+    );
+    child_session.metadata.insert(
+        "task_parent_session_id".to_string(),
+        json!(task_context.session.id.clone()),
+    );
+    child_session.metadata.insert(
+        "task_root_session_id".to_string(),
+        json!(task_root_id.clone()),
+    );
+    child_session
+        .metadata
+        .insert("task_depth".to_string(), json!(task_depth));
+    child_session.metadata.insert(
+        "task_lineage_subagents".to_string(),
+        json!(task_lineage_subagents.clone()),
     );
     child_session
         .metadata
@@ -140,6 +218,20 @@ fn execute_task_tool_call(
     child_session
         .metadata
         .insert("permission".to_string(), json!(child_permission.as_str()));
+    if task_id.is_some() {
+        let resume_count = child_session
+            .metadata
+            .get("task_resume_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            .saturating_add(1);
+        child_session
+            .metadata
+            .insert("task_resume_count".to_string(), json!(resume_count));
+        child_session
+            .metadata
+            .insert("task_resumed_at_ms".to_string(), json!(now_ms_cli()));
+    }
     let child_max_steps = child_profile.max_steps.unwrap_or(task_context.max_steps);
     if let Err(error) = task_context.store.start_run(
         &mut child_session,
@@ -251,6 +343,23 @@ fn execute_task_tool_call(
                     ("status".to_string(), json!("completed")),
                     ("provider".to_string(), json!(child_provider)),
                     ("model".to_string(), json!(child_model)),
+                    (
+                        "model_options".to_string(),
+                        json!(child_profile.model_options.clone()),
+                    ),
+                    ("task_depth".to_string(), json!(task_depth)),
+                    (
+                        "task_root_session_id".to_string(),
+                        json!(task_root_id.clone()),
+                    ),
+                    (
+                        "task_parent_session_id".to_string(),
+                        json!(task_context.session.id.clone()),
+                    ),
+                    (
+                        "task_lineage_subagents".to_string(),
+                        json!(task_lineage_subagents.clone()),
+                    ),
                     ("steps".to_string(), json!(result.steps)),
                     ("tool_calls".to_string(), json!(result.tool_calls)),
                     (
@@ -295,6 +404,20 @@ fn execute_task_tool_call(
                     ),
                     ("provider".to_string(), json!(child_provider)),
                     ("model".to_string(), json!(child_model)),
+                    (
+                        "model_options".to_string(),
+                        json!(child_profile.model_options.clone()),
+                    ),
+                    ("task_depth".to_string(), json!(task_depth)),
+                    ("task_root_session_id".to_string(), json!(task_root_id)),
+                    (
+                        "task_parent_session_id".to_string(),
+                        json!(task_context.session.id.clone()),
+                    ),
+                    (
+                        "task_lineage_subagents".to_string(),
+                        json!(task_lineage_subagents),
+                    ),
                     ("paused".to_string(), json!(error.paused)),
                 ]),
             )

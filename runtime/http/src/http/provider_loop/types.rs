@@ -17,6 +17,7 @@ struct OpenAiRuntimeProviderRequest<'a> {
     stream: bool,
     messages: &'a [ChatMessage],
     tools: &'a [openagent_protocol::ToolSchema],
+    model_options: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug)]

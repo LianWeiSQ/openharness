@@ -48,7 +48,12 @@ fn start_turn_payload(
     let user_index = session.messages.len() as u64;
     session.add(user.clone());
     let _ = store.append_message(&session, &user, &run_id, user_index);
-    let tool_calls = tool_calls_from_turn_payload(&payload)?;
+    let mut tool_calls = tool_calls_from_turn_payload(&payload)?;
+    if tool_calls.is_empty()
+        && let Some(call) = manual_runtime_subagent_tool_call(&input)
+    {
+        tool_calls.push(call);
+    }
     if !tool_calls.is_empty() {
         return run_http_tool_turn(
             &store,
@@ -81,11 +86,16 @@ fn run_http_tool_turn(
     permission_ruleset: PermissionRuleset,
     skip_permissions: bool,
 ) -> Result<Value, String> {
-    let toolkit = Toolkit::with_builtins();
+    let agent_profile = runtime_agent_profile_for_session(session);
+    let toolkit = toolkit_with_runtime_task_tool(session, agent_profile.as_ref());
     let tool_call_count = tool_calls.len() as u64;
+    let empty_payload = json!({});
     let mut ctx = ToolContext::new(&session.directory)
         .with_session_id(session.id.clone())
-        .with_permission_ruleset(permission_ruleset)
+        .with_permission_manager(runtime_permission_manager_for_agent(
+            permission_ruleset.clone(),
+            agent_profile.as_ref(),
+        ))
         .with_dangerously_skip_permissions(skip_permissions);
     let mut events = vec![turn_started_event(session, run_id)];
 
@@ -102,11 +112,17 @@ fn run_http_tool_turn(
             }
         }));
         let change_before = capture_file_change_before(session, &tool_call);
-        let mut tool_result = toolkit.execute(
-            &tool_call.name,
-            tool_call.input.clone(),
-            &tool_call.call_id,
+        let mut tool_result = execute_runtime_tool_call(
+            &toolkit,
+            &tool_call,
             &mut ctx,
+            RuntimeTaskExecutionContext {
+                store,
+                parent_session: session,
+                parent_run_id: run_id,
+                payload: &empty_payload,
+                skip_permissions,
+            },
         );
         if tool_result
             .metadata
@@ -311,16 +327,46 @@ fn respond_approval_payload(
 
     if action == "allow" {
         let tool_call = pending_approval_tool_call(&approval)?;
-        let toolkit = Toolkit::with_builtins();
+        let agent_profile = runtime_agent_profile_for_session(&session);
+        let toolkit = toolkit_with_runtime_task_tool(&session, agent_profile.as_ref());
+        let pending_payload = session
+            .metadata
+            .get("pending_provider_turn")
+            .and_then(|pending| pending.get("payload"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let pending_skip_permissions = session
+            .metadata
+            .get("pending_provider_turn")
+            .and_then(|pending| pending.get("skip_permissions"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let mut ctx = ToolContext::new(&session.directory)
             .with_session_id(session.id.clone())
+            .with_permission_manager(runtime_permission_manager_for_agent(
+                parse_permission_ruleset(
+                    session
+                        .metadata
+                        .get("permission")
+                        .and_then(Value::as_str)
+                        .unwrap_or("FULL"),
+                )
+                .unwrap_or(PermissionRuleset::Full),
+                agent_profile.as_ref(),
+            ))
             .with_dangerously_skip_permissions(true);
         let change_before = capture_file_change_before(&session, &tool_call);
-        let mut tool_result = toolkit.execute(
-            &tool_call.name,
-            tool_call.input.clone(),
-            &tool_call.call_id,
+        let mut tool_result = execute_runtime_tool_call(
+            &toolkit,
+            &tool_call,
             &mut ctx,
+            RuntimeTaskExecutionContext {
+                store: &store,
+                parent_session: &session,
+                parent_run_id: &run_id,
+                payload: &pending_payload,
+                skip_permissions: pending_skip_permissions,
+            },
         );
         append_completed_tool_result(
             &store,
@@ -495,7 +541,8 @@ fn respond_question_payload(
         .and_then(question_answers_from_json)
         .unwrap_or_default();
     ctx.set_question_answers(answers);
-    let toolkit = Toolkit::with_builtins();
+    let agent_profile = runtime_agent_profile_for_session(&session);
+    let toolkit = toolkit_with_runtime_task_tool(&session, agent_profile.as_ref());
     let mut tool_result = toolkit.execute(
         "question",
         tool_call.input.clone(),
@@ -835,6 +882,31 @@ fn tool_calls_from_turn_payload(payload: &Value) -> Result<Vec<ToolCall>, String
             .collect();
     }
     Ok(Vec::new())
+}
+
+fn manual_runtime_subagent_tool_call(input: &str) -> Option<ToolCall> {
+    let trimmed = input.trim_start();
+    let rest = trimmed.strip_prefix('@')?;
+    let (subagent_type, prompt) = rest.split_once(char::is_whitespace)?;
+    let subagent_type = subagent_type.trim();
+    let prompt = prompt.trim();
+    if subagent_type.is_empty()
+        || prompt.is_empty()
+        || !subagent_type
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return None;
+    }
+    Some(ToolCall {
+        name: TASK_TOOL_ID.to_string(),
+        input: json!({
+            "description": format!("@{subagent_type}"),
+            "prompt": prompt,
+            "subagent_type": subagent_type,
+        }),
+        call_id: format!("manual_task_{subagent_type}"),
+    })
 }
 
 fn tool_call_from_value(value: &Value, index: usize) -> Result<ToolCall, String> {
