@@ -1,0 +1,22 @@
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RunAgentProfile {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) description: Option<String>,
+    pub(super) mode: String,
+    pub(super) model: Option<String>,
+    pub(super) provider: Option<String>,
+    pub(super) permission: Option<String>,
+    pub(super) task_permissions: Vec<TaskPermissionRule>,
+    pub(super) prompt: Option<String>,
+    pub(super) tools: Vec<String>,
+    pub(super) max_steps: Option<u64>,
+    pub(super) temperature: Option<f64>,
+    pub(super) top_p: Option<f64>,
+    pub(super) color: Option<String>,
+    pub(super) disabled: bool,
+    pub(super) model_options: BTreeMap<String, Value>,
+    pub(super) hidden: bool,
+    pub(super) source_path: Option<PathBuf>,
+    pub(super) loaded: bool,
+}
