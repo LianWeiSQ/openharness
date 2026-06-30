@@ -254,6 +254,20 @@ fn remote_list_sessions(server_url: &str, auth: &RemoteAuth) -> Result<Vec<Value
         .unwrap_or_default())
 }
 
+fn remote_tasks_payload(
+    server_url: &str,
+    auth: &RemoteAuth,
+    session_id: &str,
+) -> Result<Value, String> {
+    http_json_with_auth(
+        "GET",
+        server_url,
+        &format!("/api/sessions/{session_id}/tasks"),
+        auth,
+        None,
+    )
+}
+
 fn remote_sessions_text(sessions: &[Value]) -> String {
     if sessions.is_empty() {
         return "Remote sessions: none\n".to_string();
@@ -290,6 +304,68 @@ fn remote_sessions_text(sessions: &[Value]) -> String {
         text.push_str(&format!("  ... {} more\n", sessions.len() - 20));
     }
     text
+}
+
+fn remote_tasks_text(payload: &Value) -> String {
+    let session_id = payload
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("<unknown>");
+    let tree = payload
+        .get("tree")
+        .and_then(Value::as_array)
+        .or_else(|| payload.get("tasks").and_then(Value::as_array));
+    let Some(tasks) = tree else {
+        return format!("Remote tasks for {session_id}: none\n");
+    };
+    if tasks.is_empty() {
+        return format!("Remote tasks for {session_id}: none\n");
+    }
+    let mut text = format!("Remote tasks for {session_id}:\n");
+    for task in tasks {
+        append_remote_task_text(&mut text, task, 1);
+    }
+    text
+}
+
+fn append_remote_task_text(text: &mut String, task: &Value, depth: usize) {
+    let indent = "  ".repeat(depth);
+    let id = task
+        .get("session_id")
+        .or_else(|| task.get("task_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("<unknown>");
+    let title = task
+        .get("title")
+        .or_else(|| task.get("description"))
+        .and_then(Value::as_str)
+        .unwrap_or("task");
+    let status = task
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let subagent = task
+        .get("subagent_type")
+        .or_else(|| task.get("agent"))
+        .and_then(Value::as_str)
+        .unwrap_or("subagent");
+    let background = task
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let depth_value = task
+        .get("task_depth")
+        .and_then(Value::as_u64)
+        .unwrap_or(depth as u64);
+    let marker = if background { " background" } else { "" };
+    text.push_str(&format!(
+        "{indent}- {id}  [{status}] {subagent}  depth={depth_value}{marker}  {title}\n"
+    ));
+    if let Some(children) = task.get("children").and_then(Value::as_array) {
+        for child in children {
+            append_remote_task_text(text, child, depth + 1);
+        }
+    }
 }
 
 fn http_json(
@@ -566,7 +642,7 @@ fn interactive_remote_loop(args: &[String], url: &str, auth: &RemoteAuth) -> Cli
     }
     let mut last_turn_id: Option<String> = None;
     let mut stdout = format!(
-        "OpenAgent remote attach: {url}\nCommands: /sessions, /resume <id>, /new, /fork, /interrupt [turn_id], /exit\n"
+        "OpenAgent remote attach: {url}\nCommands: /sessions, /tasks, /task <id>, /resume <id>, /new, /fork, /interrupt [turn_id], /exit\n"
     );
     if let Ok(sessions) = remote_list_sessions(url, auth) {
         stdout.push_str(&remote_sessions_text(&sessions));
@@ -591,6 +667,26 @@ fn interactive_remote_loop(args: &[String], url: &str, auth: &RemoteAuth) -> Cli
             match remote_list_sessions(url, auth) {
                 Ok(sessions) => stdout.push_str(&remote_sessions_text(&sessions)),
                 Err(error) => return err_text(1, error),
+            }
+            continue;
+        }
+        if prompt == "/tasks" {
+            let Some(session_id) = current_session.as_deref() else {
+                stdout.push_str("No current session. Use /new or /resume <session_id>.\n");
+                continue;
+            };
+            match remote_tasks_payload(url, auth, session_id) {
+                Ok(payload) => stdout.push_str(&remote_tasks_text(&payload)),
+                Err(error) => return err_text(1, error),
+            }
+            continue;
+        }
+        if let Some(task_id) = prompt.strip_prefix("/task ").map(str::trim) {
+            if task_id.is_empty() {
+                stdout.push_str("Usage: /task <task_session_id>\n");
+            } else {
+                current_session = Some(task_id.to_string());
+                stdout.push_str(&format!("Current task session: {task_id}\n"));
             }
             continue;
         }
@@ -828,6 +924,22 @@ impl openagent_tui::TerminalEventHandler for RemoteTerminalHandler {
             let sessions = remote_list_sessions(&self.url, &self.auth)?;
             return Ok(tui_lines("status", remote_sessions_text(&sessions), false));
         }
+        if command == "/tasks" {
+            let session_id = self.ensure_session()?;
+            let payload = remote_tasks_payload(&self.url, &self.auth, &session_id)?;
+            return Ok(tui_lines("status", remote_tasks_text(&payload), false));
+        }
+        if let Some(task_id) = command.strip_prefix("/task ").map(str::trim) {
+            if task_id.is_empty() {
+                return Ok(tui_lines("warning", "usage: /task <task_session_id>", true));
+            }
+            self.current_session = Some(task_id.to_string());
+            return Ok(tui_lines(
+                "status",
+                format!("current task session: {task_id}"),
+                true,
+            ));
+        }
         if let Some(session_id) = command.strip_prefix("/resume ").map(str::trim) {
             if session_id.is_empty() {
                 return Ok(tui_lines("warning", "usage: /resume <session_id>", true));
@@ -900,7 +1012,7 @@ impl openagent_tui::TerminalEventHandler for RemoteTerminalHandler {
         }
         Ok(tui_lines(
             "status",
-            "commands: /sessions, /resume <id>, /new, /fork, /interrupt [turn_id], /exit",
+            "commands: /sessions, /tasks, /task <id>, /resume <id>, /new, /fork, /interrupt [turn_id], /exit",
             false,
         ))
     }

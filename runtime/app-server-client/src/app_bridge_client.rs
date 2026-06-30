@@ -362,12 +362,17 @@ impl RemoteRuntimeClient {
     }
 
     pub fn tasks(&self, session_id: &str) -> Result<Vec<Value>, String> {
-        let payload = self.json("GET", &format!("/api/sessions/{session_id}/tasks"), None)?;
+        let payload = self.tasks_payload(session_id)?;
         Ok(payload
             .get("tasks")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default())
+    }
+
+    pub fn tasks_payload(&self, session_id: &str) -> Result<Value, String> {
+        let payload = self.json("GET", &format!("/api/sessions/{session_id}/tasks"), None)?;
+        Ok(payload)
     }
 
     pub fn run_task(&self, session_id: &str, task_id: &str, extra: Value) -> Result<Value, String> {
