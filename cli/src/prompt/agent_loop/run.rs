@@ -93,114 +93,25 @@ pub(super) fn run_agent_loop(
 
     if let Some(tool_call) = manual_subagent_tool_call(prompt) {
         total_tool_calls += 1;
-        emit_run_event(
-            &mut events,
-            json!({
-                "method": "item/toolCall/started",
-                "params": {
-                    "session_id": session.id.clone(),
-                    "run_id": run_id,
-                    "step": 1,
-                    "call_id": tool_call.call_id.clone(),
-                    "name": tool_call.name.clone(),
-                    "input": tool_call.input.clone(),
-                    "manual": true,
-                }
-            }),
+        let mut manual_context = ManualSubagentRunContext {
+            args,
+            workspace,
+            provider,
+            model_id,
+            toolkit: &toolkit,
+            mcp_runtime: mcp_runtime.as_ref(),
+            ctx: &mut ctx,
+            session,
+            store,
+            run_id,
+            max_steps,
+            permission_ruleset: permission_ruleset.clone(),
+            skip_permissions,
+            events: &mut events,
             event_sink,
-        );
-        let mut assistant =
-            assistant_message_for_provider_step(String::new(), &[tool_call.clone()]);
-        assistant.metadata.insert(
-            "message_id".to_string(),
-            json!(cli_message_id(session.messages.len() as u64)),
-        );
-        assistant.metadata.insert("step".to_string(), json!(1));
-        let assistant_index = session.messages.len() as u64;
-        session.add(assistant.clone());
-        store
-            .append_message(session, &assistant, run_id, assistant_index)
-            .map_err(|error| AgentLoopError {
-                message: format!("failed to record manual subagent call: {error}"),
-                events: events.clone(),
-                steps: 1,
-                finish_reason: Some("store_error".to_string()),
-                paused: false,
-            })?;
-        let tool_result = execute_loop_tool_call(
-            &toolkit,
-            mcp_runtime.as_ref(),
-            &tool_call,
-            &mut ctx,
-            TaskExecutionContext {
-                args,
-                workspace,
-                provider,
-                model_id,
-                session,
-                store,
-                run_id,
-                max_steps,
-                permission_ruleset: permission_ruleset.clone(),
-                skip_permissions,
-            },
-        );
-        let failed = tool_result.error.is_some();
-        emit_run_event(
-            &mut events,
-            json!({
-                "method": if failed { "item/toolCall/failed" } else { "item/toolCall/completed" },
-                "params": {
-                    "session_id": session.id.clone(),
-                    "run_id": run_id,
-                    "step": 1,
-                    "call_id": tool_call.call_id.clone(),
-                    "name": tool_call.name.clone(),
-                    "output": tool_result.output.clone(),
-                    "error": tool_result.error.clone(),
-                    "metadata": tool_result.metadata.clone(),
-                    "manual": true,
-                }
-            }),
-            event_sink,
-        );
-        let mut tool_message = chat_message(
-            Role::Tool,
-            tool_result.error.as_ref().map_or_else(
-                || tool_result.output.clone(),
-                |error| format!("Tool failed: {error}"),
-            ),
-        );
-        tool_message.name = Some(tool_call.name.clone());
-        tool_message.tool_call_id = Some(tool_call.call_id.clone());
-        tool_message
-            .metadata
-            .insert("tool_result".to_string(), json!(tool_result));
-        tool_message.metadata.insert("step".to_string(), json!(1));
-        let tool_index = session.messages.len() as u64;
-        session.add(tool_message.clone());
-        store
-            .append_message(session, &tool_message, run_id, tool_index)
-            .map_err(|error| AgentLoopError {
-                message: format!("failed to record manual subagent result: {error}"),
-                events: events.clone(),
-                steps: 1,
-                finish_reason: Some("store_error".to_string()),
-                paused: false,
-            })?;
-        let final_answer = tool_result
-            .error
-            .clone()
-            .unwrap_or_else(|| tool_result.output.clone());
-        return Ok(AgentLoopOutcome {
-            answer: final_answer,
-            usage: total_usage,
-            source: "manual_subagent".to_string(),
-            events,
-            steps: 1,
-            tool_calls: total_tool_calls,
-            finish_reason: if failed { "tool_error" } else { "stop" }.to_string(),
-        });
+            total_tool_calls,
+        };
+        return run_manual_subagent_turn(tool_call, &mut manual_context);
     }
 
     for step in 1..=max_steps {

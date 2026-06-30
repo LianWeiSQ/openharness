@@ -9,6 +9,7 @@ use openagent_tools::TASK_TOOL_ID;
 include!("agent_loop/types.rs");
 include!("agent_loop/run.rs");
 include!("agent_loop/task_context.rs");
+include!("agent_loop/run_manual.rs");
 include!("agent_loop/task_tool.rs");
 include!("agent_loop/task_helpers.rs");
 include!("agent_loop/resume.rs");
