@@ -1,0 +1,21 @@
+#[derive(Clone, Debug)]
+struct RuntimeSubagentProfile {
+    id: String,
+    name: String,
+    description: String,
+    mode: String,
+    permission: PermissionRuleset,
+    task_permissions: Vec<TaskPermissionRule>,
+    prompt: String,
+    tools: Vec<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    max_steps: Option<u64>,
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    color: Option<String>,
+    disabled: bool,
+    model_options: BTreeMap<String, Value>,
+    hidden: bool,
+    source_path: Option<PathBuf>,
+}
